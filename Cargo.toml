@@ -1,0 +1,29 @@
+[package]
+name = "lontar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", features = ["serde"] }
+dirs = "6.0.0"
+eframe = "0.36.1"
+egui = "0.36.1"
+egui_commonmark = { version = "0.25.0", features = ["better_syntax_highlighting"] }
+env_logger = "0.11.11"
+fluent-bundle = "0.16.0"
+fluent-syntax = "0.12.0"
+log = "0.4.34"
+notify = "8.2.0"
+rfd = "0.17.2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_yaml = "0.9.34"
+toml = "1.1.4"
+unic-langid = { version = "0.9.6", features = ["serde"] }
+uuid = { version = "1.25.0", features = ["v4", "serde"] }
+walkdir = "2.5.0"
+
+[dev-dependencies]
+filetime = "0.2.29"
+tempfile = "3.27.0"
