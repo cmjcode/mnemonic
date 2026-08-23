@@ -3,7 +3,12 @@
 //! / Live Preview / Reading modes, interactive checklists, wikilinks with
 //! `[[` autocomplete, a backlinks panel, and a heading outline. Richer
 //! Keep-style grid UI (colors, pinning, drag-reorder) lands in Fase 3.
-//! Callers: `main.rs`.
+//! Fase 7 (§5) adds a top-bar tab switch between the Notes grid, a
+//! Search tab (`core::search`'s combined keyword+semantic ranking), and
+//! a Chat tab (RAG over the vault via `llm::build_rag_prompt` +
+//! `llm::GenerationWorker`) — this is also where `core::IndexingWorker`
+//! and `llm::GenerationWorker` get spawned and wired in for the first
+//! time. Callers: `main.rs`.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -11,8 +16,10 @@ use std::path::PathBuf;
 use egui_commonmark::CommonMarkCache;
 use uuid::Uuid;
 
-use crate::core::IndexStore;
+use crate::core::search::{self, SearchHit};
+use crate::core::{DocumentChunk, IndexStore, IndexingWorker};
 use crate::i18n::LocaleManager;
+use crate::llm::{self, GenerationEvent, GenerationWorker};
 use crate::markdown::editor::{
     char_index_to_byte_offset, slash_menu_triggered, slash_templates, wikilink_autocomplete_query,
 };
@@ -21,11 +28,64 @@ use crate::notes::query::{self, GridFilter, SortMode};
 use crate::notes::{tags, trash, Note, Vault, VaultWatcher};
 use crate::ui::theme;
 
+/// How many top-ranked chunks to retrieve for the Search tab / Chat tab
+/// respectively (§Fase 7). Search shows more candidates than chat's RAG
+/// context window since a human is skimming results, while chat feeds
+/// straight into a token-bounded LLM prompt.
+const SEARCH_TOP_K: usize = 10;
+const CHAT_TOP_K: usize = 5;
+
+/// Which top-level tab is showing in the central panel (only relevant
+/// while no note is open for editing — `show_editor` always takes over
+/// regardless of `view`, same as before Fase 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum View {
+    Notes,
+    Search,
+    Chat,
+}
+
+/// One rendered bubble in the Chat tab's transcript.
+struct ChatMessage {
+    role: ChatRole,
+    text: String,
+    /// Source file paths the assistant grounded its reply on (§3.4 point
+    /// 4's citations) — empty for user messages and for an assistant
+    /// reply that found no relevant context.
+    citations: Vec<String>,
+}
+
+#[derive(PartialEq, Eq)]
+enum ChatRole {
+    User,
+    Assistant,
+}
+
+impl ChatMessage {
+    fn user(text: String) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::User,
+            text,
+            citations: Vec::new(),
+        }
+    }
+
+    fn assistant(text: String, citations: Vec<String>) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::Assistant,
+            text,
+            citations,
+        }
+    }
+}
+
 pub struct LontarApp {
     locales: LocaleManager,
     vault: Option<Vault>,
     watcher: Option<VaultWatcher>,
     index: Option<IndexStore>,
+    indexer: Option<IndexingWorker>,
+    generator: Option<GenerationWorker>,
     quick_capture_text: String,
     status: String,
     editor: Option<MarkdownEditor>,
@@ -38,6 +98,20 @@ pub struct LontarApp {
     show_label_manager: bool,
     tag_rename: Option<(String, String)>,
     confirm_delete: Option<Uuid>,
+
+    view: View,
+
+    // Search tab (§Fase 7).
+    search_query: String,
+    search_pending_id: Option<Uuid>,
+    search_results: Vec<SearchHit>,
+    search_status: String,
+
+    // Chat tab (§Fase 7).
+    chat_input: String,
+    chat_messages: Vec<ChatMessage>,
+    chat_pending_embed_id: Option<Uuid>,
+    chat_pending_gen_id: Option<Uuid>,
 }
 
 impl LontarApp {
@@ -50,6 +124,11 @@ impl LontarApp {
             vault: None,
             watcher: None,
             index: None,
+            // Spawning is cheap (just a background thread); the actual
+            // FastEmbed/Candle model only loads lazily on the first
+            // submitted job, so this never blocks startup (§6 risk 2).
+            indexer: Some(IndexingWorker::spawn()),
+            generator: Some(GenerationWorker::spawn()),
             quick_capture_text: String::new(),
             status: String::new(),
             editor: None,
@@ -62,6 +141,15 @@ impl LontarApp {
             show_label_manager: false,
             tag_rename: None,
             confirm_delete: None,
+            view: View::Notes,
+            search_query: String::new(),
+            search_pending_id: None,
+            search_results: Vec::new(),
+            search_status: String::new(),
+            chat_input: String::new(),
+            chat_messages: Vec::new(),
+            chat_pending_embed_id: None,
+            chat_pending_gen_id: None,
         };
 
         if let Some(result) = Vault::load_last() {
@@ -90,6 +178,18 @@ impl LontarApp {
             Err(e) => log::warn!("app: failed to open index store: {e}"),
         }
 
+        // Fase 7: populate the document_chunks cache (search/RAG
+        // retrieval) for every note in the vault. Cheap to do in full
+        // here since this only runs once per vault open; per-note
+        // resubmission on later edits happens at the specific mutation
+        // sites instead (see `reindex_note`), not by resubmitting the
+        // whole vault again.
+        if let Some(indexer) = &self.indexer {
+            for note in &vault.notes {
+                indexer.submit_note(note.clone());
+            }
+        }
+
         self.watcher = match VaultWatcher::watch(&vault.root) {
             Ok(w) => Some(w),
             Err(e) => {
@@ -113,6 +213,190 @@ impl LontarApp {
             if let Err(e) = index.rebuild(&vault.notes) {
                 log::warn!("app: index rebuild after rescan failed: {e}");
             }
+        }
+    }
+
+    /// Submits `note` for background re-chunking + re-embedding (§Fase 7)
+    /// so an edited note's `document_chunks` stay in sync with its saved
+    /// content. Non-blocking — the result lands later in
+    /// `poll_indexer_results`. Called from the specific mutation sites
+    /// (editor autosave/close, single-field grid actions) rather than
+    /// from `rescan_and_reindex`, so a full vault re-embed isn't
+    /// triggered by every autosave tick.
+    fn reindex_note(&self, note: &Note) {
+        if let Some(indexer) = &self.indexer {
+            indexer.submit_note(note.clone());
+        }
+    }
+
+    /// Drains chunk/embedding results produced by the background
+    /// `IndexingWorker` and writes them into the SQLite cache. Call once
+    /// per frame (same shape as the watcher/autosave polls above).
+    fn poll_indexer_results(&mut self) {
+        let Some(indexer) = &self.indexer else { return };
+        let results = indexer.poll_results();
+        if results.is_empty() {
+            return;
+        }
+        let Some(index) = self.index.as_mut() else { return };
+        for result in results {
+            match result {
+                Ok(r) => {
+                    if let Err(e) = index.replace_chunks(r.doc_id, r.doc_type.as_str(), &r.chunks) {
+                        log::warn!("app: failed to store indexed chunks: {e}");
+                    }
+                }
+                Err(e) => log::warn!("app: background indexing failed: {e}"),
+            }
+        }
+    }
+
+    /// Drains query-embedding results (Search tab / Chat tab) and
+    /// generation events (Chat tab) from their respective background
+    /// workers, dispatching each to whichever request is currently
+    /// pending. Call once per frame.
+    fn poll_search_and_chat(&mut self, ctx: &egui::Context) {
+        if let Some(indexer) = &self.indexer {
+            for (id, result) in indexer.poll_query_results() {
+                if self.search_pending_id == Some(id) {
+                    self.search_pending_id = None;
+                    match result {
+                        Ok(embedding) => self.apply_semantic_search(&embedding),
+                        Err(e) => self.search_status = format!("{}: {e:#}", self.t("search-error")),
+                    }
+                    ctx.request_repaint();
+                } else if self.chat_pending_embed_id == Some(id) {
+                    self.chat_pending_embed_id = None;
+                    match result {
+                        Ok(embedding) => self.start_chat_generation(&embedding),
+                        Err(e) => {
+                            let msg = format!("{}: {e:#}", self.t("chat-error"));
+                            self.chat_messages.push(ChatMessage::assistant(msg, Vec::new()));
+                        }
+                    }
+                    ctx.request_repaint();
+                }
+            }
+        }
+
+        if let Some(generator) = &self.generator {
+            for (id, event) in generator.poll_events() {
+                if self.chat_pending_gen_id != Some(id) {
+                    continue;
+                }
+                match event {
+                    GenerationEvent::Token(text) => {
+                        if let Some(last) = self.chat_messages.last_mut() {
+                            last.text.push_str(&text);
+                        }
+                    }
+                    GenerationEvent::Done => self.chat_pending_gen_id = None,
+                    GenerationEvent::Error(e) => {
+                        if let Some(last) = self.chat_messages.last_mut() {
+                            last.text.push_str(&format!("\n⚠ {e}"));
+                        }
+                        self.chat_pending_gen_id = None;
+                    }
+                }
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    /// Combines the just-resolved query embedding's semantic hits with
+    /// the keyword hits already computed by `run_search`, replacing
+    /// `search_results` with the merged, de-duplicated list.
+    fn apply_semantic_search(&mut self, embedding: &[f32]) {
+        let Some(index) = self.index.as_ref() else { return };
+        let chunks = match index.all_chunks() {
+            Ok(c) => c,
+            Err(e) => {
+                self.search_status = format!("{}: {e:#}", self.t("search-error"));
+                return;
+            }
+        };
+        let semantic = search::semantic_search(embedding, &chunks, SEARCH_TOP_K, llm::SIMILARITY_THRESHOLD);
+        let notes: Vec<Note> = self.vault.as_ref().map(|v| v.notes.clone()).unwrap_or_default();
+        let keyword_notes = search::keyword_search(&notes, &self.search_query);
+        self.search_results = search::merge_results(semantic, &keyword_notes);
+    }
+
+    /// Runs the keyword half of search immediately (so the tab never sits
+    /// empty) and kicks off background query embedding for the semantic
+    /// half — `apply_semantic_search` (via `poll_search_and_chat`) merges
+    /// it in once the embedding resolves.
+    fn run_search(&mut self) {
+        let query_text = self.search_query.trim().to_string();
+        self.search_status.clear();
+        if query_text.is_empty() {
+            self.search_results.clear();
+            self.search_pending_id = None;
+            return;
+        }
+
+        let notes: Vec<Note> = self.vault.as_ref().map(|v| v.notes.clone()).unwrap_or_default();
+        let keyword_notes = search::keyword_search(&notes, &query_text);
+        self.search_results = search::merge_results(Vec::new(), &keyword_notes);
+
+        if let Some(indexer) = &self.indexer {
+            self.search_pending_id = Some(indexer.submit_query(query_text));
+        }
+    }
+
+    /// Pushes the user's chat message and kicks off background query
+    /// embedding — `start_chat_generation` (via `poll_search_and_chat`)
+    /// takes over once the embedding resolves.
+    fn send_chat_message(&mut self) {
+        let text = self.chat_input.trim().to_string();
+        if text.is_empty() || self.chat_pending_embed_id.is_some() || self.chat_pending_gen_id.is_some() {
+            return;
+        }
+        self.chat_input.clear();
+        self.chat_messages.push(ChatMessage::user(text.clone()));
+        if let Some(indexer) = &self.indexer {
+            self.chat_pending_embed_id = Some(indexer.submit_query(text));
+        }
+    }
+
+    /// Retrieves top-scoring context chunks for the just-resolved query
+    /// embedding, builds the strict-grounding RAG prompt (§3.4 point 2),
+    /// appends an empty assistant bubble tagged with its citations, and
+    /// submits the prompt to the background `GenerationWorker` — its
+    /// streamed tokens get appended to that bubble by
+    /// `poll_search_and_chat`.
+    fn start_chat_generation(&mut self, embedding: &[f32]) {
+        let question = self
+            .chat_messages
+            .last()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+
+        let context = match self.index.as_ref().map(|i| i.all_chunks()) {
+            Some(Ok(chunks)) => {
+                let vectors: Vec<Vec<f32>> = chunks.iter().map(|c| c.embedding.clone()).collect();
+                let scored = crate::core::top_k(embedding, &vectors, CHAT_TOP_K);
+                let all_chunks: Vec<DocumentChunk> = chunks.into_iter().map(|c| c.chunk).collect();
+                llm::select_context(&scored, &all_chunks, llm::SIMILARITY_THRESHOLD)
+            }
+            Some(Err(e)) => {
+                log::warn!("app: failed to load chunks for chat retrieval: {e}");
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        let citations: Vec<String> = context
+            .iter()
+            .map(|c| match c.page_num {
+                Some(p) => format!("{} (Halaman {p})", c.file_path.display()),
+                None => c.file_path.display().to_string(),
+            })
+            .collect();
+        let prompt = llm::build_rag_prompt(&context, &question);
+
+        self.chat_messages.push(ChatMessage::assistant(String::new(), citations));
+
+        if let Some(generator) = &self.generator {
+            self.chat_pending_gen_id = Some(generator.submit(prompt, llm::DEFAULT_MAX_TOKENS));
         }
     }
 
@@ -321,6 +605,7 @@ impl LontarApp {
                 }
             }
             self.rescan_and_reindex();
+            self.reindex_note(&editor.note);
         } else if let Some(title) = navigate_to {
             if editor.is_dirty() {
                 if let Err(e) = editor.autosave() {
@@ -328,6 +613,7 @@ impl LontarApp {
                 }
             }
             self.rescan_and_reindex();
+            self.reindex_note(&editor.note);
             self.navigate_wikilink(&title);
         } else {
             self.editor = Some(editor);
@@ -362,6 +648,13 @@ impl LontarApp {
                 };
                 if let Err(e) = note.delete_permanently() {
                     log::warn!("app: failed to permanently delete note: {e}");
+                }
+                // Purge any cached chunks for the deleted note so stale
+                // text can't surface in search/chat retrieval (§5).
+                if let Some(index) = self.index.as_ref()
+                    && let Err(e) = index.delete_chunks_for_doc(id)
+                {
+                    log::warn!("app: failed to purge chunks for deleted note: {e}");
                 }
                 self.rescan_and_reindex();
             }
@@ -410,6 +703,7 @@ impl LontarApp {
             return;
         }
         self.rescan_and_reindex();
+        self.reindex_note(&note);
     }
 
     /// Loads the note `id` and applies a move operation (trash/restore)
@@ -673,6 +967,142 @@ impl LontarApp {
             self.apply_grid_action(action);
         }
     }
+
+    /// The Search tab (§Fase 7): a query box plus one unified, scrollable
+    /// result list mixing keyword and semantic hits (see `core::search`).
+    /// Clicking a result opens the underlying note directly when its
+    /// `doc_id` resolves to one; PDF results (Fase 8+) will need a
+    /// dedicated viewer to jump to instead.
+    fn show_search(&mut self, ui: &mut egui::Ui) {
+        let t_placeholder = self.t("search-placeholder");
+        let t_button = self.t("search-button");
+        let t_prompt = self.t("search-prompt");
+        let t_no_results = self.t("search-no-results");
+
+        let mut open_note: Option<Uuid> = None;
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.search_query)
+                        .hint_text(t_placeholder.as_str())
+                        .desired_width(320.0),
+                );
+                let enter_pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.button(&t_button).clicked() || enter_pressed {
+                    self.run_search();
+                }
+            });
+
+            if !self.search_status.is_empty() {
+                ui.colored_label(egui::Color32::RED, &self.search_status);
+            }
+            ui.separator();
+
+            if self.search_query.trim().is_empty() {
+                ui.label(&t_prompt);
+            } else if self.search_results.is_empty() {
+                ui.label(&t_no_results);
+            } else {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for hit in &self.search_results {
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                let title = hit
+                                    .chunk
+                                    .file_path
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| hit.chunk.file_path.display().to_string());
+                                if ui.link(egui::RichText::new(title).strong()).clicked() {
+                                    open_note = Some(hit.chunk.doc_id);
+                                }
+                                if let Some(score) = hit.score {
+                                    ui.label(format!("{:.0}%", score * 100.0));
+                                }
+                            });
+                            ui.label(query::snippet(&hit.chunk.text_content, 220));
+                        });
+                    }
+                });
+            }
+        });
+
+        if let Some(id) = open_note {
+            let found = self
+                .vault
+                .as_ref()
+                .and_then(|v| v.notes.iter().find(|n| n.frontmatter.id == id).cloned());
+            if let Some(note) = found {
+                self.open_note(note);
+            }
+        }
+    }
+
+    /// The Chat tab (§Fase 7, §3.4): a scrollable bubble transcript plus
+    /// an input row. Sending a message embeds the question in the
+    /// background, retrieves top-scoring context chunks once that
+    /// resolves, and streams the LLM's grounded reply token-by-token —
+    /// see `send_chat_message`/`start_chat_generation`/
+    /// `poll_search_and_chat`.
+    fn show_chat(&mut self, ui: &mut egui::Ui) {
+        let t_placeholder = self.t("chat-placeholder");
+        let t_send = self.t("chat-send");
+        let t_empty = self.t("chat-empty");
+        let t_sources = self.t("chat-sources");
+        let t_thinking = self.t("chat-thinking");
+
+        let busy = self.chat_pending_embed_id.is_some() || self.chat_pending_gen_id.is_some();
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::Panel::bottom("chat_input_row").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let input = egui::TextEdit::singleline(&mut self.chat_input)
+                        .hint_text(t_placeholder.as_str())
+                        .desired_width(f32::INFINITY);
+                    let response = ui.add(input);
+                    let enter_pressed =
+                        response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let can_send = !busy && !self.chat_input.trim().is_empty();
+                    let clicked = ui.add_enabled(can_send, egui::Button::new(&t_send)).clicked();
+                    if can_send && (clicked || enter_pressed) {
+                        self.send_chat_message();
+                    }
+                });
+            });
+
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if self.chat_messages.is_empty() {
+                    ui.label(&t_empty);
+                }
+                for msg in &self.chat_messages {
+                    let is_user = msg.role == ChatRole::User;
+                    let layout = if is_user {
+                        egui::Layout::top_down(egui::Align::Max)
+                    } else {
+                        egui::Layout::top_down(egui::Align::Min)
+                    };
+                    ui.with_layout(layout, |ui| {
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.set_max_width(ui.available_width() * 0.75);
+                            ui.label(&msg.text);
+                            if !msg.citations.is_empty() {
+                                ui.separator();
+                                ui.label(egui::RichText::new(&t_sources).small().weak());
+                                for citation in &msg.citations {
+                                    ui.label(egui::RichText::new(citation).small());
+                                }
+                            }
+                        });
+                    });
+                }
+                if busy {
+                    ui.label(&t_thinking);
+                }
+            });
+        });
+    }
 }
 
 /// Pre-translated labels shared by every rendered card, to avoid an
@@ -826,22 +1256,41 @@ impl eframe::App for LontarApp {
         // Autosave poll (§3.2.4: idle debounce 500ms-1s). Scoped so the
         // `self.editor` borrow ends before `rescan_and_reindex` needs
         // `&mut self` again.
-        let mut needs_reindex = false;
+        let mut needs_reindex: Option<Note> = None;
         if let Some(editor) = self.editor.as_mut() {
             if editor.should_autosave() {
                 match editor.autosave() {
-                    Ok(()) => needs_reindex = true,
+                    Ok(()) => needs_reindex = Some(editor.note.clone()),
                     Err(e) => log::warn!("app: autosave failed: {e}"),
                 }
             }
         }
-        if needs_reindex {
+        if let Some(note) = needs_reindex {
             self.rescan_and_reindex();
+            self.reindex_note(&note);
         }
+
+        // Fase 7 background-worker polling: writes chunk/embedding
+        // results into the SQLite cache, and dispatches search/chat
+        // query-embedding + generation events to whichever request is
+        // pending.
+        self.poll_indexer_results();
+        self.poll_search_and_chat(ui.ctx());
+
+        let t_nav_notes = self.t("nav-notes");
+        let t_nav_search = self.t("nav-search");
+        let t_nav_chat = self.t("nav-chat");
+        let show_tabs = self.vault.is_some() && self.editor.is_none();
 
         egui::Panel::top("top_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(self.t("app-title"));
+                if show_tabs {
+                    ui.separator();
+                    ui.selectable_value(&mut self.view, View::Notes, &t_nav_notes);
+                    ui.selectable_value(&mut self.view, View::Search, &t_nav_search);
+                    ui.selectable_value(&mut self.view, View::Chat, &t_nav_chat);
+                }
             });
         });
 
@@ -870,7 +1319,11 @@ impl eframe::App for LontarApp {
                 return;
             }
 
-            self.show_grid(ui);
+            match self.view {
+                View::Notes => self.show_grid(ui),
+                View::Search => self.show_search(ui),
+                View::Chat => self.show_chat(ui),
+            }
         });
     }
 }

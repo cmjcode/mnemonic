@@ -61,3 +61,20 @@ tag-rename = Ganti Nama
 tag-delete = Hapus
 
 grid-empty-filtered = Tidak ada catatan yang cocok.
+
+nav-notes = Catatan
+nav-search = Pencarian
+nav-chat = Obrolan
+
+search-placeholder = Cari catatan atau dokumen...
+search-button = Cari
+search-prompt = Ketik kata kunci untuk mencari di seluruh vault (judul, isi, dan makna semantik).
+search-no-results = Tidak ditemukan hasil yang cocok.
+search-error = Pencarian gagal
+
+chat-placeholder = Tanyakan sesuatu tentang catatan/dokumen Anda...
+chat-send = Kirim
+chat-empty = Mulai percakapan dengan bertanya tentang isi vault Anda.
+chat-sources = Sumber:
+chat-thinking = Memikirkan jawaban...
+chat-error = Gagal memproses pertanyaan

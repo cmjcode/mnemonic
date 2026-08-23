@@ -3,6 +3,7 @@
 mod app;
 mod core;
 mod i18n;
+mod llm;
 mod markdown;
 mod notes;
 mod pdf;

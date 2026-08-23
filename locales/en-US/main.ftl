@@ -61,3 +61,20 @@ tag-rename = Rename
 tag-delete = Delete
 
 grid-empty-filtered = No notes match.
+
+nav-notes = Notes
+nav-search = Search
+nav-chat = Chat
+
+search-placeholder = Search notes or documents...
+search-button = Search
+search-prompt = Type a keyword to search the whole vault (title, content, and semantic meaning).
+search-no-results = No matching results found.
+search-error = Search failed
+
+chat-placeholder = Ask something about your notes/documents...
+chat-send = Send
+chat-empty = Start a conversation by asking about your vault's contents.
+chat-sources = Sources:
+chat-thinking = Thinking...
+chat-error = Failed to process the question

@@ -9,8 +9,10 @@
 //! `core::storage::IndexStore` and writes each `IndexResult` into
 //! `IndexStore::replace_chunks` on the UI thread, matching the existing
 //! split where `app.rs` (not the watcher) does the actual index rebuild.
-//! Callers: `app.rs` (future wiring — see `core::storage::StoredChunk`
-//! for the read side this feeds).
+//! Also handles ad-hoc *query* embedding (§Fase 7's search tab + RAG
+//! chat) over a second channel: reusing this worker's already-lazily-
+//! loaded `Embedder` for a one-off query avoids paying a second model
+//! load for a role-specific worker. Callers: `app.rs`.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -45,6 +47,10 @@ impl DocType {
 pub enum IndexJob {
     Note(Note),
     Pdf(PathBuf),
+    /// A search/chat query string to embed (§Fase 7) — carries its own id
+    /// since, unlike notes/PDFs, a query has no natural `doc_id` to key
+    /// its result on.
+    Query { id: Uuid, text: String },
 }
 
 /// Chunks + embeddings for one document, ready for
@@ -79,6 +85,7 @@ impl Embedder for EmbeddingEngine {
 pub struct IndexingWorker {
     job_tx: Sender<IndexJob>,
     result_rx: Receiver<Result<IndexResult>>,
+    query_result_rx: Receiver<(Uuid, Result<Vec<f32>>)>,
     _handle: JoinHandle<()>,
 }
 
@@ -99,12 +106,14 @@ impl IndexingWorker {
     {
         let (job_tx, job_rx) = channel::<IndexJob>();
         let (result_tx, result_rx) = channel::<Result<IndexResult>>();
+        let (query_result_tx, query_result_rx) = channel::<(Uuid, Result<Vec<f32>>)>();
 
-        let handle = thread::spawn(move || run(job_rx, result_tx, make_embedder));
+        let handle = thread::spawn(move || run(job_rx, result_tx, query_result_tx, make_embedder));
 
         IndexingWorker {
             job_tx,
             result_rx,
+            query_result_rx,
             _handle: handle,
         }
     }
@@ -120,6 +129,16 @@ impl IndexingWorker {
         let _ = self.job_tx.send(IndexJob::Pdf(path));
     }
 
+    /// Queues a search/chat query string for embedding (§Fase 7),
+    /// returning the request id its result will be tagged with. Non-
+    /// blocking; the result — or nothing, if the worker thread has
+    /// already exited — arrives via `poll_query_results`.
+    pub fn submit_query(&self, text: String) -> Uuid {
+        let id = Uuid::new_v4();
+        let _ = self.job_tx.send(IndexJob::Query { id, text });
+        id
+    }
+
     /// Drains all results currently available without blocking. Call once
     /// per UI frame (same shape as `VaultWatcher::poll_rescan_needed`) and
     /// write each `Ok` result into `IndexStore::replace_chunks`; log `Err`
@@ -128,6 +147,21 @@ impl IndexingWorker {
         let mut out = Vec::new();
         loop {
             match self.result_rx.try_recv() {
+                Ok(result) => out.push(result),
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        out
+    }
+
+    /// Drains all query-embedding results currently available without
+    /// blocking. Call once per UI frame and match each id against the
+    /// request id returned by `submit_query` to tell concurrent search vs.
+    /// chat requests apart.
+    pub fn poll_query_results(&self) -> Vec<(Uuid, Result<Vec<f32>>)> {
+        let mut out = Vec::new();
+        loop {
+            match self.query_result_rx.try_recv() {
                 Ok(result) => out.push(result),
                 Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
             }
@@ -146,8 +180,12 @@ enum EmbedderState {
     Failed,
 }
 
-fn run<F>(job_rx: Receiver<IndexJob>, result_tx: Sender<Result<IndexResult>>, make_embedder: F)
-where
+fn run<F>(
+    job_rx: Receiver<IndexJob>,
+    result_tx: Sender<Result<IndexResult>>,
+    query_result_tx: Sender<(Uuid, Result<Vec<f32>>)>,
+    make_embedder: F,
+) where
     F: FnOnce() -> Result<Box<dyn Embedder>> + Send + 'static,
 {
     let mut state = EmbedderState::Pending(Box::new(make_embedder));
@@ -162,7 +200,16 @@ where
             match build() {
                 Ok(embedder) => state = EmbedderState::Ready(embedder),
                 Err(e) => {
-                    let _ = result_tx.send(Err(e.context("loading embedding model")));
+                    let msg = format!("{e:#}");
+                    match job {
+                        IndexJob::Query { id, .. } => {
+                            let _ = query_result_tx
+                                .send((id, Err(anyhow::anyhow!("loading embedding model: {msg}"))));
+                        }
+                        _ => {
+                            let _ = result_tx.send(Err(e.context("loading embedding model")));
+                        }
+                    }
                     continue;
                 }
             }
@@ -171,17 +218,42 @@ where
         let embedder = match &mut state {
             EmbedderState::Ready(e) => e.as_mut(),
             EmbedderState::Failed => {
-                let _ = result_tx.send(Err(anyhow::anyhow!(
-                    "embedding model failed to load earlier; skipping job"
-                )));
+                match job {
+                    IndexJob::Query { id, .. } => {
+                        let _ = query_result_tx.send((
+                            id,
+                            Err(anyhow::anyhow!(
+                                "embedding model failed to load earlier; skipping job"
+                            )),
+                        ));
+                    }
+                    _ => {
+                        let _ = result_tx.send(Err(anyhow::anyhow!(
+                            "embedding model failed to load earlier; skipping job"
+                        )));
+                    }
+                }
                 continue;
             }
             EmbedderState::Pending(_) => unreachable!("resolved above"),
         };
 
-        let result = process_job(job, embedder);
-        if result_tx.send(result).is_err() {
-            break; // receiver dropped (app shutting down)
+        match job {
+            IndexJob::Query { id, text } => {
+                let result = embedder
+                    .embed(&[text])
+                    .map(|mut v| v.pop().unwrap_or_default())
+                    .context("embedding search query");
+                if query_result_tx.send((id, result)).is_err() {
+                    break; // receiver dropped (app shutting down)
+                }
+            }
+            doc_job => {
+                let result = process_job(doc_job, embedder);
+                if result_tx.send(result).is_err() {
+                    break; // receiver dropped (app shutting down)
+                }
+            }
         }
     }
 }
@@ -191,6 +263,9 @@ where
 /// any channel/thread plumbing in the way.
 fn process_job(job: IndexJob, embedder: &mut dyn Embedder) -> Result<IndexResult> {
     let (doc_id, doc_type, source_path, chunks) = match job {
+        IndexJob::Query { .. } => {
+            unreachable!("Query jobs are handled directly in run(), never passed to process_job")
+        }
         IndexJob::Note(note) => {
             let doc_id = note.frontmatter.id;
             let source_path = note.path.clone();
@@ -263,6 +338,19 @@ mod tests {
         let mut out = Vec::new();
         while out.len() < n && Instant::now() < deadline {
             out.extend(worker.poll_results());
+            if out.len() < n {
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        out
+    }
+
+    /// Same as `wait_for_results` but for the query-embedding channel.
+    fn wait_for_query_results(worker: &IndexingWorker, n: usize) -> Vec<(Uuid, Result<Vec<f32>>)> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut out = Vec::new();
+        while out.len() < n && Instant::now() < deadline {
+            out.extend(worker.poll_query_results());
             if out.len() < n {
                 thread::sleep(Duration::from_millis(10));
             }
@@ -365,5 +453,43 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results.iter().any(|r| r.is_err()));
         assert!(results.iter().any(|r| r.is_ok()));
+    }
+
+    #[test]
+    fn submit_query_reports_the_embedded_vector_tagged_with_its_request_id() {
+        let worker = IndexingWorker::spawn_with(|| Ok(Box::new(FakeEmbedder) as Box<dyn Embedder>));
+        let id = worker.submit_query("satu dua tiga".to_string());
+
+        let results = wait_for_query_results(&worker, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, id);
+        assert_eq!(results[0].1.as_ref().unwrap(), &vec![3.0]); // FakeEmbedder: word count
+    }
+
+    #[test]
+    fn query_embedding_failure_is_reported_without_crashing_the_worker() {
+        let worker =
+            IndexingWorker::spawn_with(|| Ok(Box::new(FailingEmbedder) as Box<dyn Embedder>));
+        worker.submit_query("q".to_string());
+
+        let results = wait_for_query_results(&worker, 1);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].1.is_err());
+    }
+
+    #[test]
+    fn document_and_query_jobs_on_the_same_worker_arrive_on_their_own_channels() {
+        let worker = IndexingWorker::spawn_with(|| Ok(Box::new(FakeEmbedder) as Box<dyn Embedder>));
+        let dir = tempdir().unwrap();
+        worker.submit_note(Note::create(dir.path(), "Judul", "satu dua").unwrap());
+        let query_id = worker.submit_query("tiga".to_string());
+
+        let doc_results = wait_for_results(&worker, 1);
+        assert_eq!(doc_results.len(), 1);
+        assert!(doc_results[0].is_ok());
+
+        let query_results = wait_for_query_results(&worker, 1);
+        assert_eq!(query_results.len(), 1);
+        assert_eq!(query_results[0].0, query_id);
     }
 }
