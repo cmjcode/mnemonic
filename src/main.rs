@@ -5,6 +5,7 @@ mod core;
 mod i18n;
 mod markdown;
 mod notes;
+mod pdf;
 mod ui;
 
 fn main() -> eframe::Result<()> {
