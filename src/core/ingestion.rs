@@ -35,6 +35,14 @@ pub struct DocumentChunk {
     pub text_content: String,
 }
 
+/// Derives the stable `doc_id` for a PDF at `path` (see
+/// `PDF_DOC_NAMESPACE`). Exposed so callers that need a document's id even
+/// when it produced zero chunks (e.g. an empty/unreadable PDF) don't have
+/// to duplicate this derivation — used by `core::indexer`.
+pub fn pdf_doc_id(path: &Path) -> Uuid {
+    Uuid::new_v5(&PDF_DOC_NAMESPACE, path.to_string_lossy().as_bytes())
+}
+
 /// Chunks a note's body — the same retrieval pipeline that PDFs feed also
 /// covers the vault's own `.md` files (§3.3 point 1). `doc_id` reuses the
 /// note's own frontmatter id, so re-chunking after an edit keeps it
@@ -56,7 +64,7 @@ pub fn chunk_note(note: &Note) -> Vec<DocumentChunk> {
 /// its 1-based page number so citations (§3.4 point 4) can jump straight
 /// to the source page.
 pub fn chunk_pdf(path: &Path) -> Result<Vec<DocumentChunk>> {
-    let doc_id = Uuid::new_v5(&PDF_DOC_NAMESPACE, path.to_string_lossy().as_bytes());
+    let doc_id = pdf_doc_id(path);
     let pages =
         pdf::extract_pages(path).with_context(|| format!("ingesting PDF {}", path.display()))?;
 

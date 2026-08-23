@@ -63,6 +63,24 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
+/// Serializes an embedding vector to little-endian `f32` bytes for the
+/// SQLite `BLOB` cache column (`core::storage`'s `document_chunks` table,
+/// §5). Paired with `bytes_to_embedding` for the read side.
+pub fn embedding_to_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Deserializes bytes produced by `embedding_to_bytes` back into a vector.
+/// A trailing partial `f32` (fewer than 4 leftover bytes — shouldn't
+/// happen for data written by this module, but a corrupt/foreign BLOB is
+/// possible) is silently dropped rather than panicking.
+pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
 /// Ranks `candidates` against `query_embedding` by cosine similarity,
 /// descending, returning at most the top `k` as `(candidate_index, score)`
 /// — the "Top-K Chunks" retrieval step (§3.3 point 3).
@@ -131,6 +149,21 @@ mod tests {
         let query = vec![1.0, 0.0];
         let candidates = vec![vec![1.0, 0.0]];
         assert_eq!(top_k(&query, &candidates, 5).len(), 1);
+    }
+
+    #[test]
+    fn embedding_bytes_round_trip() {
+        let v = vec![0.0, -1.5, 3.25, f32::MIN, f32::MAX, 1e-30];
+        let bytes = embedding_to_bytes(&v);
+        assert_eq!(bytes.len(), v.len() * 4);
+        assert_eq!(bytes_to_embedding(&bytes), v);
+    }
+
+    #[test]
+    fn bytes_to_embedding_drops_a_trailing_partial_f32() {
+        let mut bytes = embedding_to_bytes(&[1.0, 2.0]);
+        bytes.push(0xFF); // 9 bytes: 2 whole f32s + 1 stray byte
+        assert_eq!(bytes_to_embedding(&bytes), vec![1.0, 2.0]);
     }
 }
 
