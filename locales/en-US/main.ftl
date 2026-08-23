@@ -28,3 +28,36 @@ editor-backlinks = Backlinks
 editor-backlinks-empty = No other notes link here yet.
 editor-word-count = { $count } words
 editor-reading-time = ~{ $minutes } min read
+
+sidebar-all = All Notes
+sidebar-archived = Archived
+sidebar-trash = Trash
+sidebar-tags = Labels
+sidebar-manage-tags = Manage Labels
+
+sort-modified = Last Modified
+sort-created = Date Created
+sort-title = Title
+sort-color = Color
+
+selection-mode-on = Select Multiple
+selection-mode-off = Cancel Selection
+selection-archive = Archive Selected
+selection-trash = Trash Selected
+
+card-archive = Archive
+card-unarchive = Unarchive
+card-trash = Move to Trash
+card-restore = Restore
+card-delete-permanent = Delete Permanently
+
+confirm-delete-title = Delete Permanently?
+confirm-delete-body = This note will be permanently deleted and cannot be recovered.
+confirm-yes = Yes, Delete
+confirm-cancel = Cancel
+
+tag-manager-title = Manage Labels
+tag-rename = Rename
+tag-delete = Delete
+
+grid-empty-filtered = No notes match.

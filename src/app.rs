@@ -5,9 +5,11 @@
 //! Keep-style grid UI (colors, pinning, drag-reorder) lands in Fase 3.
 //! Callers: `main.rs`.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use egui_commonmark::CommonMarkCache;
+use uuid::Uuid;
 
 use crate::core::IndexStore;
 use crate::i18n::LocaleManager;
@@ -15,7 +17,9 @@ use crate::markdown::editor::{
     char_index_to_byte_offset, slash_menu_triggered, slash_templates, wikilink_autocomplete_query,
 };
 use crate::markdown::{self, wikilink, EditorMode, MarkdownEditor, WikilinkIndex};
-use crate::notes::{trash, Note, Vault, VaultWatcher};
+use crate::notes::query::{self, GridFilter, SortMode};
+use crate::notes::{tags, trash, Note, Vault, VaultWatcher};
+use crate::ui::theme;
 
 pub struct LontarApp {
     locales: LocaleManager,
@@ -26,6 +30,14 @@ pub struct LontarApp {
     status: String,
     editor: Option<MarkdownEditor>,
     markdown_cache: CommonMarkCache,
+    grid_filter: GridFilter,
+    sort_mode: SortMode,
+    search_text: String,
+    selection_mode: bool,
+    selected: HashSet<Uuid>,
+    show_label_manager: bool,
+    tag_rename: Option<(String, String)>,
+    confirm_delete: Option<Uuid>,
 }
 
 impl LontarApp {
@@ -42,6 +54,14 @@ impl LontarApp {
             status: String::new(),
             editor: None,
             markdown_cache: CommonMarkCache::default(),
+            grid_filter: GridFilter::All,
+            sort_mode: SortMode::Modified,
+            search_text: String::new(),
+            selection_mode: false,
+            selected: HashSet::new(),
+            show_label_manager: false,
+            tag_rename: None,
+            confirm_delete: None,
         };
 
         if let Some(result) = Vault::load_last() {
@@ -313,6 +333,475 @@ impl LontarApp {
             self.editor = Some(editor);
         }
     }
+
+    /// Applies one grid action against the vault/disk, then re-syncs the
+    /// in-memory index. Called once per accumulated `GridAction` after
+    /// `show_grid`'s `egui` closures have all returned.
+    fn apply_grid_action(&mut self, action: GridAction) {
+        match action {
+            GridAction::Open(path) => {
+                let found = self
+                    .vault
+                    .as_ref()
+                    .and_then(|v| v.notes.iter().find(|n| n.path == path).cloned());
+                if let Some(note) = found {
+                    self.open_note(note);
+                }
+            }
+            GridAction::TogglePin(id) => self.mutate_note(id, |n| n.frontmatter.pinned = !n.frontmatter.pinned),
+            GridAction::SetColor(id, color) => self.mutate_note(id, |n| n.frontmatter.color = color),
+            GridAction::ToggleArchived(id) => {
+                self.mutate_note(id, |n| n.frontmatter.archived = !n.frontmatter.archived)
+            }
+            GridAction::Trash(id) => self.move_note(id, |n, root| n.move_to_trash(root)),
+            GridAction::Restore(id) => self.move_note(id, |n, root| n.restore_from_trash(root)),
+            GridAction::DeletePermanently(id) => {
+                let Some(vault) = self.vault.as_ref() else { return };
+                let Some(note) = vault.notes.iter().find(|n| n.frontmatter.id == id).cloned() else {
+                    return;
+                };
+                if let Err(e) = note.delete_permanently() {
+                    log::warn!("app: failed to permanently delete note: {e}");
+                }
+                self.rescan_and_reindex();
+            }
+            GridAction::BatchArchive(ids) => {
+                for id in ids {
+                    self.mutate_note(id, |n| n.frontmatter.archived = true);
+                }
+            }
+            GridAction::BatchTrash(ids) => {
+                for id in ids {
+                    self.move_note(id, |n, root| n.move_to_trash(root));
+                }
+            }
+            GridAction::RenameTag(old, new) => {
+                let Some(vault) = self.vault.as_mut() else { return };
+                for i in tags::rename_tag(&mut vault.notes, &old, &new) {
+                    if let Err(e) = vault.notes[i].save() {
+                        log::warn!("app: failed to save note after tag rename: {e}");
+                    }
+                }
+                self.rescan_and_reindex();
+            }
+            GridAction::DeleteTag(tag) => {
+                let Some(vault) = self.vault.as_mut() else { return };
+                for i in tags::remove_tag(&mut vault.notes, &tag) {
+                    if let Err(e) = vault.notes[i].save() {
+                        log::warn!("app: failed to save note after tag delete: {e}");
+                    }
+                }
+                self.rescan_and_reindex();
+            }
+        }
+    }
+
+    /// Loads the note `id`, applies `f` to its frontmatter, saves, and
+    /// re-syncs the index. Used for the simple single-field toggles (pin,
+    /// color, archive).
+    fn mutate_note(&mut self, id: Uuid, f: impl FnOnce(&mut Note)) {
+        let Some(vault) = self.vault.as_ref() else { return };
+        let Some(mut note) = vault.notes.iter().find(|n| n.frontmatter.id == id).cloned() else {
+            return;
+        };
+        f(&mut note);
+        if let Err(e) = note.save() {
+            log::warn!("app: failed to save note: {e}");
+            return;
+        }
+        self.rescan_and_reindex();
+    }
+
+    /// Loads the note `id` and applies a move operation (trash/restore)
+    /// that needs the vault root, then re-syncs the index.
+    fn move_note(&mut self, id: Uuid, f: impl FnOnce(Note, &std::path::Path) -> anyhow::Result<Note>) {
+        let Some(vault) = self.vault.as_ref() else { return };
+        let Some(note) = vault.notes.iter().find(|n| n.frontmatter.id == id).cloned() else {
+            return;
+        };
+        let root = vault.root.clone();
+        if let Err(e) = f(note, &root) {
+            log::warn!("app: failed to move note: {e}");
+            return;
+        }
+        self.rescan_and_reindex();
+    }
+
+    /// The Notes Grid (§3.1.2/§3.1.3): sidebar filters + tags, search,
+    /// sort, the card grid, multi-select batch actions, and the label
+    /// manager. Everything the `egui` closures below touch is a plain
+    /// local (cloned app state, mutated locally, written back at the
+    /// end) — same reasoning as `show_editor`'s doc comment. Note: this
+    /// uses a flex-wrap layout rather than true variable-height masonry
+    /// packing (out of reach for a reasonable effort in immediate-mode
+    /// `egui`), and manual drag-to-reorder is deferred past this phase.
+    fn show_grid(&mut self, ui: &mut egui::Ui) {
+        let t_new = self.t("notes-new");
+        let t_sidebar_all = self.t("sidebar-all");
+        let t_sidebar_archived = self.t("sidebar-archived");
+        let t_sidebar_trash = self.t("sidebar-trash");
+        let t_sidebar_tags = self.t("sidebar-tags");
+        let t_manage_tags = self.t("sidebar-manage-tags");
+        let t_sort_modified = self.t("sort-modified");
+        let t_sort_created = self.t("sort-created");
+        let t_sort_title = self.t("sort-title");
+        let t_sort_color = self.t("sort-color");
+        let t_selection_on = self.t("selection-mode-on");
+        let t_selection_off = self.t("selection-mode-off");
+        let t_selection_archive = self.t("selection-archive");
+        let t_selection_trash = self.t("selection-trash");
+        let t_empty = self.t("vault-empty");
+        let t_empty_filtered = self.t("grid-empty-filtered");
+        let t_confirm_title = self.t("confirm-delete-title");
+        let t_confirm_body = self.t("confirm-delete-body");
+        let t_confirm_yes = self.t("confirm-yes");
+        let t_confirm_cancel = self.t("confirm-cancel");
+        let t_tag_manager_title = self.t("tag-manager-title");
+        let t_tag_rename = self.t("tag-rename");
+        let t_tag_delete = self.t("tag-delete");
+        let card = CardStrings {
+            pin: self.t("notes-pin"),
+            unpin: self.t("notes-unpin"),
+            archive: self.t("card-archive"),
+            unarchive: self.t("card-unarchive"),
+            trash: self.t("card-trash"),
+            restore: self.t("card-restore"),
+            delete_permanent: self.t("card-delete-permanent"),
+        };
+
+        let notes: Vec<Note> = self.vault.as_ref().map(|v| v.notes.clone()).unwrap_or_default();
+        let all_tags = tags::all_tags(&notes);
+
+        let mut filter = self.grid_filter.clone();
+        let mut sort_mode = self.sort_mode;
+        let mut search_text = self.search_text.clone();
+        let mut selection_mode = self.selection_mode;
+        let mut selected = self.selected.clone();
+        let mut show_label_manager = self.show_label_manager;
+        let mut tag_rename = self.tag_rename.clone();
+        let mut confirm_delete = self.confirm_delete;
+        let mut actions: Vec<GridAction> = Vec::new();
+
+        egui::Panel::left("grid_sidebar")
+            .resizable(true)
+            .default_size(180.0)
+            .show(ui, |ui| {
+                if ui.selectable_label(filter == GridFilter::All, &t_sidebar_all).clicked() {
+                    filter = GridFilter::All;
+                }
+                if ui
+                    .selectable_label(filter == GridFilter::Archived, &t_sidebar_archived)
+                    .clicked()
+                {
+                    filter = GridFilter::Archived;
+                }
+                if ui
+                    .selectable_label(filter == GridFilter::Trashed, &t_sidebar_trash)
+                    .clicked()
+                {
+                    filter = GridFilter::Trashed;
+                }
+
+                ui.separator();
+                ui.label(&t_sidebar_tags);
+                for (tag, count) in &all_tags {
+                    let is_selected = matches!(&filter, GridFilter::Tag(t) if t.eq_ignore_ascii_case(tag));
+                    let mut label = egui::RichText::new(format!("#{tag} ({count})"));
+                    label = label.color(theme::tag_color(tag));
+                    if ui.selectable_label(is_selected, label).clicked() {
+                        filter = GridFilter::Tag(tag.clone());
+                    }
+                }
+                if ui.button(&t_manage_tags).clicked() {
+                    show_label_manager = true;
+                }
+            });
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.text_edit_singleline(&mut self.quick_capture_text);
+                if ui.button(&t_new).clicked() && !self.quick_capture_text.is_empty() {
+                    if let Some(vault) = self.vault.as_mut() {
+                        match Note::create(&vault.root, &self.quick_capture_text, "") {
+                            Ok(note) => {
+                                self.quick_capture_text.clear();
+                                actions.push(GridAction::Open(note.path.clone()));
+                            }
+                            Err(e) => log::warn!("app: failed to create note: {e}"),
+                        }
+                    }
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut search_text).hint_text("🔍"));
+                egui::ComboBox::from_id_salt("sort_mode")
+                    .selected_text(match sort_mode {
+                        SortMode::Modified => &t_sort_modified,
+                        SortMode::Created => &t_sort_created,
+                        SortMode::Title => &t_sort_title,
+                        SortMode::Color => &t_sort_color,
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut sort_mode, SortMode::Modified, &t_sort_modified);
+                        ui.selectable_value(&mut sort_mode, SortMode::Created, &t_sort_created);
+                        ui.selectable_value(&mut sort_mode, SortMode::Title, &t_sort_title);
+                        ui.selectable_value(&mut sort_mode, SortMode::Color, &t_sort_color);
+                    });
+                let selection_label = if selection_mode { &t_selection_off } else { &t_selection_on };
+                if ui.button(selection_label).clicked() {
+                    selection_mode = !selection_mode;
+                    if !selection_mode {
+                        selected.clear();
+                    }
+                }
+            });
+
+            if selection_mode && !selected.is_empty() {
+                ui.horizontal(|ui| {
+                    if ui.button(&t_selection_archive).clicked() {
+                        actions.push(GridAction::BatchArchive(selected.iter().copied().collect()));
+                        selected.clear();
+                    }
+                    if ui.button(&t_selection_trash).clicked() {
+                        actions.push(GridAction::BatchTrash(selected.iter().copied().collect()));
+                        selected.clear();
+                    }
+                });
+            }
+
+            ui.separator();
+
+            let mut visible = query::filter_notes(&notes, &filter, &search_text);
+            query::sort_notes(&mut visible, sort_mode);
+            let in_trash_view = filter == GridFilter::Trashed;
+
+            if notes.is_empty() {
+                ui.label(&t_empty);
+            } else if visible.is_empty() {
+                ui.label(&t_empty_filtered);
+            } else {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for note in &visible {
+                            render_note_card(
+                                ui,
+                                note,
+                                &card,
+                                selection_mode,
+                                selected.contains(&note.frontmatter.id),
+                                in_trash_view,
+                                &mut actions,
+                                &mut selected,
+                                &mut confirm_delete,
+                            );
+                        }
+                    });
+                });
+            }
+
+            if !self.status.is_empty() {
+                ui.separator();
+                ui.colored_label(egui::Color32::RED, &self.status);
+            }
+        });
+
+        if let Some(id) = confirm_delete {
+            egui::Window::new(&t_confirm_title)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label(&t_confirm_body);
+                    ui.horizontal(|ui| {
+                        if ui.button(&t_confirm_yes).clicked() {
+                            actions.push(GridAction::DeletePermanently(id));
+                            confirm_delete = None;
+                        }
+                        if ui.button(&t_confirm_cancel).clicked() {
+                            confirm_delete = None;
+                        }
+                    });
+                });
+        }
+
+        if show_label_manager {
+            egui::Window::new(&t_tag_manager_title)
+                .collapsible(false)
+                .show(ui.ctx(), |ui| {
+                    for (tag, count) in &all_tags {
+                        ui.horizontal(|ui| {
+                            match &mut tag_rename {
+                                Some((target, draft)) if target == tag => {
+                                    ui.text_edit_singleline(draft);
+                                    if ui.button(&t_tag_rename).clicked() {
+                                        actions.push(GridAction::RenameTag(target.clone(), draft.clone()));
+                                        tag_rename = None;
+                                    }
+                                    if ui.button(&t_confirm_cancel).clicked() {
+                                        tag_rename = None;
+                                    }
+                                }
+                                _ => {
+                                    ui.colored_label(theme::tag_color(tag), format!("#{tag} ({count})"));
+                                    if ui.button(&t_tag_rename).clicked() {
+                                        tag_rename = Some((tag.clone(), tag.clone()));
+                                    }
+                                    if ui.button(&t_tag_delete).clicked() {
+                                        actions.push(GridAction::DeleteTag(tag.clone()));
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    ui.separator();
+                    if ui.button(&t_confirm_cancel).clicked() {
+                        show_label_manager = false;
+                    }
+                });
+        }
+
+        self.grid_filter = filter;
+        self.sort_mode = sort_mode;
+        self.search_text = search_text;
+        self.selection_mode = selection_mode;
+        self.selected = selected;
+        self.show_label_manager = show_label_manager;
+        self.tag_rename = tag_rename;
+        self.confirm_delete = confirm_delete;
+
+        for action in actions {
+            self.apply_grid_action(action);
+        }
+    }
+}
+
+/// Pre-translated labels shared by every rendered card, to avoid an
+/// `i18n` lookup per card per frame.
+struct CardStrings {
+    pin: String,
+    unpin: String,
+    archive: String,
+    unarchive: String,
+    trash: String,
+    restore: String,
+    delete_permanent: String,
+}
+
+/// What the user asked for while looking at the grid. `app.rs::apply_grid_action`
+/// applies these against the vault/disk after `show_grid`'s `egui` closures
+/// have all returned — this function never touches disk itself.
+enum GridAction {
+    Open(PathBuf),
+    TogglePin(Uuid),
+    SetColor(Uuid, Option<String>),
+    ToggleArchived(Uuid),
+    Trash(Uuid),
+    Restore(Uuid),
+    DeletePermanently(Uuid),
+    BatchArchive(Vec<Uuid>),
+    BatchTrash(Vec<Uuid>),
+    RenameTag(String, String),
+    DeleteTag(String),
+}
+
+/// Renders one note card: title, snippet, checklist progress, tag chips,
+/// and an always-visible action row (§3.1.2's per-card toolbar is
+/// hover-only in the spec; always-visible is a simpler, equally
+/// functional substitute in immediate-mode `egui`).
+#[allow(clippy::too_many_arguments)]
+fn render_note_card(
+    ui: &mut egui::Ui,
+    note: &Note,
+    card: &CardStrings,
+    selection_mode: bool,
+    is_selected: bool,
+    in_trash_view: bool,
+    actions: &mut Vec<GridAction>,
+    selected: &mut HashSet<Uuid>,
+    confirm_delete: &mut Option<Uuid>,
+) {
+    let id = note.frontmatter.id;
+    let fill = theme::color_for(note.frontmatter.color.as_deref());
+    let mut frame = egui::Frame::group(ui.style());
+    if let Some(color) = fill {
+        frame = frame.fill(color);
+    }
+
+    frame.show(ui, |ui| {
+        ui.set_width(220.0);
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                if selection_mode {
+                    let mut checked = is_selected;
+                    if ui.checkbox(&mut checked, "").changed() {
+                        if checked {
+                            selected.insert(id);
+                        } else {
+                            selected.remove(&id);
+                        }
+                    }
+                }
+                if note.frontmatter.pinned {
+                    ui.label("📌");
+                }
+                ui.strong(note.frontmatter.title.as_str());
+            });
+
+            ui.label(query::snippet(&note.body, 140));
+
+            if let Some((done, total)) = note.checklist_progress() {
+                ui.label(format!("✅ {done}/{total}"));
+            }
+
+            if !note.frontmatter.tags.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for tag in &note.frontmatter.tags {
+                        ui.colored_label(theme::tag_color(tag), format!("#{tag}"));
+                    }
+                });
+            }
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("📂").on_hover_text("Buka").clicked() {
+                    actions.push(GridAction::Open(note.path.clone()));
+                }
+
+                if in_trash_view {
+                    if ui.button(&card.restore).clicked() {
+                        actions.push(GridAction::Restore(id));
+                    }
+                    if ui.button(&card.delete_permanent).clicked() {
+                        *confirm_delete = Some(id);
+                    }
+                } else {
+                    let pin_label = if note.frontmatter.pinned { &card.unpin } else { &card.pin };
+                    if ui.button(pin_label).clicked() {
+                        actions.push(GridAction::TogglePin(id));
+                    }
+
+                    ui.menu_button("🎨", |ui| {
+                        for (name, color) in theme::PALETTE {
+                            if ui.add(egui::Button::new("  ").fill(*color)).clicked() {
+                                actions.push(GridAction::SetColor(id, Some((*name).to_string())));
+                            }
+                        }
+                        if ui.button("✕").clicked() {
+                            actions.push(GridAction::SetColor(id, None));
+                        }
+                    });
+
+                    let archive_label = if note.frontmatter.archived { &card.unarchive } else { &card.archive };
+                    if ui.button(archive_label).clicked() {
+                        actions.push(GridAction::ToggleArchived(id));
+                    }
+                    if ui.button(&card.trash).clicked() {
+                        actions.push(GridAction::Trash(id));
+                    }
+                }
+            });
+        });
+    });
 }
 
 fn locales_dir() -> PathBuf {
@@ -381,59 +870,7 @@ impl eframe::App for LontarApp {
                 return;
             }
 
-            ui.horizontal(|ui| {
-                ui.text_edit_singleline(&mut self.quick_capture_text);
-                if ui.button(self.t("notes-new")).clicked() && !self.quick_capture_text.is_empty()
-                {
-                    if let Some(vault) = self.vault.as_mut() {
-                        match Note::create(&vault.root, &self.quick_capture_text, "") {
-                            Ok(note) => {
-                                self.quick_capture_text.clear();
-                                self.rescan_and_reindex();
-                                self.open_note(note);
-                            }
-                            Err(e) => log::warn!("app: failed to create note: {e}"),
-                        }
-                    }
-                }
-            });
-
-            ui.separator();
-
-            let mut notes: Vec<&Note> = self
-                .vault
-                .as_ref()
-                .map(|v| v.notes.iter().filter(|n| !n.frontmatter.trashed).collect())
-                .unwrap_or_default();
-            notes.sort_by(|a, b| b.frontmatter.modified.cmp(&a.frontmatter.modified));
-
-            let mut clicked_path: Option<PathBuf> = None;
-            if notes.is_empty() {
-                ui.label(self.t("vault-empty"));
-            } else {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for note in &notes {
-                        if ui.button(note.frontmatter.title.as_str()).clicked() {
-                            clicked_path = Some(note.path.clone());
-                        }
-                    }
-                });
-            }
-
-            if !self.status.is_empty() {
-                ui.separator();
-                ui.colored_label(egui::Color32::RED, &self.status);
-            }
-
-            if let Some(path) = clicked_path {
-                let clicked_note = self
-                    .vault
-                    .as_ref()
-                    .and_then(|v| v.notes.iter().find(|n| n.path == path).cloned());
-                if let Some(note) = clicked_note {
-                    self.open_note(note);
-                }
-            }
+            self.show_grid(ui);
         });
     }
 }

@@ -28,3 +28,36 @@ editor-backlinks = Tautan Balik
 editor-backlinks-empty = Belum ada catatan lain yang menautkan ke sini.
 editor-word-count = { $count } kata
 editor-reading-time = ~{ $minutes } menit baca
+
+sidebar-all = Semua Catatan
+sidebar-archived = Diarsipkan
+sidebar-trash = Sampah
+sidebar-tags = Label
+sidebar-manage-tags = Kelola Label
+
+sort-modified = Terakhir Diubah
+sort-created = Tanggal Dibuat
+sort-title = Judul
+sort-color = Warna
+
+selection-mode-on = Pilih Banyak
+selection-mode-off = Batal Pilih
+selection-archive = Arsipkan Terpilih
+selection-trash = Sampah-kan Terpilih
+
+card-archive = Arsipkan
+card-unarchive = Batalkan Arsip
+card-trash = Ke Sampah
+card-restore = Pulihkan
+card-delete-permanent = Hapus Permanen
+
+confirm-delete-title = Hapus Permanen?
+confirm-delete-body = Catatan ini akan dihapus permanen dan tidak bisa dikembalikan.
+confirm-yes = Ya, Hapus
+confirm-cancel = Batal
+
+tag-manager-title = Kelola Label
+tag-rename = Ganti Nama
+tag-delete = Hapus
+
+grid-empty-filtered = Tidak ada catatan yang cocok.

@@ -86,6 +86,62 @@ impl Note {
         self.path = new_path;
         Ok(self)
     }
+
+    /// Move a trashed note back out of `.trash/` and clear `trashed`
+    /// (§3.1.4 "Sampah"). Always restores to `vault_root` directly rather
+    /// than its original subfolder, since that original location isn't
+    /// tracked — a known simplification.
+    pub fn restore_from_trash(mut self, vault_root: &Path) -> Result<Note> {
+        self.frontmatter.trashed = false;
+        let file_name = self
+            .path
+            .file_name()
+            .context("note path has no file name")?;
+        let new_path = vault_root.join(file_name);
+
+        self.save()?; // persist trashed:false at the old (.trash) path first
+        std::fs::rename(&self.path, &new_path)
+            .with_context(|| format!("restoring note from trash {}", new_path.display()))?;
+        self.path = new_path;
+        Ok(self)
+    }
+
+    /// Permanently delete the note file from disk — the manual "Hapus
+    /// Permanen" action in the Sampah view, as opposed to the automatic
+    /// 30-day purge in `notes::trash::purge_expired`.
+    pub fn delete_permanently(self) -> Result<()> {
+        std::fs::remove_file(&self.path)
+            .with_context(|| format!("permanently deleting note file {}", self.path.display()))
+    }
+
+    /// Checklist completion for the grid card badge (§3.1.2 "3/5
+    /// selesai"): counts `- [ ]`/`- [x]` items in the body. `None` if the
+    /// note has no checklist items, so callers can hide the badge.
+    pub fn checklist_progress(&self) -> Option<(usize, usize)> {
+        let mut total = 0;
+        let mut done = 0;
+        for line in self.body.lines() {
+            let trimmed = line.trim_start();
+            let Some(rest) = trimmed
+                .strip_prefix("- ")
+                .or_else(|| trimmed.strip_prefix("* "))
+                .or_else(|| trimmed.strip_prefix("+ "))
+            else {
+                continue;
+            };
+            if rest.starts_with("[ ]") {
+                total += 1;
+            } else if rest.starts_with("[x]") || rest.starts_with("[X]") {
+                total += 1;
+                done += 1;
+            }
+        }
+        if total == 0 {
+            None
+        } else {
+            Some((done, total))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -131,5 +187,49 @@ mod tests {
         assert!(!original_path.exists());
         assert!(trashed.path.exists());
         assert_eq!(trashed.path.parent().unwrap().file_name().unwrap(), ".trash");
+    }
+
+    #[test]
+    fn restore_from_trash_clears_flag_and_moves_back() {
+        let dir = tempdir().unwrap();
+        let note = Note::create(dir.path(), "Pulihkan Saya", "isi").unwrap();
+        let trashed = note.move_to_trash(dir.path()).unwrap();
+
+        let restored = trashed.restore_from_trash(dir.path()).unwrap();
+
+        assert!(!restored.frontmatter.trashed);
+        assert_eq!(restored.path.parent().unwrap(), dir.path());
+        assert!(restored.path.exists());
+    }
+
+    #[test]
+    fn delete_permanently_removes_file() {
+        let dir = tempdir().unwrap();
+        let note = Note::create(dir.path(), "Musnah", "isi").unwrap();
+        let path = note.path.clone();
+
+        note.delete_permanently().unwrap();
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn checklist_progress_counts_done_and_total() {
+        let dir = tempdir().unwrap();
+        let note = Note::create(
+            dir.path(),
+            "Belanja",
+            "- [ ] Beras\n- [x] Telur\n- [X] Gula\nbukan checklist\n",
+        )
+        .unwrap();
+
+        assert_eq!(note.checklist_progress(), Some((2, 3)));
+    }
+
+    #[test]
+    fn checklist_progress_none_without_checklist_items() {
+        let dir = tempdir().unwrap();
+        let note = Note::create(dir.path(), "Bebas", "cuma teks biasa").unwrap();
+        assert_eq!(note.checklist_progress(), None);
     }
 }
