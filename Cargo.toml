@@ -19,8 +19,17 @@ fluent-bundle = "0.16.0"
 fluent-syntax = "0.12.0"
 hf-hub = "0.5.0"
 log = "0.4.34"
+lopdf = "0.42.0"
 notify = "8.2.0"
 pdf-extract = "0.12.0"
+# Dynamically loads Google's PDFium at runtime (via `libloading`), never
+# linked at compile time — building/testing this crate never needs the
+# native library present, only actual page-rendering calls do (§Fase 8;
+# see `pdf::renderer`'s doc comment for the fallback story when it's
+# missing). `image_latest`/`thread_safe` (the other two default features)
+# are dropped since we only need raw RGBA bytes for an egui texture, not
+# `image::DynamicImage` conversion or cross-thread bitmap handles.
+pdfium-render = { version = "0.9", default-features = false, features = ["pdfium_latest"] }
 rfd = "0.17.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -33,5 +42,4 @@ walkdir = "2.5.0"
 
 [dev-dependencies]
 filetime = "0.2.29"
-lopdf = "0.42.0"
 tempfile = "3.27.0"

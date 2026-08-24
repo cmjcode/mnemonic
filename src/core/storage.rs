@@ -68,7 +68,11 @@ impl IndexStore {
                     indexed_at   TEXT NOT NULL      -- RFC3339
                 );
                 CREATE INDEX IF NOT EXISTS idx_document_chunks_doc_id
-                    ON document_chunks(doc_id);",
+                    ON document_chunks(doc_id);
+                CREATE TABLE IF NOT EXISTS pdf_documents (
+                    path        TEXT PRIMARY KEY,
+                    imported_at TEXT NOT NULL     -- RFC3339
+                );",
             )
             .context("creating index schema")?;
         Ok(())
@@ -237,6 +241,48 @@ impl IndexStore {
             });
         }
         Ok(out)
+    }
+
+    /// Registers `path` as an imported PDF (§Fase 8) — re-importing the
+    /// same path just refreshes its `imported_at` timestamp rather than
+    /// erroring, since `path` is the primary key.
+    pub fn add_pdf_document(&self, path: &Path) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO pdf_documents (path, imported_at) VALUES (?1, ?2)
+                 ON CONFLICT(path) DO UPDATE SET imported_at = excluded.imported_at",
+                params![path.to_string_lossy(), Utc::now().to_rfc3339()],
+            )
+            .context("adding pdf document")?;
+        Ok(())
+    }
+
+    /// All imported PDF paths, most recently imported first — backs the
+    /// PDF library tab (§Fase 8).
+    pub fn list_pdf_documents(&self) -> Result<Vec<PathBuf>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM pdf_documents ORDER BY imported_at DESC")
+            .context("preparing list_pdf_documents query")?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .context("querying list_pdf_documents")?;
+        let mut paths = Vec::new();
+        for row in rows {
+            paths.push(PathBuf::from(row.context("reading pdf_documents row")?));
+        }
+        Ok(paths)
+    }
+
+    /// Removes `path` from the imported-PDF list. Does not touch its
+    /// cached `document_chunks` — callers that want those gone too should
+    /// also call `delete_chunks_for_doc` with the PDF's `doc_id`
+    /// (`core::ingestion::pdf_doc_id`), same as note deletion does.
+    pub fn remove_pdf_document(&self, path: &Path) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM pdf_documents WHERE path = ?1", params![path.to_string_lossy()])
+            .context("removing pdf document")?;
+        Ok(())
     }
 }
 
@@ -409,5 +455,35 @@ mod tests {
 
         store.replace_chunks(doc_id, "note", &[]).unwrap();
         assert_eq!(store.chunk_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn add_pdf_document_is_listed_most_recently_imported_first() {
+        let store = IndexStore::open_in_memory().unwrap();
+        store.add_pdf_document(Path::new("a.pdf")).unwrap();
+        store.add_pdf_document(Path::new("b.pdf")).unwrap();
+
+        let listed = store.list_pdf_documents().unwrap();
+        assert_eq!(listed, vec![PathBuf::from("b.pdf"), PathBuf::from("a.pdf")]);
+    }
+
+    #[test]
+    fn re_adding_the_same_pdf_path_does_not_duplicate_it() {
+        let store = IndexStore::open_in_memory().unwrap();
+        store.add_pdf_document(Path::new("a.pdf")).unwrap();
+        store.add_pdf_document(Path::new("a.pdf")).unwrap();
+
+        assert_eq!(store.list_pdf_documents().unwrap(), vec![PathBuf::from("a.pdf")]);
+    }
+
+    #[test]
+    fn remove_pdf_document_drops_only_that_path() {
+        let store = IndexStore::open_in_memory().unwrap();
+        store.add_pdf_document(Path::new("a.pdf")).unwrap();
+        store.add_pdf_document(Path::new("b.pdf")).unwrap();
+
+        store.remove_pdf_document(Path::new("a.pdf")).unwrap();
+
+        assert_eq!(store.list_pdf_documents().unwrap(), vec![PathBuf::from("b.pdf")]);
     }
 }

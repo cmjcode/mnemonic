@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use egui_commonmark::CommonMarkCache;
 use uuid::Uuid;
 
+use crate::core::ingestion::pdf_doc_id;
 use crate::core::search::{self, SearchHit};
 use crate::core::{DocumentChunk, IndexStore, IndexingWorker};
 use crate::i18n::LocaleManager;
@@ -26,6 +27,7 @@ use crate::markdown::editor::{
 use crate::markdown::{self, wikilink, EditorMode, MarkdownEditor, WikilinkIndex};
 use crate::notes::query::{self, GridFilter, SortMode};
 use crate::notes::{tags, trash, Note, Vault, VaultWatcher};
+use crate::pdf::{self, editor as pdf_editor, PdfRenderer};
 use crate::ui::theme;
 
 /// How many top-ranked chunks to retrieve for the Search tab / Chat tab
@@ -35,27 +37,51 @@ use crate::ui::theme;
 const SEARCH_TOP_K: usize = 10;
 const CHAT_TOP_K: usize = 5;
 
+/// Default rendered page width (§Fase 8), in pixels — wide enough to read
+/// comfortably, small enough that re-rendering on zoom/page changes stays
+/// snappy on the UI thread (see `pdf::renderer::PdfRenderer`'s doc comment
+/// on why rendering is synchronous rather than backgrounded in this
+/// phase).
+const DEFAULT_PDF_ZOOM_WIDTH: u16 = 900;
+
 /// Which top-level tab is showing in the central panel (only relevant
-/// while no note is open for editing — `show_editor` always takes over
-/// regardless of `view`, same as before Fase 7).
+/// while no note is open for editing and no PDF is open for viewing —
+/// `show_editor`/`show_pdf_viewer` always take over regardless of `view`,
+/// same precedence Fase 7 established for the note editor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum View {
     Notes,
     Search,
     Chat,
+    Pdf,
 }
 
-/// One rendered bubble in the Chat tab's transcript.
+/// One clickable reference an assistant reply grounded its answer on
+/// (§3.4 point 4) — carries enough to jump straight to the source instead
+/// of just naming it, added in Fase 8 once the PDF viewer existed to jump
+/// to.
+#[derive(Clone)]
+struct Citation {
+    file_path: PathBuf,
+    /// `None` for a note citation; `Some(0-based page)` for a PDF one.
+    page_index: Option<usize>,
+    label: String,
+}
+
+/// One rendered bubble in the Chat tab's transcript. `Clone` lets
+/// `show_chat` snapshot the transcript into a plain local before entering
+/// nested `egui` closures — same reasoning as `show_grid`'s
+/// `let notes: Vec<Note> = ...clone()`.
+#[derive(Clone)]
 struct ChatMessage {
     role: ChatRole,
     text: String,
-    /// Source file paths the assistant grounded its reply on (§3.4 point
-    /// 4's citations) — empty for user messages and for an assistant
-    /// reply that found no relevant context.
-    citations: Vec<String>,
+    /// Source citations the assistant grounded its reply on — empty for
+    /// user messages and for a reply that found no relevant context.
+    citations: Vec<Citation>,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ChatRole {
     User,
     Assistant,
@@ -70,13 +96,66 @@ impl ChatMessage {
         }
     }
 
-    fn assistant(text: String, citations: Vec<String>) -> ChatMessage {
+    fn assistant(text: String, citations: Vec<Citation>) -> ChatMessage {
         ChatMessage {
             role: ChatRole::Assistant,
             text,
             citations,
         }
     }
+}
+
+/// Lazily-constructed `PdfRenderer` state (§Fase 8), mirroring
+/// `core::indexer`'s `EmbedderState`: binding to the native PDFium library
+/// only happens on first use (never blocking `LontarApp::new()`), and a
+/// failure is remembered so a missing library doesn't retry the same slow
+/// failure on every frame the PDF viewer is open.
+enum PdfRendererState {
+    Uninit,
+    Ready(PdfRenderer),
+    Failed(String),
+}
+
+/// State for the currently-open PDF (§Fase 8) — mutually exclusive with
+/// `LontarApp::editor`, same as the note editor takes over the central
+/// panel regardless of `view`.
+struct PdfViewerState {
+    path: PathBuf,
+    page_count: usize,
+    /// 0-based.
+    page_index: usize,
+    zoom_width: u16,
+    texture: Option<egui::TextureHandle>,
+    /// `(page_index, zoom_width)` the current `texture` was rendered for —
+    /// re-rendered whenever this no longer matches the live values.
+    rendered_key: Option<(usize, u16)>,
+    render_error: Option<String>,
+    /// 1-based inclusive page range for the Split operation's UI.
+    split_from: u32,
+    split_to: u32,
+    delete_confirm: bool,
+    op_status: String,
+}
+
+/// What the user asked for while looking at the PDF viewer's page-ops
+/// toolbar. `app.rs::apply_pdf_viewer_action` applies these (each one
+/// writes to a new output file, per `pdf::editor`'s never-in-place design)
+/// after `show_pdf_viewer`'s `egui` closures have all returned — same
+/// deferred-action pattern as `GridAction`.
+enum PdfViewerAction {
+    RotateCurrentPage { path: PathBuf, page: u32, degrees: i64 },
+    DeleteCurrentPage { path: PathBuf, page: u32 },
+    Split { path: PathBuf, from: u32, to: u32 },
+    Merge { path: PathBuf },
+}
+
+/// What the user asked for while looking at the PDF library tab
+/// (§Fase 8). Applied after `show_pdf_library`'s `egui` closures have all
+/// returned, same pattern as `GridAction`/`PdfViewerAction`.
+enum PdfLibraryAction {
+    Import(PathBuf),
+    Open(PathBuf),
+    Remove(PathBuf),
 }
 
 pub struct LontarApp {
@@ -112,6 +191,11 @@ pub struct LontarApp {
     chat_messages: Vec<ChatMessage>,
     chat_pending_embed_id: Option<Uuid>,
     chat_pending_gen_id: Option<Uuid>,
+
+    // PDF viewer & operations (§Fase 8).
+    pdf_renderer: PdfRendererState,
+    pdf_documents: Vec<PathBuf>,
+    pdf_viewer: Option<PdfViewerState>,
 }
 
 impl LontarApp {
@@ -150,6 +234,9 @@ impl LontarApp {
             chat_messages: Vec::new(),
             chat_pending_embed_id: None,
             chat_pending_gen_id: None,
+            pdf_renderer: PdfRendererState::Uninit,
+            pdf_documents: Vec::new(),
+            pdf_viewer: None,
         };
 
         if let Some(result) = Vault::load_last() {
@@ -177,6 +264,7 @@ impl LontarApp {
             }
             Err(e) => log::warn!("app: failed to open index store: {e}"),
         }
+        self.refresh_pdf_documents();
 
         // Fase 7: populate the document_chunks cache (search/RAG
         // retrieval) for every note in the vault. Cheap to do in full
@@ -384,11 +472,15 @@ impl LontarApp {
             }
             None => Vec::new(),
         };
-        let citations: Vec<String> = context
+        let citations: Vec<Citation> = context
             .iter()
-            .map(|c| match c.page_num {
-                Some(p) => format!("{} (Halaman {p})", c.file_path.display()),
-                None => c.file_path.display().to_string(),
+            .map(|c| Citation {
+                file_path: c.file_path.clone(),
+                page_index: c.page_num.map(|p| p.saturating_sub(1)),
+                label: match c.page_num {
+                    Some(p) => format!("{} (Halaman {p})", c.file_path.display()),
+                    None => c.file_path.display().to_string(),
+                },
             })
             .collect();
         let prompt = llm::build_rag_prompt(&context, &question);
@@ -437,6 +529,174 @@ impl LontarApp {
                 self.rescan_and_reindex();
             }
             Err(e) => log::warn!("app: failed to auto-create note '{title}' from wikilink: {e}"),
+        }
+    }
+
+    /// Lazily binds the native PDFium library on first use, remembering a
+    /// failure so a missing library doesn't retry the same slow lookup on
+    /// every frame the PDF viewer is open (§Fase 8, mirrors
+    /// `core::indexer`'s `EmbedderState`).
+    fn ensure_pdf_renderer(&mut self) -> Result<&PdfRenderer, &str> {
+        if matches!(self.pdf_renderer, PdfRendererState::Uninit) {
+            self.pdf_renderer = match PdfRenderer::new() {
+                Ok(renderer) => PdfRendererState::Ready(renderer),
+                Err(e) => PdfRendererState::Failed(format!("{e:#}")),
+            };
+        }
+        match &self.pdf_renderer {
+            PdfRendererState::Ready(renderer) => Ok(renderer),
+            PdfRendererState::Failed(msg) => Err(msg.as_str()),
+            PdfRendererState::Uninit => unreachable!("resolved just above"),
+        }
+    }
+
+    /// Reloads the PDF library tab's list from the index store (§Fase 8).
+    fn refresh_pdf_documents(&mut self) {
+        self.pdf_documents = self
+            .index
+            .as_ref()
+            .and_then(|index| index.list_pdf_documents().ok())
+            .unwrap_or_default();
+    }
+
+    /// Registers `path` as an imported PDF, submits it for background
+    /// chunking + embedding (finally giving `IndexingWorker::submit_pdf` a
+    /// caller — §5/§Fase 7 left it unused until this phase), and opens it
+    /// in the viewer.
+    fn import_pdf(&mut self, path: PathBuf) {
+        if let Some(index) = self.index.as_ref()
+            && let Err(e) = index.add_pdf_document(&path)
+        {
+            log::warn!("app: failed to register imported pdf: {e}");
+        }
+        if let Some(indexer) = &self.indexer {
+            indexer.submit_pdf(path.clone());
+        }
+        self.refresh_pdf_documents();
+        self.open_pdf(path);
+    }
+
+    /// Opens `path` in the PDF viewer at its first page, closing the note
+    /// editor if one was open (mutually exclusive, same as opening a note
+    /// closes the PDF viewer). Page count comes from the PDFium renderer
+    /// when available, falling back to the text extractor (already used
+    /// for search ingestion) so the viewer still has a usable page count
+    /// even when no PDFium library is installed — only the bitmap itself
+    /// is unavailable in that case.
+    fn open_pdf(&mut self, path: PathBuf) {
+        self.editor = None;
+
+        let page_count = match self.ensure_pdf_renderer() {
+            Ok(renderer) => renderer.page_count(&path).ok(),
+            Err(_) => None,
+        }
+        .or_else(|| pdf::extract_pages(&path).ok().map(|pages| pages.len()))
+        .unwrap_or(1)
+        .max(1);
+
+        self.pdf_viewer = Some(PdfViewerState {
+            path,
+            page_count,
+            page_index: 0,
+            zoom_width: DEFAULT_PDF_ZOOM_WIDTH,
+            texture: None,
+            rendered_key: None,
+            render_error: None,
+            split_from: 1,
+            split_to: page_count as u32,
+            delete_confirm: false,
+            op_status: String::new(),
+        });
+    }
+
+    /// Opens `path` in the PDF viewer and jumps straight to `page_index`
+    /// (0-based) — the "jump-to-source" behavior §3.4 point 4 and §3.5
+    /// point 1 both call for, used by search results and chat citations.
+    fn open_pdf_at_page(&mut self, path: PathBuf, page_index: usize) {
+        self.open_pdf(path);
+        if let Some(viewer) = self.pdf_viewer.as_mut() {
+            viewer.page_index = page_index.min(viewer.page_count.saturating_sub(1));
+        }
+    }
+
+    /// Common tail of every PDF page operation (§Fase 8): registers the
+    /// newly-written `output` file and opens it, so the user immediately
+    /// sees the result instead of having to reopen it manually from the
+    /// library tab.
+    fn finish_pdf_operation(&mut self, output: PathBuf) {
+        self.import_pdf(output);
+        let msg = self.t("pdf-op-success");
+        if let Some(viewer) = self.pdf_viewer.as_mut() {
+            viewer.op_status = msg;
+        }
+    }
+
+    /// Applies one PDF page operation, each of which writes to a
+    /// user-chosen output file rather than overwriting the source (see
+    /// `pdf::editor`'s doc comment) — "save in place with auto-backup"
+    /// (§3.5 point 3) is Fase 9's job. Called once per accumulated
+    /// `PdfViewerAction` after `show_pdf_viewer`'s `egui` closures have
+    /// all returned.
+    fn apply_pdf_viewer_action(&mut self, action: PdfViewerAction) {
+        let t_op_error = self.t("pdf-op-error");
+        let result = match &action {
+            PdfViewerAction::RotateCurrentPage { path, page, degrees } => {
+                rfd::FileDialog::new().add_filter("PDF", &["pdf"]).save_file().map(|output| {
+                    pdf_editor::rotate(path, &[*page], *degrees, &output).map(|()| output)
+                })
+            }
+            PdfViewerAction::DeleteCurrentPage { path, page } => {
+                rfd::FileDialog::new()
+                    .add_filter("PDF", &["pdf"])
+                    .save_file()
+                    .map(|output| pdf_editor::delete_pages(path, &[*page], &output).map(|()| output))
+            }
+            PdfViewerAction::Split { path, from, to } => {
+                let pages: Vec<u32> = (*from..=*to).collect();
+                rfd::FileDialog::new()
+                    .add_filter("PDF", &["pdf"])
+                    .save_file()
+                    .map(|output| pdf_editor::split(path, &pages, &output).map(|()| output))
+            }
+            PdfViewerAction::Merge { path } => {
+                rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file().and_then(|other| {
+                    rfd::FileDialog::new()
+                        .add_filter("PDF", &["pdf"])
+                        .save_file()
+                        .map(|output| pdf_editor::merge(&[path.as_path(), other.as_path()], &output).map(|()| output))
+                })
+            }
+        };
+
+        match result {
+            Some(Ok(output)) => self.finish_pdf_operation(output),
+            Some(Err(e)) => {
+                if let Some(viewer) = self.pdf_viewer.as_mut() {
+                    viewer.op_status = format!("{t_op_error}: {e:#}");
+                }
+            }
+            None => {} // user cancelled the file dialog
+        }
+    }
+
+    /// Applies one PDF library action. Called once per accumulated
+    /// `PdfLibraryAction` after `show_pdf_library`'s `egui` closures have
+    /// all returned, same pattern as `apply_grid_action`.
+    fn apply_pdf_library_action(&mut self, action: PdfLibraryAction) {
+        match action {
+            PdfLibraryAction::Import(path) => self.import_pdf(path),
+            PdfLibraryAction::Open(path) => self.open_pdf(path),
+            PdfLibraryAction::Remove(path) => {
+                if let Some(index) = self.index.as_ref() {
+                    if let Err(e) = index.remove_pdf_document(&path) {
+                        log::warn!("app: failed to remove pdf document: {e}");
+                    }
+                    if let Err(e) = index.delete_chunks_for_doc(pdf_doc_id(&path)) {
+                        log::warn!("app: failed to purge chunks for removed pdf: {e}");
+                    }
+                }
+                self.refresh_pdf_documents();
+            }
         }
     }
 
@@ -980,6 +1240,10 @@ impl LontarApp {
         let t_no_results = self.t("search-no-results");
 
         let mut open_note: Option<Uuid> = None;
+        // A hit with a page number came from a PDF chunk (notes never set
+        // `page_num`, per `core::ingestion`) — §Fase 8 gives it somewhere
+        // to jump to.
+        let mut open_pdf_hit: Option<(PathBuf, usize)> = None;
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1016,7 +1280,12 @@ impl LontarApp {
                                     .map(|s| s.to_string_lossy().to_string())
                                     .unwrap_or_else(|| hit.chunk.file_path.display().to_string());
                                 if ui.link(egui::RichText::new(title).strong()).clicked() {
-                                    open_note = Some(hit.chunk.doc_id);
+                                    match hit.chunk.page_num {
+                                        Some(page) => {
+                                            open_pdf_hit = Some((hit.chunk.file_path.clone(), page.saturating_sub(1)))
+                                        }
+                                        None => open_note = Some(hit.chunk.doc_id),
+                                    }
                                 }
                                 if let Some(score) = hit.score {
                                     ui.label(format!("{:.0}%", score * 100.0));
@@ -1037,6 +1306,8 @@ impl LontarApp {
             if let Some(note) = found {
                 self.open_note(note);
             }
+        } else if let Some((path, page_index)) = open_pdf_hit {
+            self.open_pdf_at_page(path, page_index);
         }
     }
 
@@ -1054,6 +1325,8 @@ impl LontarApp {
         let t_thinking = self.t("chat-thinking");
 
         let busy = self.chat_pending_embed_id.is_some() || self.chat_pending_gen_id.is_some();
+        let messages = self.chat_messages.clone();
+        let mut clicked_citation: Option<Citation> = None;
 
         egui::CentralPanel::default().show(ui, |ui| {
             egui::Panel::bottom("chat_input_row").show(ui, |ui| {
@@ -1073,10 +1346,10 @@ impl LontarApp {
             });
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-                if self.chat_messages.is_empty() {
+                if messages.is_empty() {
                     ui.label(&t_empty);
                 }
-                for msg in &self.chat_messages {
+                for msg in &messages {
                     let is_user = msg.role == ChatRole::User;
                     let layout = if is_user {
                         egui::Layout::top_down(egui::Align::Max)
@@ -1091,7 +1364,11 @@ impl LontarApp {
                                 ui.separator();
                                 ui.label(egui::RichText::new(&t_sources).small().weak());
                                 for citation in &msg.citations {
-                                    ui.label(egui::RichText::new(citation).small());
+                                    // Clickable — §3.4 point 4's "jump straight to the source",
+                                    // finally reachable now that Fase 8 has a PDF viewer to jump to.
+                                    if ui.link(egui::RichText::new(&citation.label).small()).clicked() {
+                                        clicked_citation = Some(citation.clone());
+                                    }
                                 }
                             }
                         });
@@ -1102,6 +1379,241 @@ impl LontarApp {
                 }
             });
         });
+
+        if let Some(citation) = clicked_citation {
+            match citation.page_index {
+                Some(page_index) => self.open_pdf_at_page(citation.file_path, page_index),
+                None => {
+                    let found = self
+                        .vault
+                        .as_ref()
+                        .and_then(|v| v.notes.iter().find(|n| n.path == citation.file_path).cloned());
+                    if let Some(note) = found {
+                        self.open_note(note);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The PDF tab (§Fase 8): an import button plus the list of
+    /// previously imported PDFs (`core::storage::IndexStore`'s
+    /// `pdf_documents` table). Follows `show_grid`'s pattern of only
+    /// touching plain locals inside the `egui` closures, deferring all
+    /// mutation to `apply_pdf_library_action` afterward.
+    fn show_pdf_library(&mut self, ui: &mut egui::Ui) {
+        let t_import = self.t("pdf-import");
+        let t_empty = self.t("pdf-library-empty");
+        let t_open = self.t("pdf-open");
+        let t_remove = self.t("pdf-remove");
+
+        let documents = self.pdf_documents.clone();
+        let mut actions: Vec<PdfLibraryAction> = Vec::new();
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            if ui.button(&t_import).clicked()
+                && let Some(file) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file()
+            {
+                actions.push(PdfLibraryAction::Import(file));
+            }
+
+            ui.separator();
+
+            if documents.is_empty() {
+                ui.label(&t_empty);
+            } else {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for path in &documents {
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                let name = path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| path.display().to_string());
+                                ui.label(name);
+                                if ui.button(&t_open).clicked() {
+                                    actions.push(PdfLibraryAction::Open(path.clone()));
+                                }
+                                if ui.button(&t_remove).clicked() {
+                                    actions.push(PdfLibraryAction::Remove(path.clone()));
+                                }
+                            });
+                        });
+                    }
+                });
+            }
+        });
+
+        for action in actions {
+            self.apply_pdf_library_action(action);
+        }
+    }
+
+    /// The PDF viewer (§Fase 8, §3.5 point 1): page navigation + zoom, the
+    /// rendered page bitmap, and a page-ops toolbar (rotate/delete/split/
+    /// merge, §3.5 point 2). Takes over the central panel exactly like
+    /// `show_editor` does for notes. Rendering the current page into a
+    /// texture happens up front (outside any `egui` closure) so the rest
+    /// of this method can follow `show_editor`'s "closures only ever
+    /// touch plain locals" convention.
+    fn show_pdf_viewer(&mut self, ui: &mut egui::Ui) {
+        let Some(mut viewer) = self.pdf_viewer.take() else {
+            return;
+        };
+
+        let key = (viewer.page_index, viewer.zoom_width);
+        if viewer.rendered_key != Some(key) {
+            match self.ensure_pdf_renderer() {
+                Ok(renderer) => match renderer.render_page(&viewer.path, viewer.page_index, viewer.zoom_width) {
+                    Ok(page) => {
+                        let image = egui::ColorImage::from_rgba_unmultiplied([page.width, page.height], &page.rgba);
+                        viewer.texture = Some(ui.ctx().load_texture("pdf-page", image, egui::TextureOptions::LINEAR));
+                        viewer.render_error = None;
+                    }
+                    Err(e) => {
+                        viewer.texture = None;
+                        viewer.render_error = Some(format!("{e:#}"));
+                    }
+                },
+                Err(msg) => {
+                    viewer.texture = None;
+                    viewer.render_error = Some(msg.to_string());
+                }
+            }
+            viewer.rendered_key = Some(key);
+        }
+
+        let t_back = self.t("pdf-back");
+        let t_page_of = self.locales.t(
+            "pdf-page-of",
+            &[("current", &(viewer.page_index + 1).to_string()), ("total", &viewer.page_count.to_string())],
+        );
+        let t_zoom = self.t("pdf-zoom");
+        let t_rotate_left = self.t("pdf-rotate-left");
+        let t_rotate_right = self.t("pdf-rotate-right");
+        let t_delete_page = self.t("pdf-delete-page");
+        let t_delete_confirm = self.t("pdf-delete-page-confirm");
+        let t_confirm_yes = self.t("confirm-yes");
+        let t_confirm_cancel = self.t("confirm-cancel");
+        let t_split = self.t("pdf-split");
+        let t_split_to = self.t("pdf-split-to");
+        let t_split_go = self.t("pdf-split-go");
+        let t_merge = self.t("pdf-merge");
+        let t_render_unavailable = self.t("pdf-render-unavailable");
+
+        let path = viewer.path.clone();
+        let page_count = viewer.page_count;
+        let texture = viewer.texture.clone();
+        let render_error = viewer.render_error.clone();
+
+        let mut page_index = viewer.page_index;
+        let mut zoom_width = viewer.zoom_width;
+        let mut split_from = viewer.split_from;
+        let mut split_to = viewer.split_to;
+        let mut delete_confirm = viewer.delete_confirm;
+        let mut back_requested = false;
+        let mut actions: Vec<PdfViewerAction> = Vec::new();
+
+        egui::Panel::top("pdf_top_bar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button(&t_back).clicked() {
+                    back_requested = true;
+                }
+                ui.separator();
+                if ui.add_enabled(page_index > 0, egui::Button::new("⏴")).clicked() {
+                    page_index -= 1;
+                }
+                ui.label(&t_page_of);
+                if ui.add_enabled(page_index + 1 < page_count, egui::Button::new("⏵")).clicked() {
+                    page_index += 1;
+                }
+                ui.separator();
+                ui.label(&t_zoom);
+                ui.add(egui::DragValue::new(&mut zoom_width).range(200..=3000).speed(10));
+            });
+        });
+
+        egui::Panel::bottom("pdf_ops_bar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button(&t_rotate_left).clicked() {
+                    actions.push(PdfViewerAction::RotateCurrentPage {
+                        path: path.clone(),
+                        page: (page_index + 1) as u32,
+                        degrees: -90,
+                    });
+                }
+                if ui.button(&t_rotate_right).clicked() {
+                    actions.push(PdfViewerAction::RotateCurrentPage {
+                        path: path.clone(),
+                        page: (page_index + 1) as u32,
+                        degrees: 90,
+                    });
+                }
+                if ui.button(&t_delete_page).clicked() {
+                    delete_confirm = true;
+                }
+                ui.separator();
+                ui.label(&t_split);
+                ui.add(egui::DragValue::new(&mut split_from).range(1..=page_count as u32));
+                ui.label(&t_split_to);
+                ui.add(egui::DragValue::new(&mut split_to).range(1..=page_count as u32));
+                if ui.button(&t_split_go).clicked() {
+                    actions.push(PdfViewerAction::Split { path: path.clone(), from: split_from, to: split_to });
+                }
+                ui.separator();
+                if ui.button(&t_merge).clicked() {
+                    actions.push(PdfViewerAction::Merge { path: path.clone() });
+                }
+            });
+            if !viewer.op_status.is_empty() {
+                ui.label(&viewer.op_status);
+            }
+        });
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::both().show(ui, |ui| {
+                if let Some(err) = &render_error {
+                    ui.colored_label(egui::Color32::RED, format!("{t_render_unavailable}: {err}"));
+                } else if let Some(tex) = &texture {
+                    ui.image((tex.id(), tex.size_vec2()));
+                }
+            });
+        });
+
+        if delete_confirm {
+            egui::Window::new(&t_delete_page).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
+                ui.label(&t_delete_confirm);
+                ui.horizontal(|ui| {
+                    if ui.button(&t_confirm_yes).clicked() {
+                        actions.push(PdfViewerAction::DeleteCurrentPage {
+                            path: path.clone(),
+                            page: (page_index + 1) as u32,
+                        });
+                        delete_confirm = false;
+                    }
+                    if ui.button(&t_confirm_cancel).clicked() {
+                        delete_confirm = false;
+                    }
+                });
+            });
+        }
+
+        viewer.page_index = page_index;
+        viewer.zoom_width = zoom_width;
+        viewer.split_from = split_from;
+        viewer.split_to = split_to;
+        viewer.delete_confirm = delete_confirm;
+
+        if back_requested {
+            self.pdf_viewer = None;
+        } else {
+            self.pdf_viewer = Some(viewer);
+        }
+
+        for action in actions {
+            self.apply_pdf_viewer_action(action);
+        }
     }
 }
 
@@ -1280,7 +1792,8 @@ impl eframe::App for LontarApp {
         let t_nav_notes = self.t("nav-notes");
         let t_nav_search = self.t("nav-search");
         let t_nav_chat = self.t("nav-chat");
-        let show_tabs = self.vault.is_some() && self.editor.is_none();
+        let t_nav_pdf = self.t("nav-pdf");
+        let show_tabs = self.vault.is_some() && self.editor.is_none() && self.pdf_viewer.is_none();
 
         egui::Panel::top("top_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1290,6 +1803,7 @@ impl eframe::App for LontarApp {
                     ui.selectable_value(&mut self.view, View::Notes, &t_nav_notes);
                     ui.selectable_value(&mut self.view, View::Search, &t_nav_search);
                     ui.selectable_value(&mut self.view, View::Chat, &t_nav_chat);
+                    ui.selectable_value(&mut self.view, View::Pdf, &t_nav_pdf);
                 }
             });
         });
@@ -1319,10 +1833,16 @@ impl eframe::App for LontarApp {
                 return;
             }
 
+            if self.pdf_viewer.is_some() {
+                self.show_pdf_viewer(ui);
+                return;
+            }
+
             match self.view {
                 View::Notes => self.show_grid(ui),
                 View::Search => self.show_search(ui),
                 View::Chat => self.show_chat(ui),
+                View::Pdf => self.show_pdf_library(ui),
             }
         });
     }
