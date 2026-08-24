@@ -1,0 +1,75 @@
+name: Release build
+
+# §Fase 10 ("build release cross-platform"): builds a LONTAR release
+# binary for Windows, macOS, and Linux — on every `v*` tag push, and
+# on-demand via workflow_dispatch for a manual/test run. Each job just runs
+# a native `cargo build --release`, no cross-compilation, so the repo's
+# `.cargo/config.toml` AVX2/FMA rustflags apply automatically on the two
+# x86_64 runners (ubuntu-latest, windows-latest); macos-latest is an arm64
+# runner, where candle-core's NEON kernel is already compiled in by default
+# (see that file's comment for why neither runner needs special handling
+# here).
+#
+# Deliberately not (yet) wired to auto-attach binaries to a GitHub Release:
+# artifacts are uploaded via `actions/upload-artifact` for download/
+# inspection first. Wiring `softprops/action-gh-release` (or similar) to
+# publish them straight onto the tag's Release page is a natural next step
+# once this pipeline has been exercised a few times.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: lontar
+            asset_name: lontar-linux-x86_64
+          - os: windows-latest
+            artifact_name: lontar.exe
+            asset_name: lontar-windows-x86_64.exe
+          - os: macos-latest
+            artifact_name: lontar
+            asset_name: lontar-macos-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # rfd (native file/folder picker, used for vault selection and PDF
+      # import/export) needs GTK3 + its glib/wayland/xcb siblings on Linux;
+      # eframe/egui's windowing+input backend needs libxkbcommon. None of
+      # this is needed on macOS/Windows, which use their native pickers and
+      # windowing APIs directly.
+      - name: Install Linux GUI/file-dialog dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Stage binary for upload
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/release/${{ matrix.artifact_name }}" "dist/${{ matrix.asset_name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error

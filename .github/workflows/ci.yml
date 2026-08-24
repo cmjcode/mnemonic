@@ -1,0 +1,62 @@
+name: CI
+
+# §Fase 10 polish: fast feedback on every push/PR to `main` — the repo had
+# no CI at all before this phase. Deliberately a single Linux job (not a
+# platform matrix): this checks the code itself is sound
+# (`cargo test`/`clippy`) on every change; actual multi-platform *build*
+# coverage is `release.yml`'s job, which only needs to run on a tag push,
+# not on every commit.
+#
+# `cargo fmt --check` is intentionally NOT run here: this codebase's
+# established convention (see the project's own notes) is that the
+# installed `rustfmt` reformats large swaths of pre-existing, untouched
+# code whenever it's pointed at any file reachable from `main.rs`'s `mod`
+# graph — i.e. the whole crate — so it isn't a safe/meaningful gate here
+# without first pinning a `rustfmt.toml`/toolchain that matches the
+# codebase's actual style.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same Linux GUI/file-dialog deps as release.yml — `cargo test`/
+      # `clippy` still need the crate (and therefore `rfd`/`eframe`) to
+      # compile, even though no test opens an actual window.
+      - name: Install Linux GUI/file-dialog dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry & build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo check
+        run: cargo check --locked --all-targets
+
+      - name: cargo test
+        run: cargo test --locked
+
+      # Advisory only, not `-D warnings`: the codebase carries a nonzero
+      # baseline of pre-existing warnings by deliberate choice (see the
+      # project's own convention of diffing clippy output around a
+      # `git stash` rather than fixing every warning outright) — gating CI
+      # on zero warnings would make it red from this workflow's very first
+      # run. `continue-on-error` still surfaces the output for review.
+      - name: cargo clippy (advisory)
+        run: cargo clippy --locked --all-targets
+        continue-on-error: true

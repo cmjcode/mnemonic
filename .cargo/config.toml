@@ -1,0 +1,40 @@
+# Fase 10 (§5 "Optimasi inferensi Candle: multi-threading SIMD/AVX2"):
+# enables the AVX2 + FMA SIMD kernels `candle-core`'s quantized matmul ships
+# for x86_64 (`candle_core::quantized::avx`, gated
+# `#[cfg(target_feature = "avx2")]` in candle-core 0.11 — compiled OUT by
+# default, since a plain `x86_64-*` target only guarantees SSE2). Confirmed
+# by reading `candle-core-0.11.0/src/quantized/{mod,avx}.rs` in the local
+# cargo registry cache — see `llm/candle_engine.rs`'s doc comment.
+#
+# On aarch64 (Apple Silicon, aarch64-linux, aarch64 Windows) NEON is
+# baseline for the architecture already, so nothing is needed there —
+# candle-core's NEON kernel (`quantized::neon`, same gating pattern) is
+# compiled in automatically with no flags, which is why there's no
+# `[target.aarch64-*]` section below.
+#
+# "Multi-threading" (the other half of this roadmap item) needs no config
+# at all: candle-core's quantized matmul already runs on a `rayon`
+# thread pool sized to available parallelism by default
+# (`candle_core::utils::get_num_threads`, reads `CANDLE_NUM_THREADS`/
+# `RAYON_NUM_THREADS` if a user wants to override it) — this was already
+# true since Fase 6, just not documented as a deliberate choice until now.
+#
+# Tradeoff: a binary built with these flags requires a Haswell-or-newer
+# x86_64 CPU (2013+, the "x86-64-v3" microarchitecture level) — it faults
+# with SIGILL on older hardware. This is the same baseline most shipped
+# local ML tooling assumes (e.g. llama.cpp's default release builds) and is
+# judged acceptable for LONTAR's release builds. If broader legacy-CPU
+# compatibility is ever required, delete this file: candle-core's matmul
+# falls back to its portable scalar kernel automatically — still correct,
+# just slower — no source changes needed either way.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+avx2,+fma"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+avx2,+fma"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+avx2,+fma"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-feature=+avx2,+fma"]

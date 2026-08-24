@@ -1,13 +1,26 @@
 //! Candle runtime & Qwen2.5-Instruct GGUF loader (§3.4 points 1 & 3):
 //! wraps `candle_transformers`'s quantized Qwen2 implementation to run
-//! the RAG generator fully offline on CPU (Candle's quantized matmul
-//! kernels use AVX2/NEON automatically — no GPU required). Mirrors
+//! the RAG generator fully offline on CPU. Mirrors
 //! `core::embedding::EmbeddingEngine`'s split: model download is the
 //! only network-touching part of this module, and `generate` stays a
 //! plain function of `(prompt, max_tokens, callback) -> Result<()>` so
 //! it's swappable behind the `Generator` trait (`llm::stream`) for
 //! offline testing. Callers: `llm::stream::GenerationWorker` (production
 //! spawn), fed by `llm::prompt::build_rag_prompt`'s output.
+//!
+//! **CPU parallelism (§Fase 10, §5 "multi-threading SIMD/AVX2"):** this
+//! module has no threading/SIMD code of its own — both come from
+//! `candle-core`'s quantized matmul, and both are already engaged without
+//! anything special here: multi-threading via a `rayon` pool sized to
+//! available parallelism by default (`candle_core::utils::get_num_threads`,
+//! overridable with the `CANDLE_NUM_THREADS`/`RAYON_NUM_THREADS` env vars),
+//! and NEON SIMD on aarch64 (Apple Silicon) automatically, since NEON is
+//! architecture-baseline there. AVX2 SIMD on x86_64 is *not* on by default
+//! — `candle-core` gates its AVX2 kernel on the `target-feature = "avx2"`
+//! compile-time cfg, and a plain `x86_64-*` Rust target only guarantees
+//! SSE2 — so the repo's `.cargo/config.toml` sets
+//! `-C target-feature=+avx2,+fma` for the x86_64 release triples (see that
+//! file's comment for the portability tradeoff this implies).
 
 use std::path::{Path, PathBuf};
 

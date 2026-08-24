@@ -3,12 +3,43 @@ name = "lontar"
 version = "0.1.0"
 edition = "2024"
 
+# §Fase 10 ("build release cross-platform"): the debug-profile defaults are
+# fine for `cargo run` during development, but a distributed release binary
+# benefits from LTO + a single codegen unit for a Candle-CPU-inference-heavy
+# app like this one (more inlining across the candle-core/gemm matmul call
+# graph) at the cost of a slower `cargo build --release`. `strip` drops
+# debug symbols the shipped binary doesn't need, shrinking it further.
+#
+# Deliberately *not* `panic = "abort"`: `IndexingWorker`
+# (`core::indexer`) and `GenerationWorker` (`llm::stream`) both run on
+# background `std::thread`s, and the whole point of putting FastEmbed/
+# Candle inference there is so a hiccup in either doesn't take the UI down
+# with it — the default unwind strategy lets a panicking background thread
+# die on its own (silently, today; still a gap, see this crate's `report_
+# error`/error-handling notes) while the editor and any unsaved note stay
+# alive. `panic = "abort"` would turn that into a whole-process crash on
+# any panic anywhere, which is a strictly worse failure mode for a
+# note-taking app whose top priority is not losing unsaved edits.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
 [dependencies]
 anyhow = "1.0.104"
 candle-core = "0.11.0"
 candle-nn = "0.11.0"
 candle-transformers = "0.11.0"
 chrono = { version = "0.4.45", features = ["serde"] }
+# Heap profiler (§Fase 10 "memory profiling"), opt-in only: pulling in a
+# custom `#[global_allocator]` unconditionally would affect every build, so
+# it's gated behind the `dhat-heap` feature and only touched from
+# `main.rs`'s `#[cfg(feature = "dhat-heap")]` blocks — a normal
+# `cargo build`/`cargo run` never links it in. Run with
+# `cargo run --release --features dhat-heap`, then open the emitted
+# `dhat-heap.json` in https://nnethercote.github.io/dh_view/dh_view.html
+# (or Firefox Profiler's DHAT import) to see live/peak allocation sites.
+dhat = { version = "0.3.3", optional = true }
 dirs = "6.0.0"
 eframe = "0.36.1"
 egui = "0.36.1"
@@ -43,3 +74,6 @@ walkdir = "2.5.0"
 [dev-dependencies]
 filetime = "0.2.29"
 tempfile = "3.27.0"
+
+[features]
+dhat-heap = ["dep:dhat"]

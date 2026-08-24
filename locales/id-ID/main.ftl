@@ -119,3 +119,14 @@ pdf-save = Simpan
 pdf-save-confirm = Berkas asli akan ditimpa (cadangan .bak dibuat otomatis). Lanjutkan?
 pdf-save-success = Berhasil disimpan ke berkas asli (cadangan: { $backup })
 pdf-export = Ekspor sebagai Baru...
+
+# §Fase 10: banner kesalahan umum yang menggantikan kegagalan yang
+# sebelumnya hanya dicatat di log (`log::warn!`) tanpa terlihat pengguna —
+# lihat `LontarApp::report_error`.
+error-banner = Kesalahan saat { $context }: { $error }
+error-context-autosave = menyimpan otomatis
+error-context-save-note = menyimpan catatan
+error-context-delete-note = menghapus catatan
+error-context-move-note = memindahkan catatan
+error-context-create-note = membuat catatan
+error-context-open-vault = membuka vault

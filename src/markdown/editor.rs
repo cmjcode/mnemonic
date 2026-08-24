@@ -2,13 +2,20 @@
 //! (Source / Live Preview / Reading), debounced autosave, coarse undo/redo,
 //! and word count / reading time. Slash-command and wikilink-autocomplete
 //! trigger detection are pure string functions here too, so the popup
-//! logic in `app.rs` stays thin. Callers: `app.rs`.
+//! logic in `app.rs` stays thin. Also owns a `renderer::RenderCache`
+//! (§Fase 10) — invalidated in `set_body`/`undo`/`redo` and read via
+//! `outline()`/`render()`, so the Live Preview/Reading long-document
+//! memoization lives right next to the only code that mutates the body it's
+//! keyed on. Callers: `app.rs`.
 
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use egui_commonmark::CommonMarkCache;
 
 use crate::notes::Note;
+
+use super::renderer::{self, Heading, RenderCache, RenderOutcome};
 
 /// Idle window before an edit is flushed to disk (§3.2.4: "debounce
 /// 500ms-1s").
@@ -39,6 +46,9 @@ pub struct MarkdownEditor {
     pending_since: Option<Instant>,
     undo_stack: Vec<String>,
     redo_stack: Vec<String>,
+    /// Memoized Live Preview/Reading parse of `note.body` (§Fase 10),
+    /// invalidated on every body mutation below so it never goes stale.
+    render_cache: RenderCache,
 }
 
 impl MarkdownEditor {
@@ -50,6 +60,7 @@ impl MarkdownEditor {
             pending_since: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            render_cache: RenderCache::default(),
         }
     }
 
@@ -73,6 +84,7 @@ impl MarkdownEditor {
         self.note.body = new_body;
         self.dirty = true;
         self.pending_since = Some(Instant::now());
+        self.render_cache.invalidate();
     }
 
     /// Step back to the previous snapshot. Returns `false` if there's
@@ -85,6 +97,7 @@ impl MarkdownEditor {
         self.redo_stack.push(current);
         self.dirty = true;
         self.pending_since = Some(Instant::now());
+        self.render_cache.invalidate();
         true
     }
 
@@ -98,6 +111,7 @@ impl MarkdownEditor {
         self.undo_stack.push(current);
         self.dirty = true;
         self.pending_since = Some(Instant::now());
+        self.render_cache.invalidate();
         true
     }
 
@@ -133,6 +147,23 @@ impl MarkdownEditor {
         } else {
             words.div_ceil(WORDS_PER_MINUTE).max(1)
         }
+    }
+
+    /// Heading outline for the current body (Outline side panel),
+    /// recomputed only when the body changed since the last call — used by
+    /// `app.rs` every frame without re-walking/re-slugging an unchanged
+    /// document on frames where nothing edited it (§Fase 10).
+    pub fn outline(&mut self) -> Vec<Heading> {
+        self.render_cache.outline(&self.note.body).to_vec()
+    }
+
+    /// Renders the body into `ui` (Live Preview/Reading modes), memoized
+    /// and virtualized against `viewport` (content-space, from
+    /// `egui::ScrollArea::show_viewport`) via this editor's own
+    /// `RenderCache` — see `renderer::render_cached` and the module doc
+    /// comment on `markdown::renderer` (§Fase 10, §6 risk 5).
+    pub fn render(&mut self, ui: &mut egui::Ui, cache: &mut CommonMarkCache, viewport: egui::Rect) -> RenderOutcome {
+        renderer::render_cached(ui, cache, &mut self.render_cache, &self.note.body, viewport)
     }
 }
 

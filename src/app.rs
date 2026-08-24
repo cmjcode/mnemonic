@@ -25,7 +25,7 @@ use crate::llm::{self, GenerationEvent, GenerationWorker};
 use crate::markdown::editor::{
     char_index_to_byte_offset, slash_menu_triggered, slash_templates, wikilink_autocomplete_query,
 };
-use crate::markdown::{self, wikilink, EditorMode, MarkdownEditor, WikilinkIndex};
+use crate::markdown::{wikilink, EditorMode, MarkdownEditor, WikilinkIndex};
 use crate::notes::query::{self, GridFilter, SortMode};
 use crate::notes::{tags, trash, Note, Vault, VaultWatcher};
 use crate::pdf::annotator::{Annotation, AnnotationKind};
@@ -559,6 +559,39 @@ impl LontarApp {
         self.locales.t(key, &[])
     }
 
+    /// Records a user-facing failure (§6 "error handling" polish, Fase 10):
+    /// logs it via `log::warn!` *and* sets the status banner
+    /// (`show_status_banner`), so a failed save/delete/move is never
+    /// silently swallowed — several mutation paths below used to only log,
+    /// which meant e.g. a failed autosave gave the user no indication
+    /// anything was wrong until they noticed missing edits much later.
+    /// `context_key` is an already-translated-lookup Fluent key describing
+    /// what was being attempted (e.g. `"error-context-autosave"`).
+    fn report_error(&mut self, context_key: &str, err: impl std::fmt::Display) {
+        log::warn!("app: {context_key}: {err}");
+        let context = self.t(context_key);
+        self.status = self.locales.t("error-banner", &[("context", &context), ("error", &err.to_string())]);
+    }
+
+    /// A dismissible red banner for the most recent failure recorded via
+    /// `report_error`. Rendered once, above every view (grid/search/chat/
+    /// editor/pdf/vault-picker) in `ui()`'s `CentralPanel`, so a failure
+    /// while e.g. the editor is open stays visible even after navigating
+    /// away from it — previously this only rendered inside `show_grid`,
+    /// invisible from every other view (§Fase 10).
+    fn show_status_banner(&mut self, ui: &mut egui::Ui) {
+        if self.status.is_empty() {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.colored_label(egui::Color32::RED, &self.status);
+            if ui.small_button("×").clicked() {
+                self.status.clear();
+            }
+        });
+        ui.separator();
+    }
+
     /// Open a note for editing. Only called from the note-list view, which
     /// is itself only shown while `self.editor` is `None`, so there's
     /// nothing to flush here.
@@ -591,7 +624,7 @@ impl LontarApp {
                 self.editor = Some(MarkdownEditor::open(note));
                 self.rescan_and_reindex();
             }
-            Err(e) => log::warn!("app: failed to auto-create note '{title}' from wikilink: {e}"),
+            Err(e) => self.report_error("error-context-create-note", e),
         }
     }
 
@@ -849,7 +882,7 @@ impl LontarApp {
             &[("minutes", &editor.reading_time_minutes().to_string())],
         );
 
-        let outline = markdown::renderer::headings(&editor.note.body);
+        let outline = editor.outline();
         let wikilink_index = self.vault.as_ref().map(|v| WikilinkIndex::build(&v.notes));
         let backlink_titles: Vec<String> = self
             .vault
@@ -919,7 +952,7 @@ impl LontarApp {
             });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| match editor.mode {
+            egui::ScrollArea::vertical().show_viewport(ui, |ui, viewport| match editor.mode {
                 EditorMode::Source => {
                     let mut body = editor.note.body.clone();
                     let output = egui::TextEdit::multiline(&mut body)
@@ -965,7 +998,7 @@ impl LontarApp {
                     }
                 }
                 EditorMode::LivePreview | EditorMode::Reading => {
-                    let outcome = markdown::renderer::render(ui, cache, &editor.note.body);
+                    let outcome = editor.render(ui, cache, viewport);
                     if let Some(new_body) = outcome.updated_body {
                         editor.set_body(new_body);
                     }
@@ -983,7 +1016,7 @@ impl LontarApp {
         if close_requested {
             if editor.is_dirty() {
                 if let Err(e) = editor.autosave() {
-                    log::warn!("app: failed to save note on close: {e}");
+                    self.report_error("error-context-autosave", e);
                 }
             }
             self.rescan_and_reindex();
@@ -991,7 +1024,7 @@ impl LontarApp {
         } else if let Some(title) = navigate_to {
             if editor.is_dirty() {
                 if let Err(e) = editor.autosave() {
-                    log::warn!("app: failed to save note before navigating: {e}");
+                    self.report_error("error-context-autosave", e);
                 }
             }
             self.rescan_and_reindex();
@@ -1029,7 +1062,7 @@ impl LontarApp {
                     return;
                 };
                 if let Err(e) = note.delete_permanently() {
-                    log::warn!("app: failed to permanently delete note: {e}");
+                    self.report_error("error-context-delete-note", e);
                 }
                 // Purge any cached chunks for the deleted note so stale
                 // text can't surface in search/chat retrieval (§5).
@@ -1052,19 +1085,35 @@ impl LontarApp {
             }
             GridAction::RenameTag(old, new) => {
                 let Some(vault) = self.vault.as_mut() else { return };
+                // Collected rather than reported inline: `vault` (borrowed
+                // from `self.vault`) stays alive for the whole loop, and
+                // `report_error` needs `&mut self` as a whole — so the
+                // report has to wait until the loop (and `vault`'s borrow)
+                // has ended. Only the last failure surfaces in the banner
+                // if several notes in the batch fail to save.
+                let mut save_error = None;
                 for i in tags::rename_tag(&mut vault.notes, &old, &new) {
                     if let Err(e) = vault.notes[i].save() {
                         log::warn!("app: failed to save note after tag rename: {e}");
+                        save_error = Some(e);
                     }
+                }
+                if let Some(e) = save_error {
+                    self.report_error("error-context-save-note", e);
                 }
                 self.rescan_and_reindex();
             }
             GridAction::DeleteTag(tag) => {
                 let Some(vault) = self.vault.as_mut() else { return };
+                let mut save_error = None; // see RenameTag's comment above
                 for i in tags::remove_tag(&mut vault.notes, &tag) {
                     if let Err(e) = vault.notes[i].save() {
                         log::warn!("app: failed to save note after tag delete: {e}");
+                        save_error = Some(e);
                     }
+                }
+                if let Some(e) = save_error {
+                    self.report_error("error-context-save-note", e);
                 }
                 self.rescan_and_reindex();
             }
@@ -1081,7 +1130,7 @@ impl LontarApp {
         };
         f(&mut note);
         if let Err(e) = note.save() {
-            log::warn!("app: failed to save note: {e}");
+            self.report_error("error-context-save-note", e);
             return;
         }
         self.rescan_and_reindex();
@@ -1097,7 +1146,7 @@ impl LontarApp {
         };
         let root = vault.root.clone();
         if let Err(e) = f(note, &root) {
-            log::warn!("app: failed to move note: {e}");
+            self.report_error("error-context-move-note", e);
             return;
         }
         self.rescan_and_reindex();
@@ -1203,7 +1252,7 @@ impl LontarApp {
                                 self.quick_capture_text.clear();
                                 actions.push(GridAction::Open(note.path.clone()));
                             }
-                            Err(e) => log::warn!("app: failed to create note: {e}"),
+                            Err(e) => self.report_error("error-context-create-note", e),
                         }
                     }
                 }
@@ -1274,11 +1323,6 @@ impl LontarApp {
                         }
                     });
                 });
-            }
-
-            if !self.status.is_empty() {
-                ui.separator();
-                ui.colored_label(egui::Color32::RED, &self.status);
             }
         });
 
@@ -2243,20 +2287,24 @@ impl eframe::App for LontarApp {
         }
 
         // Autosave poll (§3.2.4: idle debounce 500ms-1s). Scoped so the
-        // `self.editor` borrow ends before `rescan_and_reindex` needs
-        // `&mut self` again.
+        // `self.editor` borrow ends before `rescan_and_reindex`/
+        // `report_error` need `&mut self` again.
         let mut needs_reindex: Option<Note> = None;
+        let mut autosave_error: Option<anyhow::Error> = None;
         if let Some(editor) = self.editor.as_mut() {
             if editor.should_autosave() {
                 match editor.autosave() {
                     Ok(()) => needs_reindex = Some(editor.note.clone()),
-                    Err(e) => log::warn!("app: autosave failed: {e}"),
+                    Err(e) => autosave_error = Some(e),
                 }
             }
         }
         if let Some(note) = needs_reindex {
             self.rescan_and_reindex();
             self.reindex_note(&note);
+        }
+        if let Some(e) = autosave_error {
+            self.report_error("error-context-autosave", e);
         }
 
         // Fase 7 background-worker polling: writes chunk/embedding
@@ -2286,6 +2334,8 @@ impl eframe::App for LontarApp {
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
+            self.show_status_banner(ui);
+
             if self.vault.is_none() {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
@@ -2294,10 +2344,7 @@ impl eframe::App for LontarApp {
                         if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                             match Vault::open(folder) {
                                 Ok(vault) => self.activate_vault(vault),
-                                Err(e) => {
-                                    self.status = format!("Gagal membuka vault: {e}");
-                                    log::warn!("app: failed to open vault: {e}");
-                                }
+                                Err(e) => self.report_error("error-context-open-vault", e),
                             }
                         }
                     }

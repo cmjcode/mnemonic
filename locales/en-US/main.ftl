@@ -119,3 +119,14 @@ pdf-save = Save
 pdf-save-confirm = The original file will be overwritten (a .bak backup is created automatically). Continue?
 pdf-save-success = Saved to the original file (backup: { $backup })
 pdf-export = Export as New...
+
+# §Fase 10: generic error banner replacing failures that used to be only
+# logged (`log::warn!`) and never visible to the user — see
+# `LontarApp::report_error`.
+error-banner = Error while { $context }: { $error }
+error-context-autosave = auto-saving
+error-context-save-note = saving the note
+error-context-delete-note = deleting the note
+error-context-move-note = moving the note
+error-context-create-note = creating the note
+error-context-open-vault = opening the vault
