@@ -29,7 +29,9 @@ editor-backlinks-empty = Belum ada catatan lain yang menautkan ke sini.
 editor-word-count = { $count } kata
 editor-reading-time = ~{ $minutes } menit baca
 
-sidebar-all = Semua Catatan
+sidebar-all = Semua Dokumen
+sidebar-notes-only = Catatan Markdown
+sidebar-pdfs-only = Dokumen PDF
 sidebar-archived = Diarsipkan
 sidebar-trash = Sampah
 sidebar-tags = Label

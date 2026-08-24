@@ -65,10 +65,21 @@ const MIN_ANNOTATION_DRAG_PX: f32 = 4.0;
 /// same precedence Fase 7 established for the note editor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum View {
-    Notes,
+    Notes, // unified: Markdown notes + PDFs in one masonry grid
     Search,
     Chat,
-    Pdf,
+}
+
+/// Filter for the unified document grid — controls which document types
+/// and states are shown. Extends `GridFilter` to also handle PDF-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DocFilter {
+    All,
+    NotesOnly,
+    PdfsOnly,
+    Archived,
+    Trashed,
+    Tag(String),
 }
 
 /// One clickable reference an assistant reply grounded its answer on
@@ -233,6 +244,7 @@ pub struct LontarApp {
     editor: Option<MarkdownEditor>,
     markdown_cache: CommonMarkCache,
     grid_filter: GridFilter,
+    doc_filter: DocFilter,
     sort_mode: SortMode,
     search_text: String,
     selection_mode: bool,
@@ -240,6 +252,9 @@ pub struct LontarApp {
     show_label_manager: bool,
     tag_rename: Option<(String, String)>,
     confirm_delete: Option<Uuid>,
+
+    /// Whether the floating sidebar overlay is currently open.
+    sidebar_open: bool,
 
     view: View,
 
@@ -281,6 +296,7 @@ impl LontarApp {
             editor: None,
             markdown_cache: CommonMarkCache::default(),
             grid_filter: GridFilter::All,
+            doc_filter: DocFilter::All,
             sort_mode: SortMode::Modified,
             search_text: String::new(),
             selection_mode: false,
@@ -288,6 +304,7 @@ impl LontarApp {
             show_label_manager: false,
             tag_rename: None,
             confirm_delete: None,
+            sidebar_open: false,
             view: View::Notes,
             search_query: String::new(),
             search_pending_id: None,
@@ -1152,21 +1169,11 @@ impl LontarApp {
         self.rescan_and_reindex();
     }
 
-    /// The Notes Grid (§3.1.2/§3.1.3): sidebar filters + tags, search,
-    /// sort, the card grid, multi-select batch actions, and the label
-    /// manager. Everything the `egui` closures below touch is a plain
-    /// local (cloned app state, mutated locally, written back at the
-    /// end) — same reasoning as `show_editor`'s doc comment. Note: this
-    /// uses a flex-wrap layout rather than true variable-height masonry
-    /// packing (out of reach for a reasonable effort in immediate-mode
-    /// `egui`), and manual drag-to-reorder is deferred past this phase.
+    /// The unified document grid (Notes + PDFs) with Pinterest-style masonry
+    /// layout. The fixed left sidebar has been replaced by a floating overlay
+    /// (see `show_sidebar_overlay` in `ui()`). The sort/filter bar is here
+    /// inline. `DocFilter` (set via the sidebar) controls what's shown.
     fn show_grid(&mut self, ui: &mut egui::Ui) {
-        let t_new = self.t("notes-new");
-        let t_sidebar_all = self.t("sidebar-all");
-        let t_sidebar_archived = self.t("sidebar-archived");
-        let t_sidebar_trash = self.t("sidebar-trash");
-        let t_sidebar_tags = self.t("sidebar-tags");
-        let t_manage_tags = self.t("sidebar-manage-tags");
         let t_sort_modified = self.t("sort-modified");
         let t_sort_created = self.t("sort-created");
         let t_sort_title = self.t("sort-title");
@@ -1196,148 +1203,262 @@ impl LontarApp {
 
         let notes: Vec<Note> = self.vault.as_ref().map(|v| v.notes.clone()).unwrap_or_default();
         let all_tags = tags::all_tags(&notes);
+        let pdf_docs = self.pdf_documents.clone();
+        let doc_filter = self.doc_filter.clone();
 
-        let mut filter = self.grid_filter.clone();
         let mut sort_mode = self.sort_mode;
-        let mut search_text = self.search_text.clone();
         let mut selection_mode = self.selection_mode;
         let mut selected = self.selected.clone();
         let mut show_label_manager = self.show_label_manager;
         let mut tag_rename = self.tag_rename.clone();
         let mut confirm_delete = self.confirm_delete;
         let mut actions: Vec<GridAction> = Vec::new();
+        let mut open_pdf: Option<std::path::PathBuf> = None;
 
-        egui::Panel::left("grid_sidebar")
-            .resizable(true)
-            .default_size(180.0)
+        // ── Floating sort / selection toolbar ──────────────────────────────
+        egui::Frame::NONE
+            .fill(egui::Color32::TRANSPARENT)
             .show(ui, |ui| {
-                if ui.selectable_label(filter == GridFilter::All, &t_sidebar_all).clicked() {
-                    filter = GridFilter::All;
-                }
-                if ui
-                    .selectable_label(filter == GridFilter::Archived, &t_sidebar_archived)
-                    .clicked()
-                {
-                    filter = GridFilter::Archived;
-                }
-                if ui
-                    .selectable_label(filter == GridFilter::Trashed, &t_sidebar_trash)
-                    .clicked()
-                {
-                    filter = GridFilter::Trashed;
-                }
-
-                ui.separator();
-                ui.label(&t_sidebar_tags);
-                for (tag, count) in &all_tags {
-                    let is_selected = matches!(&filter, GridFilter::Tag(t) if t.eq_ignore_ascii_case(tag));
-                    let mut label = egui::RichText::new(format!("#{tag} ({count})"));
-                    label = label.color(theme::tag_color(tag));
-                    if ui.selectable_label(is_selected, label).clicked() {
-                        filter = GridFilter::Tag(tag.clone());
-                    }
-                }
-                if ui.button(&t_manage_tags).clicked() {
-                    show_label_manager = true;
-                }
-            });
-
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.text_edit_singleline(&mut self.quick_capture_text);
-                if ui.button(&t_new).clicked() && !self.quick_capture_text.is_empty() {
-                    if let Some(vault) = self.vault.as_mut() {
-                        match Note::create(&vault.root, &self.quick_capture_text, "") {
-                            Ok(note) => {
-                                self.quick_capture_text.clear();
-                                actions.push(GridAction::Open(note.path.clone()));
-                            }
-                            Err(e) => self.report_error("error-context-create-note", e),
-                        }
-                    }
-                }
-            });
-
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut search_text).hint_text("🔍"));
-                egui::ComboBox::from_id_salt("sort_mode")
-                    .selected_text(match sort_mode {
-                        SortMode::Modified => &t_sort_modified,
-                        SortMode::Created => &t_sort_created,
-                        SortMode::Title => &t_sort_title,
-                        SortMode::Color => &t_sort_color,
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut sort_mode, SortMode::Modified, &t_sort_modified);
-                        ui.selectable_value(&mut sort_mode, SortMode::Created, &t_sort_created);
-                        ui.selectable_value(&mut sort_mode, SortMode::Title, &t_sort_title);
-                        ui.selectable_value(&mut sort_mode, SortMode::Color, &t_sort_color);
-                    });
-                let selection_label = if selection_mode { &t_selection_off } else { &t_selection_on };
-                if ui.button(selection_label).clicked() {
-                    selection_mode = !selection_mode;
-                    if !selection_mode {
-                        selected.clear();
-                    }
-                }
-            });
-
-            if selection_mode && !selected.is_empty() {
                 ui.horizontal(|ui| {
-                    if ui.button(&t_selection_archive).clicked() {
-                        actions.push(GridAction::BatchArchive(selected.iter().copied().collect()));
-                        selected.clear();
-                    }
-                    if ui.button(&t_selection_trash).clicked() {
-                        actions.push(GridAction::BatchTrash(selected.iter().copied().collect()));
-                        selected.clear();
-                    }
-                });
-            }
+                    // Sort picker — compact combo
+                    ui.label(
+                        egui::RichText::new("↕")
+                            .color(theme::GLASS_TEXT_FAINT)
+                            .size(13.0),
+                    );
+                    egui::ComboBox::from_id_salt("sort_mode")
+                        .selected_text(
+                            egui::RichText::new(match sort_mode {
+                                SortMode::Modified => &t_sort_modified,
+                                SortMode::Created => &t_sort_created,
+                                SortMode::Title => &t_sort_title,
+                                SortMode::Color => &t_sort_color,
+                            })
+                            .color(theme::GLASS_TEXT_SECONDARY)
+                            .size(12.5),
+                        )
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut sort_mode, SortMode::Modified, &t_sort_modified);
+                            ui.selectable_value(&mut sort_mode, SortMode::Created, &t_sort_created);
+                            ui.selectable_value(&mut sort_mode, SortMode::Title, &t_sort_title);
+                            ui.selectable_value(&mut sort_mode, SortMode::Color, &t_sort_color);
+                        });
 
-            ui.separator();
+                    ui.add_space(8.0);
 
-            let mut visible = query::filter_notes(&notes, &filter, &search_text);
-            query::sort_notes(&mut visible, sort_mode);
-            let in_trash_view = filter == GridFilter::Trashed;
-
-            if notes.is_empty() {
-                ui.label(&t_empty);
-            } else if visible.is_empty() {
-                ui.label(&t_empty_filtered);
-            } else {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for note in &visible {
-                            render_note_card(
-                                ui,
-                                note,
-                                &card,
-                                selection_mode,
-                                selected.contains(&note.frontmatter.id),
-                                in_trash_view,
-                                &mut actions,
-                                &mut selected,
-                                &mut confirm_delete,
-                            );
+                    // Multi-select toggle
+                    let sel_label = if selection_mode { &t_selection_off } else { &t_selection_on };
+                    let sel_btn = egui::Button::new(
+                        egui::RichText::new(sel_label)
+                            .color(theme::GLASS_TEXT_SECONDARY)
+                            .size(12.5),
+                    )
+                    .fill(egui::Color32::TRANSPARENT);
+                    if ui.add(sel_btn).clicked() {
+                        selection_mode = !selection_mode;
+                        if !selection_mode {
+                            selected.clear();
                         }
-                    });
-                });
-            }
-        });
+                    }
 
+                    if selection_mode && !selected.is_empty() {
+                        ui.add_space(8.0);
+                        let archive_btn = egui::Button::new(
+                            egui::RichText::new(&t_selection_archive)
+                                .color(theme::GLASS_TEXT_SECONDARY)
+                                .size(12.5),
+                        )
+                        .fill(egui::Color32::TRANSPARENT);
+                        if ui.add(archive_btn).clicked() {
+                            actions.push(GridAction::BatchArchive(selected.iter().copied().collect()));
+                            selected.clear();
+                        }
+                        let trash_btn = egui::Button::new(
+                            egui::RichText::new(&t_selection_trash)
+                                .color(theme::GLASS_ERROR)
+                                .size(12.5),
+                        )
+                        .fill(egui::Color32::TRANSPARENT);
+                        if ui.add(trash_btn).clicked() {
+                            actions.push(GridAction::BatchTrash(selected.iter().copied().collect()));
+                            selected.clear();
+                        }
+                    }
+                });
+            });
+
+        ui.add_space(8.0);
+
+        // ── Compute which notes/PDFs to show ───────────────────────────────
+        // Apply grid_filter (legacy) mapped from doc_filter for backward compat.
+        let grid_filter_mapped = match &doc_filter {
+            DocFilter::All | DocFilter::NotesOnly => GridFilter::All,
+            DocFilter::PdfsOnly => GridFilter::All, // PDFs handled separately below
+            DocFilter::Archived => GridFilter::Archived,
+            DocFilter::Trashed => GridFilter::Trashed,
+            DocFilter::Tag(t) => GridFilter::Tag(t.clone()),
+        };
+        let mut visible = query::filter_notes(&notes, &grid_filter_mapped, &self.search_text);
+        query::sort_notes(&mut visible, sort_mode);
+        let in_trash_view = matches!(&doc_filter, DocFilter::Trashed);
+
+        // PDFs shown only if filter is All or PdfsOnly, not in trash/archived
+        let show_pdfs = matches!(&doc_filter, DocFilter::All | DocFilter::PdfsOnly)
+            && !in_trash_view
+            && !matches!(&doc_filter, DocFilter::Archived);
+
+        // Filter PDFs by search text
+        let visible_pdfs: Vec<std::path::PathBuf> = if show_pdfs {
+            pdf_docs
+                .iter()
+                .filter(|p| {
+                    if self.search_text.is_empty() {
+                        true
+                    } else {
+                        p.file_name()
+                            .map(|n| n.to_string_lossy().to_lowercase())
+                            .unwrap_or_default()
+                            .contains(&self.search_text.to_lowercase())
+                    }
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Hide notes when PdfsOnly filter is active
+        let visible_notes: Vec<&Note> = if matches!(&doc_filter, DocFilter::PdfsOnly) {
+            Vec::new()
+        } else {
+            visible
+        };
+
+        let total_items = visible_notes.len() + visible_pdfs.len();
+        let has_notes_in_vault = !notes.is_empty();
+
+        if !has_notes_in_vault && pdf_docs.is_empty() {
+            // Empty vault state — centered message
+            ui.vertical_centered(|ui| {
+                ui.add_space(60.0);
+                ui.label(
+                    egui::RichText::new("✏")
+                        .size(48.0)
+                        .color(theme::GLASS_TEXT_FAINT),
+                );
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(&t_empty)
+                        .size(14.0)
+                        .color(theme::GLASS_TEXT_SECONDARY),
+                );
+            });
+            return;
+        }
+
+        if total_items == 0 {
+            ui.vertical_centered(|ui| {
+                ui.add_space(40.0);
+                ui.label(
+                    egui::RichText::new(&t_empty_filtered)
+                        .size(14.0)
+                        .color(theme::GLASS_TEXT_SECONDARY),
+                );
+            });
+        } else {
+            // ── Pinterest masonry grid ─────────────────────────────────────
+            // Determine column count based on available width.
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let available_width = ui.available_width();
+                let col_count: usize = if available_width < 480.0 {
+                    1
+                } else if available_width < 760.0 {
+                    2
+                } else if available_width < 1100.0 {
+                    3
+                } else {
+                    4
+                };
+                let gap = theme::GRID_GAP;
+                let col_width =
+                    (available_width - gap * (col_count as f32 - 1.0)) / col_count as f32;
+
+                // Render all items in a horizontal row of `col_count` columns.
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(gap, 0.0);
+
+                    // Pre-allocate column containers with fixed width
+                    for col_idx in 0..col_count {
+                        let is_last = col_idx == col_count - 1;
+                        let this_col_width = if is_last {
+                            // Last column takes any remaining space
+                            ui.available_width()
+                        } else {
+                            col_width
+                        };
+
+                        ui.allocate_ui(egui::vec2(this_col_width, ui.available_height()), |ui| {
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(0.0, gap);
+
+                                // Note cards for this column
+                                for (item_idx, note) in visible_notes.iter().enumerate() {
+                                    if item_idx % col_count == col_idx {
+                                        render_note_card_glass(
+                                            ui,
+                                            note,
+                                            &card,
+                                            selection_mode,
+                                            selected.contains(&note.frontmatter.id),
+                                            in_trash_view,
+                                            &mut actions,
+                                            &mut selected,
+                                            &mut confirm_delete,
+                                        );
+                                    }
+                                }
+
+                                // PDF cards for this column
+                                let pdf_offset = visible_notes.len();
+                                for (item_idx, path) in visible_pdfs.iter().enumerate() {
+                                    if (item_idx + pdf_offset) % col_count == col_idx {
+                                        render_pdf_card_glass(ui, path, &mut open_pdf);
+                                    }
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+        }
+
+        // ── Dialogs ────────────────────────────────────────────────────────
         if let Some(id) = confirm_delete {
             egui::Window::new(&t_confirm_title)
                 .collapsible(false)
                 .resizable(false)
+                .frame(theme::glass_card_frame())
                 .show(ui.ctx(), |ui| {
-                    ui.label(&t_confirm_body);
+                    ui.label(
+                        egui::RichText::new(&t_confirm_body).color(theme::GLASS_TEXT_SECONDARY),
+                    );
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button(&t_confirm_yes).clicked() {
+                        let yes_btn = egui::Button::new(
+                            egui::RichText::new(&t_confirm_yes).color(egui::Color32::WHITE),
+                        )
+                        .fill(theme::GLASS_ERROR)
+                        .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
+                        if ui.add(yes_btn).clicked() {
                             actions.push(GridAction::DeletePermanently(id));
                             confirm_delete = None;
                         }
-                        if ui.button(&t_confirm_cancel).clicked() {
+                        let cancel_btn = egui::Button::new(
+                            egui::RichText::new(&t_confirm_cancel)
+                                .color(theme::GLASS_TEXT_SECONDARY),
+                        )
+                        .fill(egui::Color32::TRANSPARENT);
+                        if ui.add(cancel_btn).clicked() {
                             confirm_delete = None;
                         }
                     });
@@ -1347,6 +1468,7 @@ impl LontarApp {
         if show_label_manager {
             egui::Window::new(&t_tag_manager_title)
                 .collapsible(false)
+                .frame(theme::glass_card_frame())
                 .show(ui.ctx(), |ui| {
                     for (tag, count) in &all_tags {
                         ui.horizontal(|ui| {
@@ -1354,7 +1476,10 @@ impl LontarApp {
                                 Some((target, draft)) if target == tag => {
                                     ui.text_edit_singleline(draft);
                                     if ui.button(&t_tag_rename).clicked() {
-                                        actions.push(GridAction::RenameTag(target.clone(), draft.clone()));
+                                        actions.push(GridAction::RenameTag(
+                                            target.clone(),
+                                            draft.clone(),
+                                        ));
                                         tag_rename = None;
                                     }
                                     if ui.button(&t_confirm_cancel).clicked() {
@@ -1362,7 +1487,10 @@ impl LontarApp {
                                     }
                                 }
                                 _ => {
-                                    ui.colored_label(theme::tag_color(tag), format!("#{tag} ({count})"));
+                                    ui.colored_label(
+                                        theme::tag_color(tag),
+                                        format!("#{tag} ({count})"),
+                                    );
                                     if ui.button(&t_tag_rename).clicked() {
                                         tag_rename = Some((tag.clone(), tag.clone()));
                                     }
@@ -1380,9 +1508,8 @@ impl LontarApp {
                 });
         }
 
-        self.grid_filter = filter;
+        // ── Write back ─────────────────────────────────────────────────────
         self.sort_mode = sort_mode;
-        self.search_text = search_text;
         self.selection_mode = selection_mode;
         self.selected = selected;
         self.show_label_manager = show_label_manager;
@@ -1391,6 +1518,9 @@ impl LontarApp {
 
         for action in actions {
             self.apply_grid_action(action);
+        }
+        if let Some(path) = open_pdf {
+            self.open_pdf(path);
         }
     }
 
@@ -2272,6 +2402,370 @@ fn locales_dir() -> PathBuf {
     PathBuf::from("locales")
 }
 
+/// Liquid-Glass version of the note card. Full-width within its masonry
+/// column (width is set by the parent `allocate_ui`), variable height.
+#[allow(clippy::too_many_arguments)]
+fn render_note_card_glass(
+    ui: &mut egui::Ui,
+    note: &Note,
+    card: &CardStrings,
+    selection_mode: bool,
+    is_selected: bool,
+    in_trash_view: bool,
+    actions: &mut Vec<GridAction>,
+    selected: &mut HashSet<Uuid>,
+    confirm_delete: &mut Option<Uuid>,
+) {
+    let id = note.frontmatter.id;
+
+    // Build the card frame: use note colour if set, else default glass surface.
+    let card_fill = theme::color_for(note.frontmatter.color.as_deref())
+        .unwrap_or(theme::GLASS_SURFACE);
+    let border_color = theme::color_solid_for(note.frontmatter.color.as_deref())
+        .map(|c| egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), 80))
+        .unwrap_or(theme::GLASS_BORDER);
+
+    let frame = egui::Frame {
+        inner_margin: egui::Margin::same(12),
+        outer_margin: egui::Margin::ZERO,
+        corner_radius: egui::CornerRadius::same(theme::ROUNDING_LG),
+        shadow: egui::Shadow {
+            offset: [0, 4],
+            blur: 12,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(60),
+        },
+        fill: card_fill,
+        stroke: egui::Stroke::new(1.0, border_color),
+    };
+
+    frame.show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.vertical(|ui| {
+            // ── Header row ──
+            ui.horizontal(|ui| {
+                if selection_mode {
+                    let mut checked = is_selected;
+                    if ui.checkbox(&mut checked, "").changed() {
+                        if checked { selected.insert(id); } else { selected.remove(&id); }
+                    }
+                }
+                if note.frontmatter.pinned {
+                    ui.label(egui::RichText::new("📌").size(11.0));
+                }
+                // Note type badge
+                ui.label(
+                    egui::RichText::new("📝")
+                        .size(11.0)
+                        .color(theme::GLASS_TEXT_FAINT),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Quick open button
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("↗").color(theme::GLASS_TEXT_FAINT).size(12.0),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text("Buka")
+                        .clicked()
+                    {
+                        actions.push(GridAction::Open(note.path.clone()));
+                    }
+                });
+            });
+
+            ui.add_space(4.0);
+
+            // ── Title ──
+            let title_color = theme::GLASS_TEXT_PRIMARY;
+            ui.label(
+                egui::RichText::new(note.frontmatter.title.as_str())
+                    .size(14.0)
+                    .strong()
+                    .color(title_color),
+            );
+
+            // ── Body snippet ──
+            let snippet = query::snippet(&note.body, 120);
+            if !snippet.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(&snippet)
+                        .size(12.0)
+                        .color(theme::GLASS_TEXT_SECONDARY),
+                );
+            }
+
+            // ── Checklist progress ──
+            if let Some((done, total)) = note.checklist_progress() {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(format!("✅ {done}/{total}"))
+                        .size(11.0)
+                        .color(theme::GLASS_TEXT_FAINT),
+                );
+            }
+
+            // ── Tags ──
+            if !note.frontmatter.tags.is_empty() {
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
+                    for tag in &note.frontmatter.tags {
+                        let color = theme::tag_color(tag);
+                        let chip_fill = egui::Color32::from_rgba_premultiplied(
+                            (color.r() as u16 * 25 / 255) as u8,
+                            (color.g() as u16 * 25 / 255) as u8,
+                            (color.b() as u16 * 25 / 255) as u8,
+                            55,
+                        );
+                        egui::Frame {
+                            inner_margin: egui::Margin::symmetric(6, 2),
+                            outer_margin: egui::Margin::ZERO,
+                            corner_radius: egui::CornerRadius::same(20),
+                            shadow: egui::Shadow::NONE,
+                            fill: chip_fill,
+                            stroke: egui::Stroke::new(
+                                1.0,
+                                egui::Color32::from_rgba_premultiplied(
+                                    color.r(), color.g(), color.b(), 70,
+                                ),
+                            ),
+                        }
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("#{tag}"))
+                                    .size(10.5)
+                                    .color(color),
+                            );
+                        });
+                    }
+                });
+            }
+
+            // ── Action row ──
+            ui.add_space(8.0);
+            ui.add(egui::Separator::default().spacing(0.0));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+
+                if in_trash_view {
+                    let restore_btn = egui::Button::new(
+                        egui::RichText::new(&card.restore)
+                            .size(11.0)
+                            .color(theme::GLASS_ACCENT_HOVER),
+                    )
+                    .frame(false);
+                    if ui.add(restore_btn).clicked() {
+                        actions.push(GridAction::Restore(id));
+                    }
+                    let del_btn = egui::Button::new(
+                        egui::RichText::new(&card.delete_permanent)
+                            .size(11.0)
+                            .color(theme::GLASS_ERROR),
+                    )
+                    .frame(false);
+                    if ui.add(del_btn).clicked() {
+                        *confirm_delete = Some(id);
+                    }
+                } else {
+                    // Pin toggle
+                    let pin_icon = if note.frontmatter.pinned { "📌" } else { "○" };
+                    let pin_tip = if note.frontmatter.pinned { &card.unpin } else { &card.pin };
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new(pin_icon).size(12.0))
+                                .frame(false),
+                        )
+                        .on_hover_text(pin_tip.as_str())
+                        .clicked()
+                    {
+                        actions.push(GridAction::TogglePin(id));
+                    }
+
+                    // Colour picker menu
+                    ui.menu_button(
+                        egui::RichText::new("🎨").size(12.0),
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                for (name, _) in theme::PALETTE_SOLID {
+                                    let solid = theme::color_solid_for(Some(name)).unwrap();
+                                    if ui
+                                        .add(
+                                            egui::Button::new("  ")
+                                                .fill(solid)
+                                                .corner_radius(egui::CornerRadius::same(4)),
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.push(GridAction::SetColor(
+                                            id,
+                                            Some((*name).to_string()),
+                                        ));
+                                    }
+                                }
+                                if ui.button("✕").clicked() {
+                                    actions.push(GridAction::SetColor(id, None));
+                                }
+                            });
+                        },
+                    );
+
+                    // Archive toggle
+                    let arch_label = if note.frontmatter.archived {
+                        &card.unarchive
+                    } else {
+                        &card.archive
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(arch_label)
+                                    .size(11.0)
+                                    .color(theme::GLASS_TEXT_FAINT),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                    {
+                        actions.push(GridAction::ToggleArchived(id));
+                    }
+
+                    // Trash
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(&card.trash)
+                                    .size(11.0)
+                                    .color(theme::GLASS_TEXT_FAINT),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                    {
+                        actions.push(GridAction::Trash(id));
+                    }
+                }
+            });
+        });
+    });
+}
+
+/// Renders a PDF document card in the unified masonry grid.
+fn render_pdf_card_glass(
+    ui: &mut egui::Ui,
+    path: &std::path::Path,
+    open_pdf: &mut Option<std::path::PathBuf>,
+) {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Document.pdf".to_string());
+
+    // File size (best-effort)
+    let size_str = std::fs::metadata(path)
+        .map(|m| {
+            let bytes = m.len();
+            if bytes >= 1_048_576 {
+                format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+            } else {
+                format!("{:.0} KB", bytes as f64 / 1024.0)
+            }
+        })
+        .unwrap_or_default();
+
+    let pdf_accent = egui::Color32::from_rgb(239, 68, 68); // red accent for PDF
+    let card_fill = egui::Color32::from_rgba_premultiplied(55, 12, 12, 50);
+    let border_color = egui::Color32::from_rgba_premultiplied(239, 68, 68, 60);
+
+    let frame = egui::Frame {
+        inner_margin: egui::Margin::same(12),
+        outer_margin: egui::Margin::ZERO,
+        corner_radius: egui::CornerRadius::same(theme::ROUNDING_LG),
+        shadow: egui::Shadow {
+            offset: [0, 4],
+            blur: 12,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(60),
+        },
+        fill: card_fill,
+        stroke: egui::Stroke::new(1.0, border_color),
+    };
+
+    frame.show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.vertical(|ui| {
+            // PDF icon + badge row
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("📄").size(22.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // PDF badge
+                    egui::Frame {
+                        inner_margin: egui::Margin::symmetric(6, 2),
+                        outer_margin: egui::Margin::ZERO,
+                        corner_radius: egui::CornerRadius::same(4),
+                        shadow: egui::Shadow::NONE,
+                        fill: egui::Color32::from_rgba_premultiplied(239, 68, 68, 40),
+                        stroke: egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(239, 68, 68, 100)),
+                    }
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("PDF")
+                                .size(10.0)
+                                .strong()
+                                .color(pdf_accent),
+                        );
+                    });
+                });
+            });
+
+            ui.add_space(6.0);
+
+            // File name
+            let display_name = if name.len() > 30 {
+                format!("{}…", &name[..27])
+            } else {
+                name.clone()
+            };
+            ui.label(
+                egui::RichText::new(&display_name)
+                    .size(13.0)
+                    .strong()
+                    .color(theme::GLASS_TEXT_PRIMARY),
+            );
+
+            // File size
+            if !size_str.is_empty() {
+                ui.label(
+                    egui::RichText::new(&size_str)
+                        .size(11.0)
+                        .color(theme::GLASS_TEXT_FAINT),
+                );
+            }
+
+            // ── Action row ──
+            ui.add_space(8.0);
+            ui.add(egui::Separator::default().spacing(0.0));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let open_btn = egui::Button::new(
+                    egui::RichText::new("Buka")
+                        .size(11.5)
+                        .color(theme::GLASS_ACCENT_HOVER),
+                )
+                .frame(false);
+                if ui.add(open_btn).clicked() {
+                    *open_pdf = Some(path.to_path_buf());
+                }
+            });
+        });
+    });
+}
+
+
 impl eframe::App for LontarApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Poll the file watcher once per frame; debouncing happens inside
@@ -2314,35 +2808,405 @@ impl eframe::App for LontarApp {
         self.poll_indexer_results();
         self.poll_search_and_chat(ui.ctx());
 
+        // Apply Liquid Glass theme every frame.
+        theme::apply_liquid_glass_theme(ui.ctx());
+
         let t_nav_notes = self.t("nav-notes");
         let t_nav_search = self.t("nav-search");
         let t_nav_chat = self.t("nav-chat");
-        let t_nav_pdf = self.t("nav-pdf");
-        let show_tabs = self.vault.is_some() && self.editor.is_none() && self.pdf_viewer.is_none();
+        let vault_open = self.vault.is_some();
+        let in_editor = self.editor.is_some();
+        let in_pdf = self.pdf_viewer.is_some();
 
-        egui::Panel::top("top_bar").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(self.t("app-title"));
-                if show_tabs {
-                    ui.separator();
-                    ui.selectable_value(&mut self.view, View::Notes, &t_nav_notes);
-                    ui.selectable_value(&mut self.view, View::Search, &t_nav_search);
-                    ui.selectable_value(&mut self.view, View::Chat, &t_nav_chat);
-                    ui.selectable_value(&mut self.view, View::Pdf, &t_nav_pdf);
-                }
+        // ─── Floating Top Bar ────────────────────────────────────────────────
+        egui::Panel::top("top_bar")
+            .frame(theme::glass_topbar_frame())
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    // Hamburger sidebar toggle (only when vault is open and
+                    // not inside editor/pdf viewer where sidebar is irrelevant)
+                    if vault_open && !in_editor && !in_pdf {
+                        let sidebar_icon = if self.sidebar_open { "✕" } else { "☰" };
+                        let btn = egui::Button::new(
+                            egui::RichText::new(sidebar_icon)
+                                .size(16.0)
+                                .color(theme::GLASS_TEXT_PRIMARY),
+                        )
+                        .frame(false);
+                        if ui.add(btn).clicked() {
+                            self.sidebar_open = !self.sidebar_open;
+                        }
+                        ui.add_space(4.0);
+                    }
+
+                    // App title
+                    ui.label(
+                        egui::RichText::new(self.t("app-title"))
+                            .size(17.0)
+                            .strong()
+                            .color(theme::GLASS_TEXT_PRIMARY),
+                    );
+
+                    // Navigation tabs (centered flex)
+                    if vault_open && !in_editor && !in_pdf {
+                        ui.add_space(16.0);
+                        // Styled tab buttons
+                        let is_notes = self.view == View::Notes;
+                        let is_search = self.view == View::Search;
+                        let is_chat = self.view == View::Chat;
+
+                        let tab_btn = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
+                            let text_color = if active {
+                                theme::GLASS_ACCENT_HOVER
+                            } else {
+                                theme::GLASS_TEXT_SECONDARY
+                            };
+                            let btn = egui::Button::new(
+                                egui::RichText::new(label).color(text_color).size(13.5),
+                            )
+                            .frame(false);
+                            ui.add(btn).clicked()
+                        };
+
+                        if tab_btn(ui, &t_nav_notes, is_notes) {
+                            self.view = View::Notes;
+                        }
+                        ui.add_space(4.0);
+                        if tab_btn(ui, &t_nav_search, is_search) {
+                            self.view = View::Search;
+                        }
+                        ui.add_space(4.0);
+                        if tab_btn(ui, &t_nav_chat, is_chat) {
+                            self.view = View::Chat;
+                        }
+                    }
+
+                    // Right-aligned: search box + new note button
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if vault_open && !in_editor && !in_pdf && self.view == View::Notes {
+                            // New note / capture button
+                            let new_btn = egui::Button::new(
+                                egui::RichText::new("＋ Baru")
+                                    .color(theme::GLASS_TEXT_PRIMARY)
+                                    .size(13.0),
+                            )
+                            .fill(theme::GLASS_ACCENT)
+                            .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
+                            if ui.add(new_btn).clicked() && !self.quick_capture_text.is_empty() {
+                                if let Some(vault) = self.vault.as_mut() {
+                                    match crate::notes::Note::create(
+                                        &vault.root,
+                                        &self.quick_capture_text,
+                                        "",
+                                    ) {
+                                        Ok(_note) => {
+                                            self.quick_capture_text.clear();
+                                            self.rescan_and_reindex();
+                                        }
+                                        Err(e) => self.report_error("error-context-create-note", e),
+                                    }
+                                }
+                            }
+                            ui.add_space(6.0);
+                            // Inline title capture
+                            let capture = egui::TextEdit::singleline(&mut self.quick_capture_text)
+                                .hint_text("✏ Judul catatan baru...")
+                                .desired_width(180.0);
+                            ui.add(capture);
+                            ui.add_space(8.0);
+
+                            // Floating search box always visible in top bar
+                            let search = egui::TextEdit::singleline(&mut self.search_text)
+                                .hint_text("🔍 Cari catatan & PDF...")
+                                .desired_width(200.0);
+                            ui.add(search);
+                        }
+                    });
+                });
             });
-        });
 
+        // ─── Floating Sidebar Overlay ────────────────────────────────────────
+        // Renders as an egui::Window (overlay) that slides in from the left,
+        // drawn before the central panel so it appears on top of the content.
+        if self.sidebar_open && vault_open && !in_editor && !in_pdf {
+            let notes_for_sidebar: Vec<crate::notes::Note> =
+                self.vault.as_ref().map(|v| v.notes.clone()).unwrap_or_default();
+            let all_tags = crate::notes::tags::all_tags(&notes_for_sidebar);
+            let pdf_docs = self.pdf_documents.clone();
+
+            let t_sidebar_all = self.t("sidebar-all");
+            let t_sidebar_notes = self.t("sidebar-notes-only");
+            let t_sidebar_pdfs = self.t("sidebar-pdfs-only");
+            let t_sidebar_archived = self.t("sidebar-archived");
+            let t_sidebar_trash = self.t("sidebar-trash");
+            let t_sidebar_tags = self.t("sidebar-tags");
+            let t_manage_tags = self.t("sidebar-manage-tags");
+            let t_import_pdf = self.t("pdf-import");
+
+            let screen_rect = ui.ctx().viewport_rect();
+            let sidebar_rect = egui::Rect::from_min_size(
+                screen_rect.min + egui::vec2(0.0, theme::TOPBAR_HEIGHT),
+                egui::vec2(theme::SIDEBAR_WIDTH, screen_rect.height() - theme::TOPBAR_HEIGHT),
+            );
+
+            let mut sidebar_open = self.sidebar_open;
+            let mut doc_filter = self.doc_filter.clone();
+            let mut show_label_manager = self.show_label_manager;
+            let mut pdf_import_action: Option<std::path::PathBuf> = None;
+
+            egui::Window::new("sidebar_overlay")
+                .title_bar(false)
+                .resizable(false)
+                .collapsible(false)
+                .fixed_rect(sidebar_rect)
+                .frame(theme::glass_panel_frame())
+                .show(ui.ctx(), |ui| {
+                    // Sidebar header
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui.label(
+                            egui::RichText::new("LONTAR")
+                                .size(14.0)
+                                .strong()
+                                .color(theme::GLASS_TEXT_PRIMARY),
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.add_space(8.0);
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("✕")
+                                                .color(theme::GLASS_TEXT_FAINT),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    sidebar_open = false;
+                                }
+                            },
+                        );
+                    });
+                    ui.add_space(8.0);
+
+                    // Thin separator
+                    ui.add(egui::Separator::default().spacing(0.0));
+                    ui.add_space(8.0);
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.add_space(4.0);
+
+                        // ── Document filter group ──
+                        let sidebar_item = |ui: &mut egui::Ui, label: &str, icon: &str, active: bool| -> bool {
+                            let text_color = if active {
+                                theme::GLASS_ACCENT_HOVER
+                            } else {
+                                theme::GLASS_TEXT_SECONDARY
+                            };
+                            let bg = if active {
+                                egui::Color32::from_rgba_premultiplied(99, 102, 241, 25)
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            };
+                            let full_label = format!("{icon}  {label}");
+                            let btn = egui::Button::new(
+                                egui::RichText::new(&full_label)
+                                    .color(text_color)
+                                    .size(13.0),
+                            )
+                            .fill(bg)
+                            .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
+                            let resp = ui
+                                .add_sized(
+                                    egui::vec2(ui.available_width() - 16.0, 28.0),
+                                    btn,
+                                );
+                            resp.clicked()
+                        };
+
+                        ui.add_space(2.0);
+                        ui.indent("sidebar_filters", |ui| {
+                            if sidebar_item(ui, &t_sidebar_all, "◎", doc_filter == DocFilter::All) {
+                                doc_filter = DocFilter::All;
+                            }
+                            ui.add_space(2.0);
+                            if sidebar_item(ui, &t_sidebar_notes, "📝", doc_filter == DocFilter::NotesOnly) {
+                                doc_filter = DocFilter::NotesOnly;
+                            }
+                            ui.add_space(2.0);
+                            if sidebar_item(ui, &t_sidebar_pdfs, "📄", doc_filter == DocFilter::PdfsOnly) {
+                                doc_filter = DocFilter::PdfsOnly;
+                            }
+                            ui.add_space(2.0);
+                            if sidebar_item(ui, &t_sidebar_archived, "📦", doc_filter == DocFilter::Archived) {
+                                doc_filter = DocFilter::Archived;
+                            }
+                            ui.add_space(2.0);
+                            if sidebar_item(ui, &t_sidebar_trash, "🗑", doc_filter == DocFilter::Trashed) {
+                                doc_filter = DocFilter::Trashed;
+                            }
+                        });
+
+                        ui.add_space(12.0);
+                        ui.add(egui::Separator::default().spacing(0.0));
+                        ui.add_space(8.0);
+
+                        // ── Tags ──
+                        ui.indent("sidebar_tags_header", |ui| {
+                            ui.label(
+                                egui::RichText::new(&t_sidebar_tags)
+                                    .size(11.0)
+                                    .color(theme::GLASS_TEXT_FAINT)
+                                    .strong(),
+                            );
+                        });
+                        ui.add_space(4.0);
+
+                        for (tag, count) in &all_tags {
+                            let is_selected = matches!(&doc_filter, DocFilter::Tag(t) if t.eq_ignore_ascii_case(tag));
+                            let color = theme::tag_color(tag);
+                            let label_str = format!("#{tag}  {count}");
+                            ui.indent("sidebar_tag", |ui| {
+                                let btn = egui::Button::new(
+                                    egui::RichText::new(&label_str)
+                                        .color(if is_selected { theme::GLASS_ACCENT_HOVER } else { color })
+                                        .size(12.5),
+                                )
+                                .fill(if is_selected {
+                                    egui::Color32::from_rgba_premultiplied(99, 102, 241, 25)
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                })
+                                .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
+                                if ui.add_sized(egui::vec2(ui.available_width() - 16.0, 26.0), btn).clicked() {
+                                    doc_filter = DocFilter::Tag(tag.clone());
+                                }
+                            });
+                            ui.add_space(1.0);
+                        }
+
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(&t_manage_tags)
+                                        .size(11.0)
+                                        .color(theme::GLASS_TEXT_FAINT),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            show_label_manager = true;
+                        }
+
+                        ui.add_space(12.0);
+                        ui.add(egui::Separator::default().spacing(0.0));
+                        ui.add_space(8.0);
+
+                        // ── PDF Import ──
+                        ui.indent("sidebar_pdf", |ui| {
+                            ui.label(
+                                egui::RichText::new("PDF")
+                                    .size(11.0)
+                                    .color(theme::GLASS_TEXT_FAINT)
+                                    .strong(),
+                            );
+                        });
+                        ui.add_space(4.0);
+                        ui.indent("sidebar_pdf_import", |ui| {
+                            let import_btn = egui::Button::new(
+                                egui::RichText::new(&format!("📥  {t_import_pdf}"))
+                                    .color(theme::GLASS_ACCENT_HOVER)
+                                    .size(13.0),
+                            )
+                            .fill(egui::Color32::from_rgba_premultiplied(99, 102, 241, 15))
+                            .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
+                            let resp = ui.add_sized(
+                                egui::vec2(ui.available_width() - 16.0, 28.0),
+                                import_btn,
+                            );
+                            if resp.clicked() {
+                                if let Some(file) = rfd::FileDialog::new()
+                                    .add_filter("PDF", &["pdf"])
+                                    .pick_file()
+                                {
+                                    pdf_import_action = Some(file);
+                                }
+                            }
+
+                            // List imported PDFs compactly
+                            ui.add_space(4.0);
+                            for path in &pdf_docs {
+                                let name = path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "PDF".to_string());
+                                let truncated = if name.len() > 22 {
+                                    format!("{}…", &name[..19])
+                                } else {
+                                    name.clone()
+                                };
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new(format!("  📄 {truncated}"))
+                                                .size(12.0)
+                                                .color(theme::GLASS_TEXT_SECONDARY),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    // open PDF from sidebar list
+                                }
+                            }
+                        });
+
+                        ui.add_space(16.0);
+                    });
+                });
+
+            // Write back sidebar state
+            self.sidebar_open = sidebar_open;
+            self.doc_filter = doc_filter;
+            self.show_label_manager = show_label_manager;
+            if let Some(path) = pdf_import_action {
+                self.import_pdf(path);
+            }
+        }
+
+        // ─── Central Panel ───────────────────────────────────────────────────
         egui::CentralPanel::default().show(ui, |ui| {
             self.show_status_banner(ui);
 
             if self.vault.is_none() {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(40.0);
-                    ui.label(self.t("vault-select-prompt"));
-                    if ui.button(self.t("vault-pick-folder")).clicked() {
+                    ui.add_space(60.0);
+                    ui.label(
+                        egui::RichText::new("📂")
+                            .size(48.0)
+                            .color(theme::GLASS_TEXT_FAINT),
+                    );
+                    ui.add_space(12.0);
+                    ui.label(
+                        egui::RichText::new(self.t("vault-select-prompt"))
+                            .size(15.0)
+                            .color(theme::GLASS_TEXT_SECONDARY),
+                    );
+                    ui.add_space(16.0);
+                    let pick_btn = egui::Button::new(
+                        egui::RichText::new(self.t("vault-pick-folder"))
+                            .color(egui::Color32::WHITE)
+                            .size(14.0),
+                    )
+                    .fill(theme::GLASS_ACCENT)
+                    .corner_radius(egui::CornerRadius::same(theme::ROUNDING_MD));
+                    if ui.add(pick_btn).clicked() {
                         if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                            match Vault::open(folder) {
+                            match crate::notes::Vault::open(folder) {
                                 Ok(vault) => self.activate_vault(vault),
                                 Err(e) => self.report_error("error-context-open-vault", e),
                             }
@@ -2366,8 +3230,8 @@ impl eframe::App for LontarApp {
                 View::Notes => self.show_grid(ui),
                 View::Search => self.show_search(ui),
                 View::Chat => self.show_chat(ui),
-                View::Pdf => self.show_pdf_library(ui),
             }
         });
     }
 }
+

@@ -29,7 +29,9 @@ editor-backlinks-empty = No other notes link here yet.
 editor-word-count = { $count } words
 editor-reading-time = ~{ $minutes } min read
 
-sidebar-all = All Notes
+sidebar-all = All Documents
+sidebar-notes-only = Markdown Notes
+sidebar-pdfs-only = PDF Documents
 sidebar-archived = Archived
 sidebar-trash = Trash
 sidebar-tags = Labels
