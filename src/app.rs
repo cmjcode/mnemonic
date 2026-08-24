@@ -13,6 +13,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use anyhow::{Context, Result};
 use egui_commonmark::CommonMarkCache;
 use uuid::Uuid;
 
@@ -27,7 +28,9 @@ use crate::markdown::editor::{
 use crate::markdown::{self, wikilink, EditorMode, MarkdownEditor, WikilinkIndex};
 use crate::notes::query::{self, GridFilter, SortMode};
 use crate::notes::{tags, trash, Note, Vault, VaultWatcher};
-use crate::pdf::{self, editor as pdf_editor, PdfRenderer};
+use crate::pdf::annotator::{Annotation, AnnotationKind};
+use crate::pdf::editor::DocumentMetadata;
+use crate::pdf::{self, annotator as pdf_annotator, editor as pdf_editor, PdfRenderer};
 use crate::ui::theme;
 
 /// How many top-ranked chunks to retrieve for the Search tab / Chat tab
@@ -43,6 +46,18 @@ const CHAT_TOP_K: usize = 5;
 /// on why rendering is synchronous rather than backgrounded in this
 /// phase).
 const DEFAULT_PDF_ZOOM_WIDTH: u16 = 900;
+
+/// Default annotation color (§Fase 9) — a translucent-when-drawn yellow,
+/// the conventional highlighter color, in the `(r, g, b)` `0.0..=1.0`
+/// form `pdf::annotator::Annotation::color` expects.
+const DEFAULT_ANNOTATION_COLOR: [f32; 3] = [1.0, 0.92, 0.23];
+
+/// Minimum on-screen drag distance (pixels) before a drag over the PDF
+/// canvas counts as "the user drew a rectangle" rather than "the user
+/// clicked" (§Fase 9). A click still places an annotation — just at a
+/// small default size anchored at the click point — so a single tap
+/// works for sticky notes without forcing a drag every time.
+const MIN_ANNOTATION_DRAG_PX: f32 = 4.0;
 
 /// Which top-level tab is showing in the central panel (only relevant
 /// while no note is open for editing and no PDF is open for viewing —
@@ -130,11 +145,52 @@ struct PdfViewerState {
     /// re-rendered whenever this no longer matches the live values.
     rendered_key: Option<(usize, u16)>,
     render_error: Option<String>,
+    /// The current page's true size in PDF points (§Fase 9), cached
+    /// alongside `texture`/`rendered_key` so it's only recomputed when the
+    /// page actually changes, not every frame — used to convert the
+    /// annotation canvas's on-screen drag rectangles into
+    /// `Annotation::rect`'s PDF user-space coordinates.
+    page_size_points: Option<(f32, f32)>,
     /// 1-based inclusive page range for the Split operation's UI.
     split_from: u32,
     split_to: u32,
     delete_confirm: bool,
     op_status: String,
+
+    // Annotation canvas (§Fase 9, §3.5 point 2). `staged_annotations`
+    // haven't been written to any file yet — they only get baked in when
+    // the user hits Save/Export (`bake_pdf_changes`); until then they're
+    // just drawn as an overlay on top of the rendered bitmap.
+    annotate_tool: Option<AnnotationKind>,
+    annotate_color: [f32; 3],
+    drag_start: Option<egui::Pos2>,
+    staged_annotations: Vec<Annotation>,
+    /// A placed-but-not-yet-confirmed sticky note / text injection,
+    /// waiting on the text prompt window for its `contents`.
+    pending_annotation: Option<PendingAnnotation>,
+    pending_annotation_text: String,
+
+    // Metadata editor (§Fase 9, §3.5 point 2's "Metadata Editor" bullet).
+    // Loaded from `input`'s current `/Info` dict on open so the fields
+    // always start accurate, then carried along unconditionally into
+    // every Save/Export (a harmless no-op rewrite when unedited).
+    show_metadata_editor: bool,
+    metadata_title: String,
+    metadata_author: String,
+    metadata_keywords: String,
+
+    // Save/Export (§Fase 9, §3.5 point 3).
+    show_save_confirm: bool,
+}
+
+/// One placed-but-unconfirmed sticky note / text injection (§Fase 9),
+/// waiting on the user's text before it's added to `staged_annotations`.
+/// `rect` is already in PDF user-space points (`Annotation::rect`'s
+/// coordinate system), computed at drag-release time.
+struct PendingAnnotation {
+    kind: AnnotationKind,
+    page: u32,
+    rect: (f32, f32, f32, f32),
 }
 
 /// What the user asked for while looking at the PDF viewer's page-ops
@@ -147,6 +203,13 @@ enum PdfViewerAction {
     DeleteCurrentPage { path: PathBuf, page: u32 },
     Split { path: PathBuf, from: u32, to: u32 },
     Merge { path: PathBuf },
+    /// "Save" (§3.5 point 3, overwrite half): bakes `annotations` +
+    /// `metadata` into `path` in place, auto-backed-up via
+    /// `pdf::editor::save_over`.
+    SaveOver { path: PathBuf, annotations: Vec<Annotation>, metadata: DocumentMetadata },
+    /// "Export" (§3.5 point 3, save-as half): bakes the same changes into
+    /// a user-chosen new file, `path` itself left untouched.
+    ExportAs { path: PathBuf, annotations: Vec<Annotation>, metadata: DocumentMetadata },
 }
 
 /// What the user asked for while looking at the PDF library tab
@@ -594,6 +657,10 @@ impl LontarApp {
         .unwrap_or(1)
         .max(1);
 
+        // Best-effort: an unreadable/missing /Info dict just means empty
+        // fields, not a failure to open the viewer (§Fase 9).
+        let metadata = pdf_editor::get_metadata(&path).unwrap_or_default();
+
         self.pdf_viewer = Some(PdfViewerState {
             path,
             page_count,
@@ -602,10 +669,22 @@ impl LontarApp {
             texture: None,
             rendered_key: None,
             render_error: None,
+            page_size_points: None,
             split_from: 1,
             split_to: page_count as u32,
             delete_confirm: false,
             op_status: String::new(),
+            annotate_tool: None,
+            annotate_color: DEFAULT_ANNOTATION_COLOR,
+            drag_start: None,
+            staged_annotations: Vec::new(),
+            pending_annotation: None,
+            pending_annotation_text: String::new(),
+            show_metadata_editor: false,
+            metadata_title: metadata.title,
+            metadata_author: metadata.author,
+            metadata_keywords: metadata.keywords,
+            show_save_confirm: false,
         });
     }
 
@@ -631,12 +710,15 @@ impl LontarApp {
         }
     }
 
-    /// Applies one PDF page operation, each of which writes to a
-    /// user-chosen output file rather than overwriting the source (see
-    /// `pdf::editor`'s doc comment) — "save in place with auto-backup"
-    /// (§3.5 point 3) is Fase 9's job. Called once per accumulated
-    /// `PdfViewerAction` after `show_pdf_viewer`'s `egui` closures have
-    /// all returned.
+    /// Applies one PDF page operation. The four page-ops (rotate/delete/
+    /// split/merge) always write to a user-chosen new output file rather
+    /// than overwriting the source (see `pdf::editor`'s doc comment);
+    /// `SaveOver`/`ExportAs` (§3.5 point 3, Fase 9) are the two
+    /// exceptions — both bake pending annotations + metadata via
+    /// `bake_pdf_changes` first, then either overwrite `path` in place
+    /// (auto-backed-up) or copy the result to a new file. Called once per
+    /// accumulated `PdfViewerAction` after `show_pdf_viewer`'s `egui`
+    /// closures have all returned.
     fn apply_pdf_viewer_action(&mut self, action: PdfViewerAction) {
         let t_op_error = self.t("pdf-op-error");
         let result = match &action {
@@ -666,10 +748,50 @@ impl LontarApp {
                         .map(|output| pdf_editor::merge(&[path.as_path(), other.as_path()], &output).map(|()| output))
                 })
             }
+            PdfViewerAction::SaveOver { path, annotations, metadata } => {
+                Some(bake_pdf_changes(path, annotations, metadata).and_then(|staged| {
+                    let backup = pdf_editor::save_over(path, &staged)?;
+                    let _ = std::fs::remove_file(&staged); // best-effort: staged is a temp file
+                    Ok(backup)
+                }))
+            }
+            PdfViewerAction::ExportAs { path, annotations, metadata } => {
+                rfd::FileDialog::new().add_filter("PDF", &["pdf"]).save_file().map(|target| {
+                    bake_pdf_changes(path, annotations, metadata).and_then(|staged| {
+                        std::fs::copy(&staged, &target)
+                            .with_context(|| format!("copying staged PDF to {}", target.display()))?;
+                        let _ = std::fs::remove_file(&staged);
+                        Ok(target)
+                    })
+                })
+            }
         };
 
         match result {
-            Some(Ok(output)) => self.finish_pdf_operation(output),
+            Some(Ok(output)) => {
+                if matches!(action, PdfViewerAction::SaveOver { .. }) {
+                    // Overwritten in place: stay on the same path (unlike
+                    // every other op, which opens a brand-new file) —
+                    // just clear the now-baked-in staged edits and force
+                    // a re-render so they show up.
+                    if let Some(viewer) = self.pdf_viewer.as_mut() {
+                        viewer.staged_annotations.clear();
+                        viewer.rendered_key = None;
+                    }
+                    let msg = self.locales.t("pdf-save-success", &[("backup", &output.display().to_string())]);
+                    if let Some(viewer) = self.pdf_viewer.as_mut() {
+                        viewer.op_status = msg;
+                    }
+                } else {
+                    // `ExportAs` and the four page-ops all end here:
+                    // `finish_pdf_operation` opens `output` fresh via
+                    // `open_pdf`, which already starts with empty
+                    // `staged_annotations` and metadata reloaded from the
+                    // new file — nothing left over from the old viewer to
+                    // clear.
+                    self.finish_pdf_operation(output);
+                }
+            }
             Some(Err(e)) => {
                 if let Some(viewer) = self.pdf_viewer.as_mut() {
                     viewer.op_status = format!("{t_op_error}: {e:#}");
@@ -1451,8 +1573,11 @@ impl LontarApp {
     }
 
     /// The PDF viewer (§Fase 8, §3.5 point 1): page navigation + zoom, the
-    /// rendered page bitmap, and a page-ops toolbar (rotate/delete/split/
-    /// merge, §3.5 point 2). Takes over the central panel exactly like
+    /// rendered page bitmap, a page-ops toolbar (rotate/delete/split/
+    /// merge, §3.5 point 2), and — new in Fase 9 — an annotation canvas
+    /// (highlight/underline/sticky-note/text-injection, drawn by
+    /// dragging over the rendered page), a metadata editor, and
+    /// Save/Export. Takes over the central panel exactly like
     /// `show_editor` does for notes. Rendering the current page into a
     /// texture happens up front (outside any `egui` closure) so the rest
     /// of this method can follow `show_editor`'s "closures only ever
@@ -1465,20 +1590,28 @@ impl LontarApp {
         let key = (viewer.page_index, viewer.zoom_width);
         if viewer.rendered_key != Some(key) {
             match self.ensure_pdf_renderer() {
-                Ok(renderer) => match renderer.render_page(&viewer.path, viewer.page_index, viewer.zoom_width) {
-                    Ok(page) => {
-                        let image = egui::ColorImage::from_rgba_unmultiplied([page.width, page.height], &page.rgba);
-                        viewer.texture = Some(ui.ctx().load_texture("pdf-page", image, egui::TextureOptions::LINEAR));
-                        viewer.render_error = None;
+                Ok(renderer) => {
+                    // Zoom doesn't change the page's true point size, but
+                    // recomputing on every zoom change too is harmless —
+                    // this still only reopens the doc when `key` changes,
+                    // not every frame.
+                    viewer.page_size_points = renderer.page_size_points(&viewer.path, viewer.page_index).ok();
+                    match renderer.render_page(&viewer.path, viewer.page_index, viewer.zoom_width) {
+                        Ok(page) => {
+                            let image = egui::ColorImage::from_rgba_unmultiplied([page.width, page.height], &page.rgba);
+                            viewer.texture = Some(ui.ctx().load_texture("pdf-page", image, egui::TextureOptions::LINEAR));
+                            viewer.render_error = None;
+                        }
+                        Err(e) => {
+                            viewer.texture = None;
+                            viewer.render_error = Some(format!("{e:#}"));
+                        }
                     }
-                    Err(e) => {
-                        viewer.texture = None;
-                        viewer.render_error = Some(format!("{e:#}"));
-                    }
-                },
+                }
                 Err(msg) => {
                     viewer.texture = None;
                     viewer.render_error = Some(msg.to_string());
+                    viewer.page_size_points = None;
                 }
             }
             viewer.rendered_key = Some(key);
@@ -1501,11 +1634,31 @@ impl LontarApp {
         let t_split_go = self.t("pdf-split-go");
         let t_merge = self.t("pdf-merge");
         let t_render_unavailable = self.t("pdf-render-unavailable");
+        let t_annotate_none = self.t("pdf-annotate-none");
+        let t_annotate_highlight = self.t("pdf-annotate-highlight");
+        let t_annotate_underline = self.t("pdf-annotate-underline");
+        let t_annotate_sticky = self.t("pdf-annotate-sticky");
+        let t_annotate_text = self.t("pdf-annotate-text");
+        let t_annotate_color = self.t("pdf-annotate-color");
+        let t_annotate_sticky_prompt = self.t("pdf-annotate-sticky-prompt");
+        let t_annotate_text_prompt = self.t("pdf-annotate-text-prompt");
+        let t_annotate_add = self.t("pdf-annotate-add");
+        let t_annotate_cancel = self.t("pdf-annotate-cancel");
+        let t_metadata_button = self.t("pdf-metadata-button");
+        let t_metadata_window_title = self.t("pdf-metadata-window-title");
+        let t_metadata_field_title = self.t("pdf-metadata-field-title");
+        let t_metadata_field_author = self.t("pdf-metadata-field-author");
+        let t_metadata_field_keywords = self.t("pdf-metadata-field-keywords");
+        let t_metadata_close = self.t("pdf-metadata-close");
+        let t_save = self.t("pdf-save");
+        let t_save_confirm = self.t("pdf-save-confirm");
+        let t_export = self.t("pdf-export");
 
         let path = viewer.path.clone();
         let page_count = viewer.page_count;
         let texture = viewer.texture.clone();
         let render_error = viewer.render_error.clone();
+        let page_size_points = viewer.page_size_points;
 
         let mut page_index = viewer.page_index;
         let mut zoom_width = viewer.zoom_width;
@@ -1514,6 +1667,20 @@ impl LontarApp {
         let mut delete_confirm = viewer.delete_confirm;
         let mut back_requested = false;
         let mut actions: Vec<PdfViewerAction> = Vec::new();
+
+        // Annotation canvas + metadata editor + save/export (§Fase 9).
+        let mut annotate_tool = viewer.annotate_tool;
+        let mut annotate_color = viewer.annotate_color;
+        let mut drag_start = viewer.drag_start;
+        let mut staged_annotations = std::mem::take(&mut viewer.staged_annotations);
+        let mut pending_annotation = viewer.pending_annotation.take();
+        let mut pending_annotation_text = std::mem::take(&mut viewer.pending_annotation_text);
+        let mut show_metadata_editor = viewer.show_metadata_editor;
+        let mut metadata_title = std::mem::take(&mut viewer.metadata_title);
+        let mut metadata_author = std::mem::take(&mut viewer.metadata_author);
+        let mut metadata_keywords = std::mem::take(&mut viewer.metadata_keywords);
+        let mut show_save_confirm = viewer.show_save_confirm;
+        let mut export_requested = false;
 
         egui::Panel::top("pdf_top_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1531,6 +1698,40 @@ impl LontarApp {
                 ui.separator();
                 ui.label(&t_zoom);
                 ui.add(egui::DragValue::new(&mut zoom_width).range(200..=3000).speed(10));
+            });
+        });
+
+        egui::Panel::top("pdf_annotate_bar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(annotate_tool.is_none(), &t_annotate_none).clicked() {
+                    annotate_tool = None;
+                }
+                if ui.selectable_label(annotate_tool == Some(AnnotationKind::Highlight), &t_annotate_highlight).clicked() {
+                    annotate_tool = Some(AnnotationKind::Highlight);
+                }
+                if ui.selectable_label(annotate_tool == Some(AnnotationKind::Underline), &t_annotate_underline).clicked() {
+                    annotate_tool = Some(AnnotationKind::Underline);
+                }
+                if ui.selectable_label(annotate_tool == Some(AnnotationKind::StickyNote), &t_annotate_sticky).clicked() {
+                    annotate_tool = Some(AnnotationKind::StickyNote);
+                }
+                if ui.selectable_label(annotate_tool == Some(AnnotationKind::TextInjection), &t_annotate_text).clicked() {
+                    annotate_tool = Some(AnnotationKind::TextInjection);
+                }
+                ui.separator();
+                ui.label(&t_annotate_color);
+                ui.color_edit_button_rgb(&mut annotate_color);
+                ui.separator();
+                if ui.button(&t_metadata_button).clicked() {
+                    show_metadata_editor = true;
+                }
+                ui.separator();
+                if ui.button(&t_save).clicked() {
+                    show_save_confirm = true;
+                }
+                if ui.button(&t_export).clicked() {
+                    export_requested = true;
+                }
             });
         });
 
@@ -1576,7 +1777,82 @@ impl LontarApp {
                 if let Some(err) = &render_error {
                     ui.colored_label(egui::Color32::RED, format!("{t_render_unavailable}: {err}"));
                 } else if let Some(tex) = &texture {
-                    ui.image((tex.id(), tex.size_vec2()));
+                    // A tool is selected → sense drag (to draw an
+                    // annotation); otherwise just hover, so the image
+                    // doesn't eat scroll/pan interactions when the user
+                    // is only reading (§Fase 9).
+                    let sense = if annotate_tool.is_some() { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
+                    let img_response = ui.add(egui::Image::new((tex.id(), tex.size_vec2())).sense(sense));
+                    let img_rect = img_response.rect;
+                    let current_page = (page_index + 1) as u32;
+
+                    if let Some((page_w, page_h)) = page_size_points
+                        && page_w > 0.0
+                        && page_h > 0.0
+                    {
+                        let painter = ui.painter();
+                        for annotation in staged_annotations.iter().filter(|a| a.page == current_page) {
+                            let screen_rect = annotation_screen_rect(annotation.rect, img_rect, page_w, page_h);
+                            draw_annotation_overlay(painter, screen_rect, annotation.kind, annotation.color, &annotation.contents);
+                        }
+
+                        if let Some(tool) = annotate_tool {
+                            if img_response.drag_started() {
+                                drag_start = img_response.interact_pointer_pos();
+                            }
+                            if img_response.dragged()
+                                && let (Some(start), Some(current)) = (drag_start, img_response.interact_pointer_pos())
+                            {
+                                let live_rect = egui::Rect::from_two_pos(start, current).intersect(img_rect);
+                                let stroke_color = egui::Color32::from_rgb(
+                                    (annotate_color[0] * 255.0) as u8,
+                                    (annotate_color[1] * 255.0) as u8,
+                                    (annotate_color[2] * 255.0) as u8,
+                                );
+                                painter.rect_stroke(live_rect, egui::CornerRadius::ZERO, (2.0, stroke_color), egui::StrokeKind::Middle);
+                            }
+                            if img_response.drag_stopped()
+                                && let Some(start) = drag_start
+                            {
+                                let end = img_response.interact_pointer_pos().unwrap_or(start);
+                                let mut screen_rect = egui::Rect::from_two_pos(start, end).intersect(img_rect);
+                                if screen_rect.width() < MIN_ANNOTATION_DRAG_PX && screen_rect.height() < MIN_ANNOTATION_DRAG_PX {
+                                    // Treat as a click: place a default-sized box anchored at the click point.
+                                    screen_rect = egui::Rect::from_min_size(start, default_annotation_size_px(tool)).intersect(img_rect);
+                                }
+
+                                if screen_rect.width() > 0.5 && screen_rect.height() > 0.5 {
+                                    let sx = page_w / img_rect.width();
+                                    let sy = page_h / img_rect.height();
+                                    let local_left = screen_rect.left() - img_rect.left();
+                                    let local_right = screen_rect.right() - img_rect.left();
+                                    let local_top = screen_rect.top() - img_rect.top();
+                                    let local_bottom = screen_rect.bottom() - img_rect.top();
+                                    // PDF y grows upward from the bottom; screen y grows downward from the top.
+                                    let pdf_rect =
+                                        (local_left * sx, page_h - local_bottom * sy, local_right * sx, page_h - local_top * sy);
+
+                                    match tool {
+                                        AnnotationKind::Highlight | AnnotationKind::Underline => {
+                                            staged_annotations.push(Annotation {
+                                                kind: tool,
+                                                page: current_page,
+                                                rect: pdf_rect,
+                                                color: (annotate_color[0], annotate_color[1], annotate_color[2]),
+                                                contents: String::new(),
+                                            });
+                                        }
+                                        AnnotationKind::StickyNote | AnnotationKind::TextInjection => {
+                                            pending_annotation =
+                                                Some(PendingAnnotation { kind: tool, page: current_page, rect: pdf_rect });
+                                            pending_annotation_text.clear();
+                                        }
+                                    }
+                                }
+                                drag_start = None;
+                            }
+                        }
+                    }
                 }
             });
         });
@@ -1599,11 +1875,115 @@ impl LontarApp {
             });
         }
 
+        // Text prompt for a placed-but-unconfirmed sticky note / text
+        // injection (§Fase 9) — highlight/underline commit immediately on
+        // drag-release instead, since they don't carry a comment.
+        let mut confirm_pending = false;
+        let mut cancel_pending = false;
+        if let Some(pending) = &pending_annotation {
+            let title = match pending.kind {
+                AnnotationKind::TextInjection => &t_annotate_text_prompt,
+                _ => &t_annotate_sticky_prompt,
+            };
+            egui::Window::new(title.as_str()).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
+                ui.text_edit_multiline(&mut pending_annotation_text);
+                ui.horizontal(|ui| {
+                    if ui.button(&t_annotate_add).clicked() {
+                        confirm_pending = true;
+                    }
+                    if ui.button(&t_annotate_cancel).clicked() {
+                        cancel_pending = true;
+                    }
+                });
+            });
+        }
+        if confirm_pending
+            && let Some(pending) = pending_annotation.take()
+        {
+            staged_annotations.push(Annotation {
+                kind: pending.kind,
+                page: pending.page,
+                rect: pending.rect,
+                color: (annotate_color[0], annotate_color[1], annotate_color[2]),
+                contents: pending_annotation_text.clone(),
+            });
+            pending_annotation_text.clear();
+        }
+        if cancel_pending {
+            pending_annotation = None;
+            pending_annotation_text.clear();
+        }
+
+        if show_metadata_editor {
+            egui::Window::new(&t_metadata_window_title).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(&t_metadata_field_title);
+                    ui.text_edit_singleline(&mut metadata_title);
+                });
+                ui.horizontal(|ui| {
+                    ui.label(&t_metadata_field_author);
+                    ui.text_edit_singleline(&mut metadata_author);
+                });
+                ui.horizontal(|ui| {
+                    ui.label(&t_metadata_field_keywords);
+                    ui.text_edit_singleline(&mut metadata_keywords);
+                });
+                if ui.button(&t_metadata_close).clicked() {
+                    show_metadata_editor = false;
+                }
+            });
+        }
+
+        // Carried into both Save and Export unconditionally (§Fase 9) —
+        // rewriting the same values back when nothing was edited is a
+        // harmless no-op, and this way the metadata editor never needs
+        // its own separate "apply" plumbing.
+        let current_metadata =
+            DocumentMetadata { title: metadata_title.clone(), author: metadata_author.clone(), keywords: metadata_keywords.clone() };
+
+        if export_requested {
+            actions.push(PdfViewerAction::ExportAs {
+                path: path.clone(),
+                annotations: staged_annotations.clone(),
+                metadata: current_metadata.clone(),
+            });
+        }
+
+        if show_save_confirm {
+            egui::Window::new(&t_save).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
+                ui.label(&t_save_confirm);
+                ui.horizontal(|ui| {
+                    if ui.button(&t_confirm_yes).clicked() {
+                        actions.push(PdfViewerAction::SaveOver {
+                            path: path.clone(),
+                            annotations: staged_annotations.clone(),
+                            metadata: current_metadata.clone(),
+                        });
+                        show_save_confirm = false;
+                    }
+                    if ui.button(&t_confirm_cancel).clicked() {
+                        show_save_confirm = false;
+                    }
+                });
+            });
+        }
+
         viewer.page_index = page_index;
         viewer.zoom_width = zoom_width;
         viewer.split_from = split_from;
         viewer.split_to = split_to;
         viewer.delete_confirm = delete_confirm;
+        viewer.annotate_tool = annotate_tool;
+        viewer.annotate_color = annotate_color;
+        viewer.drag_start = drag_start;
+        viewer.staged_annotations = staged_annotations;
+        viewer.pending_annotation = pending_annotation;
+        viewer.pending_annotation_text = pending_annotation_text;
+        viewer.show_metadata_editor = show_metadata_editor;
+        viewer.metadata_title = metadata_title;
+        viewer.metadata_author = metadata_author;
+        viewer.metadata_keywords = metadata_keywords;
+        viewer.show_save_confirm = show_save_confirm;
 
         if back_requested {
             self.pdf_viewer = None;
@@ -1613,6 +1993,103 @@ impl LontarApp {
 
         for action in actions {
             self.apply_pdf_viewer_action(action);
+        }
+    }
+}
+
+/// Applies pending `annotations` + `metadata` on top of `source`, writing
+/// the result to a fresh temp file and returning its path (§Fase 9) —
+/// the common first step of both `PdfViewerAction::SaveOver` and
+/// `ExportAs`, since both need the same baked-in content and only differ
+/// in where it lands afterward. Metadata is always (re)written, even when
+/// unedited, since it's a harmless idempotent rewrite of the same values
+/// `open_pdf` loaded; annotating is skipped entirely when `annotations`
+/// is empty (`pdf::annotator::add_annotations` rejects an empty batch).
+fn bake_pdf_changes(source: &std::path::Path, annotations: &[Annotation], metadata: &DocumentMetadata) -> Result<PathBuf> {
+    let stage = |suffix: &str| std::env::temp_dir().join(format!("lontar-pdf-{}-{suffix}.pdf", Uuid::new_v4()));
+
+    let annotated_path = stage("annotated");
+    let with_annotations: PathBuf = if annotations.is_empty() {
+        source.to_path_buf()
+    } else {
+        pdf_annotator::add_annotations(source, annotations, &annotated_path)?;
+        annotated_path.clone()
+    };
+
+    let staged_meta = stage("meta");
+    pdf_editor::set_metadata(&with_annotations, metadata, &staged_meta)?;
+
+    if with_annotations != source {
+        let _ = std::fs::remove_file(&with_annotations); // best-effort cleanup of the intermediate stage
+    }
+    Ok(staged_meta)
+}
+
+/// Maps an `Annotation`'s PDF user-space `rect` (points, origin
+/// bottom-left) to the on-screen rect it occupies over the rendered page
+/// image at `img_rect` (§Fase 9) — the inverse of the drag-to-page-points
+/// conversion `show_pdf_viewer` does when a new annotation is placed.
+fn annotation_screen_rect(rect: (f32, f32, f32, f32), img_rect: egui::Rect, page_w: f32, page_h: f32) -> egui::Rect {
+    let (x0, y0, x1, y1) = rect;
+    let sx = img_rect.width() / page_w;
+    let sy = img_rect.height() / page_h;
+    let left = img_rect.min.x + x0 * sx;
+    let right = img_rect.min.x + x1 * sx;
+    // PDF y grows upward from the bottom; screen y grows downward from the top.
+    let top = img_rect.min.y + (page_h - y1) * sy;
+    let bottom = img_rect.min.y + (page_h - y0) * sy;
+    egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom))
+}
+
+/// Default annotation size (pixels, in the rendered image's own screen
+/// space) used when a drag was too short to count as "the user drew a
+/// rectangle" (§Fase 9, see `MIN_ANNOTATION_DRAG_PX`) — so a single click
+/// still places a usable annotation instead of a zero-size one.
+fn default_annotation_size_px(kind: AnnotationKind) -> egui::Vec2 {
+    match kind {
+        AnnotationKind::StickyNote => egui::vec2(18.0, 18.0),
+        AnnotationKind::TextInjection => egui::vec2(160.0, 22.0),
+        AnnotationKind::Highlight | AnnotationKind::Underline => egui::vec2(80.0, 14.0),
+    }
+}
+
+/// Draws one already-placed annotation as an overlay on the rendered page
+/// (§Fase 9) — used both for `staged_annotations` (not yet saved to any
+/// file) and, while a drag is in progress, the live rectangle being drawn.
+/// `pdfium-render` will actually bake and render these into the bitmap
+/// itself once saved (see `pdf::annotator`'s doc comment), so this
+/// overlay only exists to show *pending*, not-yet-written changes.
+fn draw_annotation_overlay(
+    painter: &egui::Painter,
+    screen_rect: egui::Rect,
+    kind: AnnotationKind,
+    color: (f32, f32, f32),
+    contents: &str,
+) {
+    let color32 = egui::Color32::from_rgb((color.0 * 255.0) as u8, (color.1 * 255.0) as u8, (color.2 * 255.0) as u8);
+    match kind {
+        AnnotationKind::Highlight => {
+            painter.rect_filled(screen_rect, egui::CornerRadius::ZERO, color32.gamma_multiply(0.35));
+        }
+        AnnotationKind::Underline => {
+            let y = screen_rect.bottom();
+            painter.line_segment([egui::pos2(screen_rect.left(), y), egui::pos2(screen_rect.right(), y)], (2.0, color32));
+        }
+        AnnotationKind::StickyNote => {
+            painter.rect_filled(screen_rect, 2u8, color32);
+            painter.rect_stroke(screen_rect, 2u8, (1.0, egui::Color32::BLACK), egui::StrokeKind::Middle);
+        }
+        AnnotationKind::TextInjection => {
+            painter.rect_stroke(screen_rect, egui::CornerRadius::ZERO, (1.0, color32), egui::StrokeKind::Middle);
+            if !contents.is_empty() {
+                painter.text(
+                    screen_rect.left_top(),
+                    egui::Align2::LEFT_TOP,
+                    contents,
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::BLACK,
+                );
+            }
         }
     }
 }

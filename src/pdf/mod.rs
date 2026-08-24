@@ -1,10 +1,13 @@
 //! PDF module. Fase 4 (§3.3 point 1) started with text extraction to feed
-//! the ingestion pipeline (`extractor`). Fase 8 (§3.5 points 1-2) adds the
-//! two remaining pieces: `renderer` (page → RGBA bitmap for the viewer,
-//! via `pdfium-render`) and `editor` (merge/split/rotate/delete pages via
-//! `lopdf`). Annotation/text-injection/metadata editing (§3.5 point 2's
-//! remainder) are Fase 9. Callers: `core::ingestion`, `app.rs`.
+//! the ingestion pipeline (`extractor`). Fase 8 (§3.5 points 1-2) added
+//! `renderer` (page → RGBA bitmap for the viewer, via `pdfium-render`)
+//! and `editor` (merge/split/rotate/delete pages via `lopdf`). Fase 9
+//! (§3.5 points 2-3) adds `annotator` (highlight/underline/sticky-note/
+//! text-injection annotations) and rounds out `editor` with a metadata
+//! editor (Title/Author/Keywords) plus "save in place with auto-backup".
+//! Callers: `core::ingestion`, `app.rs`.
 
+pub mod annotator;
 pub mod editor;
 pub mod extractor;
 pub mod renderer;

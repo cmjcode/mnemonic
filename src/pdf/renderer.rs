@@ -92,6 +92,21 @@ impl PdfRenderer {
         })
     }
 
+    /// The page's true dimensions in PDF points — distinct from
+    /// `render_page`'s pixel dimensions, which follow `target_width`/zoom
+    /// instead of the page's actual size (§Fase 9: `app.rs`'s annotation
+    /// canvas needs this to convert a screen-space drag rectangle on the
+    /// rendered bitmap back into the PDF user-space coordinates
+    /// `pdf::annotator::Annotation::rect` expects).
+    pub fn page_size_points(&self, path: &Path, page_index: usize) -> Result<(f32, f32)> {
+        let document = self.load(path)?;
+        let page = document
+            .pages()
+            .get(page_index as _)
+            .with_context(|| format!("page {page_index} out of bounds in {}", path.display()))?;
+        Ok((page.width().value, page.height().value))
+    }
+
     fn load(&self, path: &Path) -> Result<PdfDocument<'_>> {
         self.pdfium
             .load_pdf_from_file(path, None)

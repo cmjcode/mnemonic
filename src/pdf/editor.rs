@@ -1,17 +1,25 @@
 //! PDF page manipulation (§3.5 point 2, Fase 8) via `lopdf`: merge, split,
-//! rotate, and delete pages. Every function reads its input(s), mutates an
-//! in-memory `lopdf::Document`, and writes the result to a distinct
-//! `output` path — never in place — so a bug or crash mid-operation can
-//! never corrupt the source file; callers just point the viewer at
-//! `output` afterward. Visual annotation, text injection, metadata
-//! editing, and "save/overwrite with auto-backup" (§3.5 points 2-3) are
-//! Fase 9's job, not this module's. Callers: `app.rs`'s PDF viewer.
+//! rotate, and delete pages. Every one of those reads its input(s),
+//! mutates an in-memory `lopdf::Document`, and writes the result to a
+//! distinct `output` path — never in place — so a bug or crash
+//! mid-operation can never corrupt the source file; callers just point
+//! the viewer at `output` afterward. Visual annotation/text injection
+//! live in the sibling `pdf::annotator` module instead (Fase 9).
+//!
+//! Fase 9 (§3.5 points 2-3) adds two more pieces to *this* module:
+//! `get_metadata`/`set_metadata` (the Title/Author/Keywords editor, same
+//! "read input, write a distinct output" shape as the page ops above) and
+//! `save_over` (the one function here that *does* touch `target` in
+//! place — "overwrite with auto-backup", the deliberate exception to the
+//! never-in-place rule, gated by first copying `target`'s current bytes
+//! to a `.bak` sibling). Callers: `app.rs`'s PDF viewer.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use lopdf::{Document, Object, ObjectId};
+use lopdf::{Dictionary, Document, Object, ObjectId};
 
 /// Merges `inputs`, in order, into a single PDF written to `output`.
 /// Bookmarks/outlines aren't preserved (§3.5 only asks for the page
@@ -170,6 +178,81 @@ pub fn rotate(input: &Path, pages: &[u32], degrees: i64, output: &Path) -> Resul
     doc.save(output)
         .with_context(|| format!("saving rotated PDF to {}", output.display()))?;
     Ok(())
+}
+
+/// The three metadata fields §3.5 point 2's "Metadata Editor" bullet asks
+/// for. Other Info-dictionary fields (`Subject`, `Creator`, `Producer`,
+/// dates, …) are left untouched by `set_metadata` — this editor only
+/// exposes what the spec calls for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DocumentMetadata {
+    pub title: String,
+    pub author: String,
+    pub keywords: String,
+}
+
+/// Reads just the three fields the metadata editor exposes, defaulting
+/// any missing field to an empty string so the UI always has something
+/// to populate its text fields with (many real-world PDFs have no
+/// `/Info` dictionary at all, or only some of these keys set).
+pub fn get_metadata(input: &Path) -> Result<DocumentMetadata> {
+    let meta = Document::load_metadata(input).with_context(|| format!("reading metadata from {}", input.display()))?;
+    Ok(DocumentMetadata {
+        title: meta.title.unwrap_or_default(),
+        author: meta.author.unwrap_or_default(),
+        keywords: meta.keywords.unwrap_or_default(),
+    })
+}
+
+/// Writes `metadata`'s Title/Author/Keywords into `input`'s `/Info`
+/// dictionary — creating one (and pointing the trailer's `/Info` at it)
+/// if `input` didn't already have one — leaving every other Info field
+/// untouched, and saves the result to `output`.
+pub fn set_metadata(input: &Path, metadata: &DocumentMetadata, output: &Path) -> Result<()> {
+    let mut doc = Document::load(input).with_context(|| format!("loading {}", input.display()))?;
+
+    let info_id = match doc.trailer.get(b"Info").ok().and_then(|o| o.as_reference().ok()) {
+        Some(id) => id,
+        None => {
+            let id = doc.add_object(Object::Dictionary(Dictionary::new()));
+            doc.trailer.set("Info", id);
+            id
+        }
+    };
+
+    let info_dict = doc
+        .get_object_mut(info_id)
+        .and_then(|obj| obj.as_dict_mut())
+        .context("PDF's /Info object isn't a dictionary")?;
+    info_dict.set("Title", Object::string_literal(metadata.title.as_bytes()));
+    info_dict.set("Author", Object::string_literal(metadata.author.as_bytes()));
+    info_dict.set("Keywords", Object::string_literal(metadata.keywords.as_bytes()));
+
+    doc.save(output).with_context(|| format!("saving PDF with updated metadata to {}", output.display()))?;
+    Ok(())
+}
+
+/// "Save" (§3.5 point 3, the overwrite half): copies `target`'s current
+/// bytes to a `.bak` sibling, then overwrites `target` with `staged`'s
+/// content — the one place in this module that mutates its `target`
+/// argument in place, by design, since that's the entire point of this
+/// function (every other PDF op here always writes to a fresh path
+/// instead). A prior `.bak` at the same path is overwritten rather than
+/// accumulated, matching the single-backup convention `notes::frontmatter`
+/// already established for `.bak` files (§6 risk 6) — this is a "last
+/// known good before my most recent overwrite" backup, not a full
+/// history. Returns the backup path written.
+pub fn save_over(target: &Path, staged: &Path) -> Result<PathBuf> {
+    let backup = backup_path_for(target);
+    fs::copy(target, &backup).with_context(|| format!("backing up {} to {}", target.display(), backup.display()))?;
+    fs::copy(staged, target).with_context(|| format!("overwriting {} with staged changes", target.display()))?;
+    Ok(backup)
+}
+
+fn backup_path_for(target: &Path) -> PathBuf {
+    let mut name = target.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".bak");
+    target.with_file_name(name)
 }
 
 #[cfg(test)]
@@ -338,5 +421,61 @@ mod tests {
         let input = dir.path().join("dok.pdf");
         write_test_pdf(&input, &["P1"]);
         assert!(rotate(&input, &[], 45, &dir.path().join("out.pdf")).is_err());
+    }
+
+    #[test]
+    fn get_metadata_defaults_missing_fields_to_empty_strings() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("dok.pdf");
+        write_test_pdf(&input, &["P1"]); // no /Info dictionary at all
+
+        let meta = get_metadata(&input).unwrap();
+        assert_eq!(meta, DocumentMetadata::default());
+    }
+
+    #[test]
+    fn set_metadata_then_get_metadata_round_trips() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("dok.pdf");
+        let out = dir.path().join("with_meta.pdf");
+        write_test_pdf(&input, &["P1"]);
+
+        let meta = DocumentMetadata {
+            title: "Laporan Tahunan".into(),
+            author: "YNP. Jayuda".into(),
+            keywords: "laporan, keuangan".into(),
+        };
+        set_metadata(&input, &meta, &out).unwrap();
+
+        assert_eq!(get_metadata(&out).unwrap(), meta);
+    }
+
+    #[test]
+    fn set_metadata_creates_an_info_dict_when_none_existed() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("dok.pdf");
+        let out = dir.path().join("with_meta.pdf");
+        write_test_pdf(&input, &["P1"]);
+        assert!(Document::load(&input).unwrap().trailer.get(b"Info").is_err());
+
+        set_metadata(&input, &DocumentMetadata { title: "T".into(), ..Default::default() }, &out).unwrap();
+
+        let result = Document::load(&out).unwrap();
+        assert!(result.trailer.get(b"Info").is_ok());
+    }
+
+    #[test]
+    fn save_over_backs_up_then_overwrites_the_target_in_place() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("dok.pdf");
+        let staged = dir.path().join("staged.pdf");
+        write_test_pdf(&target, &["Original"]);
+        write_test_pdf(&staged, &["Staged", "Content"]);
+
+        let backup = save_over(&target, &staged).unwrap();
+
+        assert_eq!(backup, dir.path().join("dok.pdf.bak"));
+        assert_eq!(Document::load(&backup).unwrap().get_pages().len(), 1); // pre-overwrite content
+        assert_eq!(Document::load(&target).unwrap().get_pages().len(), 2); // now the staged content
     }
 }
