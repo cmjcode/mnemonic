@@ -14,6 +14,7 @@ pub const FALLBACK_LOCALE: &str = "en-US";
 
 /// Holds every loaded locale bundle plus which one is currently active.
 pub struct LocaleManager {
+    #[allow(dead_code)]
     locales_dir: PathBuf,
     bundles: HashMap<String, Bundle>,
     active: String,

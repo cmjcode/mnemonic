@@ -251,13 +251,13 @@ pub fn glass_topbar_frame() -> Frame {
         outer_margin: Margin::ZERO,
         corner_radius: CornerRadius::same(ROUNDING_MD),
         shadow: Shadow {
-            offset: [0, 4],
-            blur: 16,
+            offset: [0, 6],
+            blur: 20,
             spread: 0,
-            color: Color32::from_black_alpha(100),
+            color: Color32::from_black_alpha(140),
         },
-        fill: BG_PANEL_DARK,
-        stroke: Stroke::NONE,
+        fill: Color32::from_rgba_premultiplied(20, 24, 30, 235),
+        stroke: Stroke::new(1.0, Color32::from_rgba_premultiplied(80, 95, 120, 100)),
     }
 }
 

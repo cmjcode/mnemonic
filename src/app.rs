@@ -67,6 +67,7 @@ const MIN_ANNOTATION_DRAG_PX: f32 = 4.0;
 /// `show_editor`/`show_pdf_viewer` always take over regardless of `view`,
 /// same precedence Fase 7 established for the note editor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum View {
     Notes,  // unified: Markdown notes + PDFs in one masonry grid
     Canvas, // Standalone AFFiNE Edgeless Whiteboard Canvas
@@ -208,6 +209,7 @@ enum PdfViewerAction {
 /// What the user asked for while looking at the PDF library tab
 /// (§Fase 8). Applied after `show_pdf_library`'s `egui` closures have all
 /// returned, same pattern as `GridAction`/`PdfViewerAction`.
+#[allow(dead_code)]
 enum PdfLibraryAction {
     Import(PathBuf),
     Open(PathBuf),
@@ -248,6 +250,7 @@ pub struct MnemonicApp {
     status: String,
     editor: Option<MarkdownEditor>,
     markdown_cache: CommonMarkCache,
+    #[allow(dead_code)]
     grid_filter: GridFilter,
     doc_filter: DocFilter,
     sort_mode: SortMode,
@@ -290,7 +293,9 @@ pub struct MnemonicApp {
     pdf_viewer: Option<PdfViewerState>,
 
     // AFFiNE Command Palette (⌘K) & Standalone Whiteboard Canvas.
+    #[allow(dead_code)]
     show_command_palette: bool,
+    #[allow(dead_code)]
     command_palette_query: String,
     theme_mode: ui::ThemeMode,
     command_palette: ui::CommandPalette,
@@ -1037,6 +1042,7 @@ impl MnemonicApp {
     /// Applies one PDF library action. Called once per accumulated
     /// `PdfLibraryAction` after `show_pdf_library`'s `egui` closures have
     /// all returned, same pattern as `apply_grid_action`.
+    #[allow(dead_code)]
     fn apply_pdf_library_action(&mut self, action: PdfLibraryAction) {
         match action {
             PdfLibraryAction::Import(path) => self.import_pdf(path),
@@ -2184,93 +2190,6 @@ impl MnemonicApp {
         let mut actions: Vec<GridAction> = Vec::new();
         let mut open_pdf: Option<std::path::PathBuf> = None;
 
-        // Spacing so content starts below floating top bar
-        ui.add_space(theme::TOPBAR_HEIGHT + 14.0);
-
-        // ── Floating sort / selection toolbar ──────────────────────────────
-        egui::Frame::NONE
-            .fill(egui::Color32::TRANSPARENT)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    // Sort picker — compact combo
-                    ui.label(
-                        egui::RichText::new("↕")
-                            .color(theme::GLASS_TEXT_FAINT)
-                            .size(13.0),
-                    );
-                    egui::ComboBox::from_id_salt("sort_mode")
-                        .selected_text(
-                            egui::RichText::new(match sort_mode {
-                                SortMode::Modified => &t_sort_modified,
-                                SortMode::Created => &t_sort_created,
-                                SortMode::Title => &t_sort_title,
-                                SortMode::Color => &t_sort_color,
-                            })
-                            .color(theme::GLASS_TEXT_SECONDARY)
-                            .size(12.5),
-                        )
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut sort_mode,
-                                SortMode::Modified,
-                                &t_sort_modified,
-                            );
-                            ui.selectable_value(&mut sort_mode, SortMode::Created, &t_sort_created);
-                            ui.selectable_value(&mut sort_mode, SortMode::Title, &t_sort_title);
-                            ui.selectable_value(&mut sort_mode, SortMode::Color, &t_sort_color);
-                        });
-
-                    ui.add_space(8.0);
-
-                    // Multi-select toggle
-                    let sel_label = if selection_mode {
-                        &t_selection_off
-                    } else {
-                        &t_selection_on
-                    };
-                    let sel_btn = egui::Button::new(
-                        egui::RichText::new(sel_label)
-                            .color(theme::GLASS_TEXT_SECONDARY)
-                            .size(12.5),
-                    )
-                    .fill(egui::Color32::TRANSPARENT);
-                    if ui.add(sel_btn).clicked() {
-                        selection_mode = !selection_mode;
-                        if !selection_mode {
-                            selected.clear();
-                        }
-                    }
-
-                    if selection_mode && !selected.is_empty() {
-                        ui.add_space(8.0);
-                        let archive_btn = egui::Button::new(
-                            egui::RichText::new(&t_selection_archive)
-                                .color(theme::GLASS_TEXT_SECONDARY)
-                                .size(12.5),
-                        )
-                        .fill(egui::Color32::TRANSPARENT);
-                        if ui.add(archive_btn).clicked() {
-                            actions
-                                .push(GridAction::BatchArchive(selected.iter().copied().collect()));
-                            selected.clear();
-                        }
-                        let trash_btn = egui::Button::new(
-                            egui::RichText::new(&t_selection_trash)
-                                .color(theme::GLASS_ERROR)
-                                .size(12.5),
-                        )
-                        .fill(egui::Color32::TRANSPARENT);
-                        if ui.add(trash_btn).clicked() {
-                            actions
-                                .push(GridAction::BatchTrash(selected.iter().copied().collect()));
-                            selected.clear();
-                        }
-                    }
-                });
-            });
-
-        ui.add_space(8.0);
-
         // ── Compute which notes/PDFs to show ───────────────────────────────
         // Apply grid_filter (legacy) mapped from doc_filter for backward compat.
         let grid_filter_mapped = match &doc_filter {
@@ -2321,149 +2240,260 @@ impl MnemonicApp {
         let total_items = visible_notes.len() + visible_pdfs.len();
         let has_notes_in_vault = !notes.is_empty();
 
-        if !has_notes_in_vault && pdf_docs.is_empty() {
-            // Empty vault state — centered message
-            ui.vertical_centered(|ui| {
-                ui.add_space(60.0);
-                ui.label(
-                    egui::RichText::new("✏")
-                        .size(48.0)
-                        .color(theme::GLASS_TEXT_FAINT),
-                );
-                ui.add_space(12.0);
-                ui.label(
-                    egui::RichText::new(&t_empty)
-                        .size(14.0)
-                        .color(theme::GLASS_TEXT_SECONDARY),
-                );
-            });
-            return;
-        }
+        // ── Full Viewport Vertical Scroll Area ─────────────────────────────
+        // Encompasses the whole grid so cards scroll smoothly under the floating Top Bar.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // Spacing so initial content rests below the floating top bar
+                ui.add_space(theme::TOPBAR_HEIGHT + 14.0);
 
-        // Active search filter indicator
-        if !self.search_text.trim().is_empty() {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "🔍 Hasil pencarian: \"{}\" ({} ditemukan)",
-                        self.search_text.trim(),
-                        total_items
-                    ))
-                    .size(12.5)
-                    .color(theme::ACCENT_BLUE),
-                );
-                if ui
-                    .button(
-                        egui::RichText::new("✕ Hapus")
-                            .size(11.5)
-                            .color(theme::TEXT_MUTED),
-                    )
-                    .clicked()
-                {
-                    self.search_text.clear();
-                }
-            });
-            ui.add_space(4.0);
-        }
-
-        if total_items == 0 {
-            ui.vertical_centered(|ui| {
-                ui.add_space(40.0);
-                let msg = if !self.search_text.trim().is_empty() {
-                    format!(
-                        "Tidak ada catatan atau dokumen yang cocok dengan \"{}\"",
-                        self.search_text.trim()
-                    )
+                if !has_notes_in_vault && pdf_docs.is_empty() {
+                    // Empty vault state — centered message
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(60.0);
+                        ui.label(
+                            egui::RichText::new("✏")
+                                .size(48.0)
+                                .color(theme::GLASS_TEXT_FAINT),
+                        );
+                        ui.add_space(12.0);
+                        ui.label(
+                            egui::RichText::new(&t_empty)
+                                .size(14.0)
+                                .color(theme::GLASS_TEXT_SECONDARY),
+                        );
+                    });
                 } else {
-                    t_empty_filtered.clone()
-                };
-                ui.label(
-                    egui::RichText::new(msg)
-                        .size(14.0)
-                        .color(theme::GLASS_TEXT_SECONDARY),
-                );
-                if !self.search_text.trim().is_empty() {
-                    ui.add_space(8.0);
-                    if ui
-                        .button(
-                            egui::RichText::new("✕ Bersihkan Filter Pencarian")
-                                .size(12.0)
-                                .color(theme::ACCENT_BLUE),
-                        )
-                        .clicked()
-                    {
-                        self.search_text.clear();
-                    }
-                }
-            });
-        } else {
-            // ── Pinterest masonry grid ─────────────────────────────────────
-            // Determine column count based on available width.
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let available_width = ui.available_width();
-                let col_count: usize = if available_width < 480.0 {
-                    1
-                } else if available_width < 760.0 {
-                    2
-                } else if available_width < 1100.0 {
-                    3
-                } else {
-                    4
-                };
-                let gap = theme::GRID_GAP;
-                let col_width =
-                    (available_width - gap * (col_count as f32 - 1.0)) / col_count as f32;
-
-                // Render all items in a horizontal row of `col_count` columns.
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(gap, 0.0);
-
-                    // Pre-allocate column containers with fixed width
-                    for col_idx in 0..col_count {
-                        let is_last = col_idx == col_count - 1;
-                        let this_col_width = if is_last {
-                            // Last column takes any remaining space
-                            ui.available_width()
-                        } else {
-                            col_width
-                        };
-
-                        ui.allocate_ui(egui::vec2(this_col_width, ui.available_height()), |ui| {
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(0.0, gap);
-
-                                // Note cards for this column
-                                for (item_idx, note) in visible_notes.iter().enumerate() {
-                                    if item_idx % col_count == col_idx {
-                                        render_note_card_glass(
-                                            ui,
-                                            note,
-                                            &card,
-                                            selection_mode,
-                                            selected.contains(&note.frontmatter.id),
-                                            in_trash_view,
-                                            &mut actions,
-                                            &mut selected,
-                                            &mut confirm_archive,
-                                            &mut confirm_trash,
-                                            &mut confirm_delete,
+                    // ── Floating sort / selection toolbar ──────────────────────────
+                    egui::Frame::NONE
+                        .fill(egui::Color32::TRANSPARENT)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                // Sort picker — compact combo
+                                ui.label(
+                                    egui::RichText::new("↕")
+                                        .color(theme::GLASS_TEXT_FAINT)
+                                        .size(13.0),
+                                );
+                                egui::ComboBox::from_id_salt("sort_mode")
+                                    .selected_text(
+                                        egui::RichText::new(match sort_mode {
+                                            SortMode::Modified => &t_sort_modified,
+                                            SortMode::Created => &t_sort_created,
+                                            SortMode::Title => &t_sort_title,
+                                            SortMode::Color => &t_sort_color,
+                                        })
+                                        .color(theme::GLASS_TEXT_SECONDARY)
+                                        .size(12.5),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut sort_mode,
+                                            SortMode::Modified,
+                                            &t_sort_modified,
                                         );
+                                        ui.selectable_value(
+                                            &mut sort_mode,
+                                            SortMode::Created,
+                                            &t_sort_created,
+                                        );
+                                        ui.selectable_value(
+                                            &mut sort_mode,
+                                            SortMode::Title,
+                                            &t_sort_title,
+                                        );
+                                        ui.selectable_value(
+                                            &mut sort_mode,
+                                            SortMode::Color,
+                                            &t_sort_color,
+                                        );
+                                    });
+
+                                ui.add_space(8.0);
+
+                                // Multi-select toggle
+                                let sel_label = if selection_mode {
+                                    &t_selection_off
+                                } else {
+                                    &t_selection_on
+                                };
+                                let sel_btn = egui::Button::new(
+                                    egui::RichText::new(sel_label)
+                                        .color(theme::GLASS_TEXT_SECONDARY)
+                                        .size(12.5),
+                                )
+                                .fill(egui::Color32::TRANSPARENT);
+                                if ui.add(sel_btn).clicked() {
+                                    selection_mode = !selection_mode;
+                                    if !selection_mode {
+                                        selected.clear();
                                     }
                                 }
 
-                                // PDF cards for this column
-                                let pdf_offset = visible_notes.len();
-                                for (item_idx, path) in visible_pdfs.iter().enumerate() {
-                                    if (item_idx + pdf_offset) % col_count == col_idx {
-                                        render_pdf_card_glass(ui, path, &mut open_pdf);
+                                if selection_mode && !selected.is_empty() {
+                                    ui.add_space(8.0);
+                                    let archive_btn = egui::Button::new(
+                                        egui::RichText::new(&t_selection_archive)
+                                            .color(theme::GLASS_TEXT_SECONDARY)
+                                            .size(12.5),
+                                    )
+                                    .fill(egui::Color32::TRANSPARENT);
+                                    if ui.add(archive_btn).clicked() {
+                                        actions.push(GridAction::BatchArchive(
+                                            selected.iter().copied().collect(),
+                                        ));
+                                        selected.clear();
+                                    }
+                                    let trash_btn = egui::Button::new(
+                                        egui::RichText::new(&t_selection_trash)
+                                            .color(theme::GLASS_ERROR)
+                                            .size(12.5),
+                                    )
+                                    .fill(egui::Color32::TRANSPARENT);
+                                    if ui.add(trash_btn).clicked() {
+                                        actions.push(GridAction::BatchTrash(
+                                            selected.iter().copied().collect(),
+                                        ));
+                                        selected.clear();
                                     }
                                 }
                             });
                         });
+
+                    ui.add_space(8.0);
+
+                    // Active search filter indicator
+                    if !self.search_text.trim().is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "🔍 Hasil pencarian: \"{}\" ({} ditemukan)",
+                                    self.search_text.trim(),
+                                    total_items
+                                ))
+                                .size(12.5)
+                                .color(theme::ACCENT_BLUE),
+                            );
+                            if ui
+                                .button(
+                                    egui::RichText::new("✕ Hapus")
+                                        .size(11.5)
+                                        .color(theme::TEXT_MUTED),
+                                )
+                                .clicked()
+                            {
+                                self.search_text.clear();
+                            }
+                        });
+                        ui.add_space(4.0);
                     }
-                });
+
+                    if total_items == 0 {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(40.0);
+                            let msg = if !self.search_text.trim().is_empty() {
+                                format!(
+                                    "Tidak ada catatan atau dokumen yang cocok dengan \"{}\"",
+                                    self.search_text.trim()
+                                )
+                            } else {
+                                t_empty_filtered.clone()
+                            };
+                            ui.label(
+                                egui::RichText::new(msg)
+                                    .size(14.0)
+                                    .color(theme::GLASS_TEXT_SECONDARY),
+                            );
+                            if !self.search_text.trim().is_empty() {
+                                ui.add_space(8.0);
+                                if ui
+                                    .button(
+                                        egui::RichText::new("✕ Bersihkan Filter Pencarian")
+                                            .size(12.0)
+                                            .color(theme::ACCENT_BLUE),
+                                    )
+                                    .clicked()
+                                {
+                                    self.search_text.clear();
+                                }
+                            }
+                        });
+                    } else {
+                        // ── Pinterest masonry grid ─────────────────────────────────
+                        let available_width = ui.available_width();
+                        let col_count: usize = if available_width < 480.0 {
+                            1
+                        } else if available_width < 760.0 {
+                            2
+                        } else if available_width < 1100.0 {
+                            3
+                        } else {
+                            4
+                        };
+                        let gap = theme::GRID_GAP;
+                        let col_width =
+                            (available_width - gap * (col_count as f32 - 1.0)) / col_count as f32;
+
+                        // Render all items in a horizontal row of `col_count` columns.
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(gap, 0.0);
+
+                            // Pre-allocate column containers with fixed width
+                            for col_idx in 0..col_count {
+                                let is_last = col_idx == col_count - 1;
+                                let this_col_width = if is_last {
+                                    // Last column takes any remaining space
+                                    ui.available_width()
+                                } else {
+                                    col_width
+                                };
+
+                                ui.allocate_ui(
+                                    egui::vec2(this_col_width, ui.available_height()),
+                                    |ui| {
+                                        ui.vertical(|ui| {
+                                            ui.spacing_mut().item_spacing = egui::vec2(0.0, gap);
+
+                                            // Note cards for this column
+                                            for (item_idx, note) in visible_notes.iter().enumerate()
+                                            {
+                                                if item_idx % col_count == col_idx {
+                                                    render_note_card_glass(
+                                                        ui,
+                                                        note,
+                                                        &card,
+                                                        selection_mode,
+                                                        selected.contains(&note.frontmatter.id),
+                                                        in_trash_view,
+                                                        &mut actions,
+                                                        &mut selected,
+                                                        &mut confirm_archive,
+                                                        &mut confirm_trash,
+                                                        &mut confirm_delete,
+                                                    );
+                                                }
+                                            }
+
+                                            // PDF cards for this column
+                                            let pdf_offset = visible_notes.len();
+                                            for (item_idx, path) in visible_pdfs.iter().enumerate()
+                                            {
+                                                if (item_idx + pdf_offset) % col_count == col_idx {
+                                                    render_pdf_card_glass(ui, path, &mut open_pdf);
+                                                }
+                                            }
+                                        });
+                                    },
+                                );
+                            }
+                        });
+                    }
+                }
+
+                // Generous bottom spacing for FAB and scrolling room
+                ui.add_space(80.0);
             });
-        }
 
         // ── Dialogs ────────────────────────────────────────────────────────
         if let Some((id, is_archived)) = confirm_archive {
@@ -2759,6 +2789,7 @@ impl MnemonicApp {
     /// `pdf_documents` table). Follows `show_grid`'s pattern of only
     /// touching plain locals inside the `egui` closures, deferring all
     /// mutation to `apply_pdf_library_action` afterward.
+    #[allow(dead_code)]
     fn show_pdf_library(&mut self, ui: &mut egui::Ui) {
         let t_import = self.t("pdf-import");
         let t_empty = self.t("pdf-library-empty");
@@ -3506,6 +3537,7 @@ enum GridAction {
 /// and an always-visible action row (§3.1.2's per-card toolbar is
 /// hover-only in the spec; always-visible is a simpler, equally
 /// functional substitute in immediate-mode `egui`).
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 fn render_note_card(
     ui: &mut egui::Ui,
