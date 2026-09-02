@@ -1720,7 +1720,7 @@ impl MnemonicApp {
                     self.pdf_viewer = None;
                 }
                 "nav_search" => {
-                    self.view = View::Search;
+                    self.view = View::Notes;
                     self.editor = None;
                     self.pdf_viewer = None;
                 }
@@ -2087,14 +2087,61 @@ impl MnemonicApp {
             return;
         }
 
+        // Active search filter indicator
+        if !self.search_text.trim().is_empty() {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "🔍 Hasil pencarian: \"{}\" ({} ditemukan)",
+                        self.search_text.trim(),
+                        total_items
+                    ))
+                    .size(12.5)
+                    .color(theme::ACCENT_BLUE),
+                );
+                if ui
+                    .button(
+                        egui::RichText::new("✕ Hapus")
+                            .size(11.5)
+                            .color(theme::TEXT_MUTED),
+                    )
+                    .clicked()
+                {
+                    self.search_text.clear();
+                }
+            });
+            ui.add_space(4.0);
+        }
+
         if total_items == 0 {
             ui.vertical_centered(|ui| {
                 ui.add_space(40.0);
+                let msg = if !self.search_text.trim().is_empty() {
+                    format!(
+                        "Tidak ada catatan atau dokumen yang cocok dengan \"{}\"",
+                        self.search_text.trim()
+                    )
+                } else {
+                    t_empty_filtered.clone()
+                };
                 ui.label(
-                    egui::RichText::new(&t_empty_filtered)
+                    egui::RichText::new(msg)
                         .size(14.0)
                         .color(theme::GLASS_TEXT_SECONDARY),
                 );
+                if !self.search_text.trim().is_empty() {
+                    ui.add_space(8.0);
+                    if ui
+                        .button(
+                            egui::RichText::new("✕ Bersihkan Filter Pencarian")
+                                .size(12.0)
+                                .color(theme::ACCENT_BLUE),
+                        )
+                        .clicked()
+                    {
+                        self.search_text.clear();
+                    }
+                }
             });
         } else {
             // ── Pinterest masonry grid ─────────────────────────────────────
@@ -3757,7 +3804,7 @@ impl eframe::App for MnemonicApp {
                             }
                         }
                         View::Canvas => ui::TopBarNavTab::Canvas,
-                        View::Search => ui::TopBarNavTab::Search,
+                        View::Search => ui::TopBarNavTab::Notes,
                         View::Chat => ui::TopBarNavTab::Chat,
                     };
 
@@ -3776,6 +3823,7 @@ impl eframe::App for MnemonicApp {
                         theme_mode: self.theme_mode,
                         active_locale: self.locales.active_locale().to_string(),
                         quick_capture_text: self.quick_capture_text.clone(),
+                        search_text: self.search_text.clone(),
                         icon_size: 16.0,
                         note_count,
                         pdf_count,
@@ -3783,6 +3831,17 @@ impl eframe::App for MnemonicApp {
 
                     if let Some(top_event) = ui::TopBar::show(ui, &mut topbar_state) {
                         match top_event {
+                            ui::TopBarEvent::SearchChanged(q) => {
+                                self.search_text = q;
+                                if !self.search_text.is_empty() {
+                                    self.view = View::Notes;
+                                    self.editor = None;
+                                    self.pdf_viewer = None;
+                                }
+                            }
+                            ui::TopBarEvent::ClearSearch => {
+                                self.search_text.clear();
+                            }
                             ui::TopBarEvent::SelectTab(tab) => {
                                 match tab {
                                     ui::TopBarNavTab::Notes => {
@@ -3794,9 +3853,6 @@ impl eframe::App for MnemonicApp {
                                     ui::TopBarNavTab::Canvas => {
                                         self.view = View::Notes;
                                         self.doc_filter = DocFilter::WhiteboardsOnly;
-                                    }
-                                    ui::TopBarNavTab::Search => {
-                                        self.view = View::Search;
                                     }
                                     ui::TopBarNavTab::Chat => {
                                         self.view = View::Chat;
@@ -3865,6 +3921,7 @@ impl eframe::App for MnemonicApp {
                     }
 
                     self.quick_capture_text = topbar_state.quick_capture_text;
+                    self.search_text = topbar_state.search_text;
                 });
         }
 
@@ -3918,6 +3975,7 @@ impl eframe::App for MnemonicApp {
             if let Some(side_event) = ui::SidebarDrawer::show(ui.ctx(), &sidebar_state) {
                 match side_event {
                     ui::SidebarEvent::SelectFilter(f) => {
+                        self.view = View::Notes;
                         self.doc_filter = match f {
                             ui::SidebarDocFilter::All => DocFilter::All,
                             ui::SidebarDocFilter::NotesOnly => DocFilter::NotesOnly,
@@ -3943,6 +4001,41 @@ impl eframe::App for MnemonicApp {
                     }
                     ui::SidebarEvent::CloseSidebar => {
                         self.sidebar_open = false;
+                    }
+                    ui::SidebarEvent::OpenVaultPicker => {
+                        self.sidebar_open = false;
+                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                            match Vault::open(folder) {
+                                Ok(v) => self.activate_vault(v),
+                                Err(e) => self.report_error("error-context-open-vault", e),
+                            }
+                        }
+                    }
+                    ui::SidebarEvent::CreateNote => {
+                        self.sidebar_open = false;
+                        self.view = View::Notes;
+                        if let Some(vault) = self.vault.as_mut() {
+                            match Note::create(&vault.root, "Catatan Baru", "") {
+                                Ok(note) => {
+                                    self.rescan_and_reindex();
+                                    self.open_note(note);
+                                }
+                                Err(e) => self.report_error("error-context-create-note", e),
+                            }
+                        }
+                    }
+                    ui::SidebarEvent::NewCanvas => {
+                        self.sidebar_open = false;
+                        self.view = View::Notes;
+                        if let Some(vault) = self.vault.as_mut() {
+                            match Note::create_canvas(&vault.root, "Kanvas Baru") {
+                                Ok(note) => {
+                                    self.rescan_and_reindex();
+                                    self.open_note(note);
+                                }
+                                Err(e) => self.report_error("error-context-create-note", e),
+                            }
+                        }
                     }
                 }
             }

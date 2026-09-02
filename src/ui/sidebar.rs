@@ -10,12 +10,12 @@ use egui::{
 };
 use egui_icons::icons::{
     ICON_CATEGORY, ICON_CLOSE, ICON_DELETE, ICON_DESCRIPTION, ICON_DRAW, ICON_EDIT, ICON_FOLDER,
-    ICON_INVENTORY_2, ICON_PICTURE_AS_PDF, ICON_UPLOAD,
+    ICON_FOLDER_OPEN, ICON_INVENTORY_2, ICON_NOTE_ADD, ICON_PICTURE_AS_PDF, ICON_UPLOAD,
 };
 
 use crate::ui::theme::{
-    glass_panel_frame, tag_color, ACCENT_BLUE, BG_HOVER_DARK, BORDER_SUBTLE, ROUNDING_SM,
-    SIDEBAR_WIDTH, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, TOPBAR_HEIGHT,
+    glass_panel_frame, tag_color, ACCENT_BLUE, BG_CARD_DARK, BG_HOVER_DARK, BORDER_SUBTLE,
+    ROUNDING_SM, SIDEBAR_WIDTH, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, TOPBAR_HEIGHT,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +36,9 @@ pub enum SidebarEvent {
     ImportPdf,
     ManageLabels,
     CloseSidebar,
+    OpenVaultPicker,
+    CreateNote,
+    NewCanvas,
 }
 
 pub struct SidebarState {
@@ -68,16 +71,19 @@ impl SidebarDrawer {
         );
 
         // Backdrop click to dismiss
-        let backdrop_layer = egui::LayerId::new(
-            egui::Order::Middle,
-            egui::Id::new("sidebar_backdrop_layer"),
-        );
-        let backdrop_painter = ctx.layer_painter(backdrop_layer);
-        backdrop_painter.rect_filled(
-            screen_rect,
-            CornerRadius::ZERO,
-            Color32::from_black_alpha(40),
-        );
+        let backdrop_resp = egui::Area::new(egui::Id::new("sidebar_backdrop_area"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen_rect.min)
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(screen_rect.size(), Sense::click());
+                ui.painter().rect_filled(rect, CornerRadius::ZERO, Color32::from_black_alpha(40));
+                resp
+            })
+            .inner;
+
+        if backdrop_resp.clicked() {
+            event = Some(SidebarEvent::CloseSidebar);
+        }
 
         egui::Window::new("sidebar_glass_drawer")
             .title_bar(false)
@@ -119,6 +125,60 @@ impl SidebarDrawer {
                 });
 
                 ui.add_space(6.0);
+                ui.add(egui::Separator::default().spacing(0.0));
+                ui.add_space(8.0);
+
+                // ── Aksi Cepat / Vault Actions ──
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    let avail_w = ui.available_width() - 8.0;
+                    let half_w = (avail_w - 6.0) / 2.0;
+
+                    let new_note_btn = egui::Button::new(
+                        RichText::new(format!("{} Catatan", ICON_NOTE_ADD.codepoint))
+                            .size(12.0)
+                            .color(Color32::WHITE),
+                    )
+                    .fill(ACCENT_BLUE)
+                    .corner_radius(CornerRadius::same(ROUNDING_SM));
+
+                    if ui.add_sized(Vec2::new(half_w, 28.0), new_note_btn).clicked() {
+                        event = Some(SidebarEvent::CreateNote);
+                    }
+
+                    let new_canvas_btn = egui::Button::new(
+                        RichText::new(format!("{} Kanvas", ICON_DRAW.codepoint))
+                            .size(12.0)
+                            .color(TEXT_PRIMARY),
+                    )
+                    .fill(BG_CARD_DARK)
+                    .stroke(Stroke::new(0.5, BORDER_SUBTLE))
+                    .corner_radius(CornerRadius::same(ROUNDING_SM));
+
+                    if ui.add_sized(Vec2::new(half_w, 28.0), new_canvas_btn).clicked() {
+                        event = Some(SidebarEvent::NewCanvas);
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                let vault_btn = egui::Button::new(
+                    RichText::new(format!("{}  Pilih / Buka Vault...", ICON_FOLDER_OPEN.codepoint))
+                        .size(11.5)
+                        .color(TEXT_SECONDARY),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::new(0.5, BORDER_SUBTLE))
+                .corner_radius(CornerRadius::same(ROUNDING_SM));
+
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    if ui.add_sized(Vec2::new(ui.available_width() - 8.0, 26.0), vault_btn).clicked() {
+                        event = Some(SidebarEvent::OpenVaultPicker);
+                    }
+                });
+
+                ui.add_space(8.0);
                 ui.add(egui::Separator::default().spacing(0.0));
                 ui.add_space(6.0);
 

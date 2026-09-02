@@ -8,21 +8,19 @@ use egui::{
     Align2, Color32, CornerRadius, Frame, Margin, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
 };
 use egui_icons::icons::{
-    ICON_ADD, ICON_AUTO_AWESOME, ICON_DARK_MODE, ICON_DESCRIPTION, ICON_DRAW, ICON_FOLDER_OPEN,
-    ICON_LANGUAGE, ICON_LIGHT_MODE, ICON_MENU, ICON_NOTE_ADD, ICON_PALETTE, ICON_SEARCH,
-    ICON_UPLOAD,
+    ICON_ADD, ICON_AUTO_AWESOME, ICON_CLOSE, ICON_DARK_MODE, ICON_LANGUAGE, ICON_LIGHT_MODE,
+    ICON_MENU, ICON_SEARCH,
 };
 
 use crate::ui::theme::{
-    glass_frame, glass_topbar_frame, ThemeMode, ACCENT_BLUE, BG_CARD_DARK, BG_HOVER_DARK,
-    BORDER_SUBTLE, ROUNDING_SM, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    glass_topbar_frame, ThemeMode, ACCENT_BLUE, BG_CARD_DARK, BG_HOVER_DARK, BORDER_SUBTLE,
+    ROUNDING_SM, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopBarNavTab {
     Notes,
     Canvas,
-    Search,
     Chat,
 }
 
@@ -39,6 +37,8 @@ pub enum TopBarEvent {
     ManageLabels,
     OpenSettings,
     NewCanvas,
+    SearchChanged(String),
+    ClearSearch,
 }
 
 pub struct TopBarState {
@@ -49,6 +49,7 @@ pub struct TopBarState {
     pub theme_mode: ThemeMode,
     pub active_locale: String,
     pub quick_capture_text: String,
+    pub search_text: String,
     pub icon_size: f32,
     pub note_count: usize,
     pub pdf_count: usize,
@@ -65,201 +66,162 @@ impl TopBar {
         glass_topbar_frame().show(ui, |ui| {
             ui.set_height(34.0);
             ui.horizontal(|ui| {
-                // 1. Menu hamburger / Vault operations dropdown
-                ui.menu_button(
-                    RichText::new(ICON_MENU.codepoint)
-                        .size(icon_sz)
-                        .color(TEXT_PRIMARY),
-                    |ui| {
-                        ui.set_min_width(180.0);
-                        if ui
-                            .button(format!(
-                                "{}  Pilih / Buka Vault...",
-                                ICON_FOLDER_OPEN.codepoint
-                            ))
-                            .clicked()
-                        {
-                            event = Some(TopBarEvent::OpenVaultPicker);
-                            ui.close();
-                        }
-                        if state.vault_open {
-                            if ui
-                                .button(format!("{}  Catatan Baru (⌘N)", ICON_NOTE_ADD.codepoint))
-                                .clicked()
-                            {
-                                event = Some(TopBarEvent::CreateNote(String::new()));
-                                ui.close();
-                            }
-                            if ui
-                                .button(format!("{}  Kanvas Baru", ICON_DRAW.codepoint))
-                                .clicked()
-                            {
-                                event = Some(TopBarEvent::NewCanvas);
-                                ui.close();
-                            }
-                            if ui
-                                .button(format!("{}  Impor PDF...", ICON_UPLOAD.codepoint))
-                                .clicked()
-                            {
-                                event = Some(TopBarEvent::ImportPdf);
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui
-                                .button(format!("{}  Kelola Label...", ICON_PALETTE.codepoint))
-                                .clicked()
-                            {
-                                event = Some(TopBarEvent::ManageLabels);
-                                ui.close();
-                            }
-                        }
-                    },
+                // 1. Menu hamburger button -> Toggle unified Sidebar Drawer
+                let is_burger_active = state.sidebar_open;
+                let burger_color = if is_burger_active {
+                    ACCENT_BLUE
+                } else {
+                    TEXT_PRIMARY
+                };
+                let (rect, resp) =
+                    ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
+                let is_hovered = resp.hovered();
+
+                if is_hovered || is_burger_active {
+                    let fill = if is_burger_active {
+                        Color32::from_rgba_premultiplied(10, 132, 255, 45)
+                    } else {
+                        BG_HOVER_DARK
+                    };
+                    ui.painter().rect(
+                        rect,
+                        CornerRadius::same(ROUNDING_SM),
+                        fill,
+                        Stroke::new(
+                            0.5,
+                            if is_burger_active {
+                                ACCENT_BLUE
+                            } else {
+                                BORDER_SUBTLE
+                            },
+                        ),
+                        StrokeKind::Inside,
+                    );
+                }
+
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    ICON_MENU.codepoint,
+                    egui::FontId::proportional(icon_sz),
+                    burger_color,
                 );
 
-                // 2. Sidebar drawer toggle button (hanya bila vault aktif)
+                if resp
+                    .on_hover_text("Menu Dokumen & Vault")
+                    .clicked()
+                {
+                    event = Some(TopBarEvent::ToggleSidebar);
+                }
+
+                // 2. Vault Name badge (hanya bila vault aktif)
                 if state.vault_open {
-                    let sidebar_color = if state.sidebar_open {
-                        ACCENT_BLUE
+                    ui.add_space(2.0);
+                    let vault_label = if state.vault_name.is_empty() {
+                        "Vault".to_string()
+                    } else {
+                        state.vault_name.clone()
+                    };
+                    let pill_text = RichText::new(format!("📁 {vault_label}"))
+                        .size(11.5)
+                        .color(TEXT_SECONDARY);
+
+                    let pill_frame = Frame {
+                        inner_margin: Margin::symmetric(7, 3),
+                        outer_margin: Margin::ZERO,
+                        corner_radius: CornerRadius::same(ROUNDING_SM),
+                        fill: BG_CARD_DARK,
+                        stroke: Stroke::new(0.5, BORDER_SUBTLE),
+                        shadow: egui::Shadow::NONE,
+                    };
+
+                    pill_frame.show(ui, |ui| {
+                        ui.label(pill_text);
+                    });
+                }
+
+                // 3. Search Input Field (Langsung di Header Menu - Tanpa border dan icon)
+                if state.vault_open {
+                    ui.add_space(6.0);
+
+                    let edit = egui::TextEdit::singleline(&mut state.search_text)
+                        .hint_text("Cari catatan, tag, berkas...")
+                        .frame(Frame::NONE)
+                        .desired_width(180.0);
+                    let resp = ui.add(edit);
+
+                    if resp.changed() {
+                        event = Some(TopBarEvent::SearchChanged(state.search_text.clone()));
+                    }
+
+                    if !state.search_text.is_empty() {
+                        let clear_btn = egui::Button::new(
+                            RichText::new(ICON_CLOSE.codepoint)
+                                .size(10.5)
+                                .color(TEXT_MUTED),
+                        )
+                        .frame(false);
+
+                        if ui.add(clear_btn).on_hover_text("Hapus pencarian").clicked() {
+                            state.search_text.clear();
+                            event = Some(TopBarEvent::SearchChanged(String::new()));
+                        }
+                    }
+
+                    ui.add_space(4.0);
+
+                    // AI Chat Tab Pill
+                    let is_chat_active = state.active_tab == TopBarNavTab::Chat;
+                    let text_color = if is_chat_active {
+                        Color32::WHITE
                     } else {
                         TEXT_SECONDARY
                     };
-                    let (rect, resp) =
-                        ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
-                    let is_hovered = resp.hovered();
 
-                    if is_hovered || state.sidebar_open {
-                        let fill = if state.sidebar_open {
-                            Color32::from_rgba_premultiplied(10, 132, 255, 45)
+                    let bg_color = if is_chat_active {
+                        ACCENT_BLUE
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+
+                    let chat_btn_frame = Frame {
+                        inner_margin: Margin::symmetric(8, 3),
+                        outer_margin: Margin::ZERO,
+                        corner_radius: CornerRadius::same(ROUNDING_SM),
+                        fill: bg_color,
+                        stroke: if is_chat_active {
+                            Stroke::new(1.0, ACCENT_BLUE)
                         } else {
-                            BG_HOVER_DARK
-                        };
-                        ui.painter().rect(
-                            rect,
-                            CornerRadius::same(ROUNDING_SM),
-                            fill,
-                            Stroke::new(
-                                0.5,
-                                if state.sidebar_open {
-                                    ACCENT_BLUE
-                                } else {
-                                    BORDER_SUBTLE
-                                },
-                            ),
-                            StrokeKind::Inside,
-                        );
-                    }
+                            Stroke::NONE
+                        },
+                        shadow: egui::Shadow::NONE,
+                    };
 
-                    ui.painter().text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        ICON_DESCRIPTION.codepoint,
-                        egui::FontId::proportional(icon_sz),
-                        sidebar_color,
-                    );
+                    let resp = chat_btn_frame
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(ICON_AUTO_AWESOME.codepoint)
+                                        .size(icon_sz - 1.0)
+                                        .color(text_color),
+                                );
+                                ui.label(
+                                    RichText::new("AI Chat").size(12.0).color(text_color),
+                                );
+                            });
+                        })
+                        .response;
 
-                    if resp
-                        .on_hover_text("Buka/Tutup Bilah Samping (Sidebar)")
-                        .clicked()
-                    {
-                        event = Some(TopBarEvent::ToggleSidebar);
-                    }
-                }
-
-                ui.add_space(4.0);
-
-                // 3. App Title & Vault Name badge
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("MNEMONIC")
-                            .size(13.5)
-                            .strong()
-                            .color(TEXT_PRIMARY),
-                    );
-
-                    if state.vault_open {
-                        let vault_label = if state.vault_name.is_empty() {
-                            "Vault".to_string()
+                    if resp.interact(Sense::click()).clicked() {
+                        if is_chat_active {
+                            event = Some(TopBarEvent::SelectTab(TopBarNavTab::Notes));
                         } else {
-                            state.vault_name.clone()
-                        };
-                        let pill_text = RichText::new(format!("📁 {vault_label}"))
-                            .size(11.0)
-                            .color(TEXT_SECONDARY);
-
-                        let pill_frame = Frame {
-                            inner_margin: Margin::symmetric(6, 2),
-                            outer_margin: Margin::ZERO,
-                            corner_radius: CornerRadius::same(ROUNDING_SM),
-                            fill: BG_CARD_DARK,
-                            stroke: Stroke::new(0.5, BORDER_SUBTLE),
-                            shadow: egui::Shadow::NONE,
-                        };
-
-                        pill_frame.show(ui, |ui| {
-                            ui.label(pill_text);
-                        });
-                    }
-                });
-
-                // 4. Center Segmented Navigation Pills (Notes, Canvas, Search, Chat)
-                if state.vault_open {
-                    ui.add_space(8.0);
-                    let tabs = [
-                        (TopBarNavTab::Notes, ICON_DESCRIPTION.codepoint, "Catatan"),
-                        (TopBarNavTab::Canvas, ICON_DRAW.codepoint, "Kanvas"),
-                        (TopBarNavTab::Search, ICON_SEARCH.codepoint, "Pencarian"),
-                        (TopBarNavTab::Chat, ICON_AUTO_AWESOME.codepoint, "AI Chat"),
-                    ];
-
-                    for (tab, icon, label) in tabs {
-                        let is_active = state.active_tab == tab;
-                        let text_color = if is_active {
-                            Color32::WHITE
-                        } else {
-                            TEXT_SECONDARY
-                        };
-
-                        let bg_color = if is_active {
-                            ACCENT_BLUE
-                        } else {
-                            Color32::TRANSPARENT
-                        };
-
-                        let btn_frame = Frame {
-                            inner_margin: Margin::symmetric(8, 3),
-                            outer_margin: Margin::ZERO,
-                            corner_radius: CornerRadius::same(ROUNDING_SM),
-                            fill: bg_color,
-                            stroke: if is_active {
-                                Stroke::new(1.0, ACCENT_BLUE)
-                            } else {
-                                Stroke::NONE
-                            },
-                            shadow: egui::Shadow::NONE,
-                        };
-
-                        let resp = btn_frame
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(icon)
-                                            .size(icon_sz - 1.0)
-                                            .color(text_color),
-                                    );
-                                    ui.label(
-                                        RichText::new(label).size(12.5).color(text_color),
-                                    );
-                                });
-                            })
-                            .response;
-
-                        if resp.interact(Sense::click()).clicked() {
-                            event = Some(TopBarEvent::SelectTab(tab));
+                            event = Some(TopBarEvent::SelectTab(TopBarNavTab::Chat));
                         }
                     }
                 }
 
-                // 5. Right Layout: Quick Capture + Omnibox ⌘K + Theme + Language
+                // 4. Right Layout: Quick Capture + Omnibox ⌘K + Theme + Language
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Theme Switcher button
                     let theme_icon = match state.theme_mode {
@@ -326,7 +288,7 @@ impl TopBar {
                                         .color(TEXT_MUTED),
                                 );
                                 ui.label(
-                                    RichText::new("Cari atau ⌘K")
+                                    RichText::new("⌘K")
                                         .size(12.0)
                                         .color(TEXT_MUTED),
                                 );
@@ -342,8 +304,8 @@ impl TopBar {
                         event = Some(TopBarEvent::OpenCommandPalette);
                     }
 
-                    // Quick Note Capture input (hanya saat mode Notes)
-                    if state.vault_open && state.active_tab == TopBarNavTab::Notes {
+                    // Quick Note Capture input (saat tidak di mode Chat)
+                    if state.vault_open && state.active_tab != TopBarNavTab::Chat {
                         ui.add_space(4.0);
 
                         // Tombol submit tambah
@@ -363,7 +325,7 @@ impl TopBar {
                         // Input field
                         let edit = egui::TextEdit::singleline(&mut state.quick_capture_text)
                             .hint_text("✏ Judul cepat...")
-                            .desired_width(140.0);
+                            .desired_width(130.0);
                         let edit_resp = ui.add(edit);
 
                         if (should_submit
@@ -399,6 +361,7 @@ mod tests {
             theme_mode: ThemeMode::Dark,
             active_locale: "id-ID".to_string(),
             quick_capture_text: String::new(),
+            search_text: String::new(),
             icon_size: 16.0,
             note_count: 5,
             pdf_count: 2,
@@ -407,5 +370,6 @@ mod tests {
         assert_eq!(state.vault_name, "MyVault");
         assert_eq!(state.active_tab, TopBarNavTab::Notes);
         assert_eq!(state.theme_mode, ThemeMode::Dark);
+        assert_eq!(state.search_text, "");
     }
 }
