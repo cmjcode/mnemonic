@@ -1,7 +1,7 @@
 //! Rendering engine for whiteboard elements.
 
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, RichText, StrokeKind,
+    Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, StrokeKind,
     Vec2,
 };
 

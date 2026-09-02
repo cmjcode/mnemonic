@@ -10,7 +10,7 @@ use egui::{
 use egui_icons::icons::ICON_SEARCH;
 
 use crate::ui::theme::{
-    glass_frame, ACCENT_BLUE, BG_HOVER_DARK, BORDER_SUBTLE, ROUNDING_SM, TEXT_MUTED, TEXT_PRIMARY,
+    glass_frame, ACCENT_BLUE, ROUNDING_SM, TEXT_MUTED, TEXT_PRIMARY,
 };
 
 #[derive(Debug, Clone)]

@@ -18,9 +18,9 @@ notes-unpin = Lepas Sematan
 app-status-ready = Siap
 
 editor-back = Kembali
-editor-mode-source = Sumber
-editor-mode-live-preview = Pratinjau Langsung
-editor-mode-reading = Mode Baca
+editor-mode-source = Edit / Sumber
+editor-mode-live-preview = Pratinjau
+editor-mode-reading = Baca / Pratinjau
 editor-undo = Urungkan
 editor-redo = Ulangi
 editor-outline = Daftar Isi
@@ -49,9 +49,21 @@ selection-trash = Sampah-kan Terpilih
 
 card-archive = Arsipkan
 card-unarchive = Batalkan Arsip
-card-trash = Ke Sampah
+card-trash = Pindahkan ke Sampah
 card-restore = Pulihkan
 card-delete-permanent = Hapus Permanen
+
+confirm-archive-title = Arsipkan Catatan?
+confirm-archive-body = Catatan ini akan dipindahkan ke Arsip dan disembunyikan dari daftar utama.
+confirm-archive-yes = Ya, Arsipkan
+
+confirm-unarchive-title = Batalkan Arsip?
+confirm-unarchive-body = Catatan ini akan dikembalikan ke daftar dokumen utama.
+confirm-unarchive-yes = Batalkan Arsip
+
+confirm-trash-title = Pindahkan ke Sampah?
+confirm-trash-body = Catatan ini akan dipindahkan ke Tong Sampah. Anda dapat memulihkannya nanti.
+confirm-trash-yes = Pindahkan ke Sampah
 
 confirm-delete-title = Hapus Permanen?
 confirm-delete-body = Catatan ini akan dihapus permanen dan tidak bisa dikembalikan.

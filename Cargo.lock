@@ -3632,6 +3632,7 @@ dependencies = [
  "notify",
  "pdf-extract",
  "pdfium-render",
+ "quick-xml",
  "rfd",
  "rusqlite",
  "serde",

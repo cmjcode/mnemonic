@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use egui_commonmark::CommonMarkCache;
 
-use crate::block::BlockTree;
 use crate::canvas::{CanvasDocument, InteractionState};
 use crate::notes::Note;
 
@@ -28,14 +27,12 @@ const WORDS_PER_MINUTE: usize = 200;
 const MAX_UNDO_HISTORY: usize = 100;
 
 /// How the note body is currently presented.
-/// - `Source`: raw Markdown text editor.
-/// - `LivePreview`: interactive rendered CommonMark view with inline checklists & wikilinks.
-/// - `Reading`: distraction-free reading mode.
+/// - `Source`: raw Markdown text editor with slash-commands & wikilink autocomplete.
+/// - `Reading`: clean rendered CommonMark view with interactive checklists & wikilinks.
 /// - `Edgeless`: infinite 2D spatial canvas / whiteboard representation (AFFiNE-style dual mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorMode {
     Source,
-    LivePreview,
     Reading,
     Edgeless,
 }
@@ -62,19 +59,27 @@ pub struct MarkdownEditor {
 }
 
 impl MarkdownEditor {
-    pub fn open(note: Note) -> MarkdownEditor {
+    pub fn open(mut note: Note) -> MarkdownEditor {
         let is_canvas = note.is_canvas();
         let initial_mode = if is_canvas {
             EditorMode::Edgeless
         } else {
-            EditorMode::LivePreview
+            EditorMode::Source
         };
 
-        let canvas = if is_canvas {
-            Some(CanvasDocument::from_markdown_body(
-                &note.frontmatter.title,
-                &note.body,
-            ))
+        let canvas = if is_canvas
+            || note.body.contains("```canvas")
+            || note.body.contains("```drawio")
+            || note.body.starts_with("<?xml")
+        {
+            let doc = CanvasDocument::from_markdown_body(&note.frontmatter.title, &note.body);
+            if note.body.contains("```canvas")
+                || note.body.contains("```drawio")
+                || note.body.starts_with("<?xml")
+            {
+                note.body = doc.to_markdown_body();
+            }
+            Some(doc)
         } else {
             None
         };
@@ -129,7 +134,23 @@ impl MarkdownEditor {
     /// Mark canvas as dirty and schedule debounced sync/autosave.
     pub fn mark_dirty_canvas(&mut self) {
         if let Some(canvas) = &self.canvas {
-            let new_body = canvas.to_markdown_body();
+            let is_drawio_file = self.note.path.extension().map_or(false, |ext| ext == "drawio");
+            let has_drawio_tag = self.note.frontmatter.tags.iter().any(|t| t.eq_ignore_ascii_case("drawio"));
+            let is_drawio_body = self.note.body.contains("```drawio")
+                || self.note.body.starts_with("<?xml")
+                || self.note.body.starts_with("<mxfile");
+
+            let new_body = if is_drawio_file || is_drawio_body || has_drawio_tag {
+                let xml = canvas.to_drawio_xml();
+                if is_drawio_file || self.note.body.starts_with("<?xml") || self.note.body.starts_with("<mxfile") {
+                    xml
+                } else {
+                    format!("```drawio\n{}\n```\n", xml.trim())
+                }
+            } else {
+                canvas.to_markdown_body()
+            };
+
             if new_body != self.note.body {
                 self.note.body = new_body;
                 self.dirty = true;
@@ -205,9 +226,7 @@ impl MarkdownEditor {
     /// navigates away from the note.
     pub fn autosave(&mut self) -> Result<()> {
         if self.mode == EditorMode::Edgeless {
-            if let Some(canvas) = &self.canvas {
-                self.note.body = canvas.to_markdown_body();
-            }
+            self.sync_canvas_to_body();
         }
         self.note.save()?;
         self.dirty = false;

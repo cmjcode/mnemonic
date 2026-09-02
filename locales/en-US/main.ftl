@@ -18,9 +18,9 @@ notes-unpin = Unpin
 app-status-ready = Ready
 
 editor-back = Back
-editor-mode-source = Source
-editor-mode-live-preview = Live Preview
-editor-mode-reading = Reading
+editor-mode-source = Edit / Source
+editor-mode-live-preview = Preview
+editor-mode-reading = Read / Preview
 editor-undo = Undo
 editor-redo = Redo
 editor-outline = Outline
@@ -52,6 +52,18 @@ card-unarchive = Unarchive
 card-trash = Move to Trash
 card-restore = Restore
 card-delete-permanent = Delete Permanently
+
+confirm-archive-title = Archive Note?
+confirm-archive-body = This note will be moved to Archive and hidden from the main list.
+confirm-archive-yes = Yes, Archive
+
+confirm-unarchive-title = Unarchive Note?
+confirm-unarchive-body = This note will be restored to the main document list.
+confirm-unarchive-yes = Unarchive
+
+confirm-trash-title = Move to Trash?
+confirm-trash-body = This note will be moved to Trash. You can restore it later.
+confirm-trash-yes = Move to Trash
 
 confirm-delete-title = Delete Permanently?
 confirm-delete-body = This note will be permanently deleted and cannot be recovered.

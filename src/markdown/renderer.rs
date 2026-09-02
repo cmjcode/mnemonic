@@ -689,8 +689,7 @@ mod tests {
 
     #[test]
     fn transform_canvas_code_blocks_renders_alert_and_prose() {
-        let doc = crate::canvas::CanvasDocument::new("Diagram");
-        let raw_canvas_body = doc.to_markdown_body();
+        let raw_canvas_body = "```canvas\n{\n  \"id\": \"00000000-0000-0000-0000-000000000000\",\n  \"title\": \"Diagram\",\n  \"elements\": [],\n  \"viewport\": {\"pan\": [0.0, 0.0], \"zoom\": 1.0}\n}\n```";
         let out = transform_canvas_code_blocks(&raw_canvas_body);
         assert!(out.contains("> [!note] 🎨 **Papan Tulis Kanvas (Edgeless)**"));
         assert!(out.contains("Kanvas masih kosong"));

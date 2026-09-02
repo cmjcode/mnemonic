@@ -1,15 +1,6 @@
 //! Entry point: initializes logging and runs the `eframe` window (§4).
 
-mod app;
-mod block;
-mod canvas;
-mod core;
-mod i18n;
-mod llm;
-mod markdown;
-mod notes;
-mod pdf;
-mod ui;
+use mnemonic::app;
 
 // §Fase 10 "memory profiling", opt-in via `--features dhat-heap` (see
 // Cargo.toml's `dhat` dependency comment) — swaps the global allocator for

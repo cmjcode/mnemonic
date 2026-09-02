@@ -8,7 +8,7 @@ use egui::{
 };
 use egui_icons::icons::{
     ICON_ADS_CLICK, ICON_ARROWS_OUTWARD, ICON_BRUSH, ICON_CIRCLE, ICON_CROP_16_9, ICON_DELETE,
-    ICON_PAN_TOOL, ICON_REDO, ICON_STICKY_NOTE_2, ICON_UNDO,
+    ICON_DRAW, ICON_PAN_TOOL, ICON_REDO, ICON_STICKY_NOTE_2, ICON_UNDO, ICON_UPLOAD,
 };
 
 use crate::canvas::element::ShapeKind;
@@ -26,6 +26,8 @@ pub enum LeftToolbarEvent {
     ZoomIn,
     ZoomOut,
     ResetZoom,
+    ExportDrawio,
+    ImportDrawio,
 }
 
 pub struct LeftToolbar;
@@ -56,9 +58,19 @@ impl LeftToolbar {
                         "Persegi (R)",
                     ),
                     (
+                        CanvasTool::Shape(ShapeKind::RoundedRect),
+                        "▢",
+                        "Persegi Sudut Membulat",
+                    ),
+                    (
                         CanvasTool::Shape(ShapeKind::Ellipse),
                         ICON_CIRCLE.codepoint,
                         "Lingkaran / Elips (O)",
+                    ),
+                    (
+                        CanvasTool::Shape(ShapeKind::Diamond),
+                        "◆",
+                        "Keputusan / Diamond Decision",
                     ),
                     (
                         CanvasTool::Connector,
@@ -168,6 +180,58 @@ impl LeftToolbar {
                 );
                 if r_resp.on_hover_text("Ulangi (⌘Shift+Z)").clicked() && can_redo {
                     event = Some(LeftToolbarEvent::Redo);
+                }
+
+                ui.add_space(4.0);
+                ui.add(egui::Separator::default().spacing(0.0));
+                ui.add_space(4.0);
+
+                // Import Draw.io Button
+                let (imp_rect, imp_resp) =
+                    ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+                if imp_resp.hovered() {
+                    ui.painter().rect(
+                        imp_rect,
+                        CornerRadius::same(ROUNDING_SM),
+                        BG_HOVER_DARK,
+                        Stroke::NONE,
+                        StrokeKind::Inside,
+                    );
+                }
+                ui.painter().text(
+                    imp_rect.center(),
+                    Align2::CENTER_CENTER,
+                    ICON_UPLOAD.codepoint,
+                    egui::FontId::proportional(14.0),
+                    TEXT_PRIMARY,
+                );
+                if imp_resp.on_hover_text("Impor File Draw.io (.drawio / XML)").clicked() {
+                    event = Some(LeftToolbarEvent::ImportDrawio);
+                }
+
+                ui.add_space(2.0);
+
+                // Export Draw.io Button
+                let (exp_rect, exp_resp) =
+                    ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+                if exp_resp.hovered() {
+                    ui.painter().rect(
+                        exp_rect,
+                        CornerRadius::same(ROUNDING_SM),
+                        BG_HOVER_DARK,
+                        Stroke::NONE,
+                        StrokeKind::Inside,
+                    );
+                }
+                ui.painter().text(
+                    exp_rect.center(),
+                    Align2::CENTER_CENTER,
+                    ICON_DRAW.codepoint,
+                    egui::FontId::proportional(14.0),
+                    ACCENT_BLUE,
+                );
+                if exp_resp.on_hover_text("Ekspor ke Format Draw.io (.drawio)").clicked() {
+                    event = Some(LeftToolbarEvent::ExportDrawio);
                 }
 
                 ui.add_space(2.0);

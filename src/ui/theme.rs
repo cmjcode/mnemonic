@@ -51,7 +51,8 @@ pub const ROUNDING_XL: u8 = 20;
 
 pub const CARD_MIN_WIDTH: f32 = 220.0;
 pub const GRID_GAP: f32 = 12.0;
-pub const SIDEBAR_WIDTH: f32 = 240.0;
+pub const SIDEBAR_WIDTH: f32 = 280.0;
+pub const CHAT_SIDEBAR_WIDTH: f32 = 380.0;
 pub const TOPBAR_HEIGHT: f32 = 44.0;
 
 // ─── Theme Mode ──────────────────────────────────────────────────────────────
@@ -212,6 +213,18 @@ pub fn dimension_pill_frame() -> Frame {
 /// Standard glass `egui::Frame` for note/PDF cards.
 pub fn glass_card_frame() -> Frame {
     card_frame()
+}
+
+/// Frame untuk sidebar kiri tetap (Fixed Left Side Panel).
+pub fn fixed_sidebar_frame() -> Frame {
+    Frame {
+        inner_margin: Margin::symmetric(8, 6),
+        outer_margin: Margin::ZERO,
+        corner_radius: CornerRadius::ZERO,
+        shadow: Shadow::NONE,
+        fill: BG_PANEL_DARK,
+        stroke: Stroke::new(1.0, BORDER_SUBTLE),
+    }
 }
 
 /// Glass frame for elevated overlay panels (sidebar).

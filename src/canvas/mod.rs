@@ -3,11 +3,13 @@
 //! Provides the data structures, coordinate transforms, interactive toolbars,
 //! and vector painters for a 2D spatial canvas that unifies with Markdown documents.
 
+pub mod drawio;
 pub mod element;
 pub mod painter;
 pub mod tools;
 pub mod viewport;
 
+pub use drawio::{DrawioExporter, DrawioImporter};
 pub use element::{CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
 pub use painter::draw_element;
 pub use tools::{CanvasTool, InteractionState};
@@ -161,19 +163,143 @@ impl CanvasDocument {
         canvas
     }
 
-    /// Serialize canvas elements & viewport into a markdown body with a ```canvas code block.
-    pub fn to_markdown_body(&self) -> String {
-        if let Ok(json_str) = serde_json::to_string_pretty(self) {
-            format!("```canvas\n{}\n```\n", json_str)
-        } else {
-            String::new()
+    /// Converts canvas elements into a clean hierarchical `BlockTree` sorted by reading order (top-to-bottom).
+    pub fn to_block_tree(&self) -> BlockTree {
+        let mut tree = BlockTree::default();
+
+        // Sort elements by top-to-bottom (min y), then left-to-right (min x)
+        let mut sorted_elements = self.elements.clone();
+        sorted_elements.sort_by(|a, b| {
+            let (ay, ax) = match a {
+                CanvasElement::StickyNote { pos, .. } => (pos[1], pos[0]),
+                CanvasElement::Shape { rect, .. } => (rect[1], rect[0]),
+                CanvasElement::DocCard { pos, .. } => (pos[1], pos[0]),
+                CanvasElement::Frame { rect, .. } => (rect[1], rect[0]),
+                CanvasElement::Connector { from_pos, .. } => (from_pos[1], from_pos[0]),
+                CanvasElement::FreehandStroke { points, .. } => {
+                    points.first().map(|p| (p[1], p[0])).unwrap_or((0.0, 0.0))
+                }
+            };
+            let (by, bx) = match b {
+                CanvasElement::StickyNote { pos, .. } => (pos[1], pos[0]),
+                CanvasElement::Shape { rect, .. } => (rect[1], rect[0]),
+                CanvasElement::DocCard { pos, .. } => (pos[1], pos[0]),
+                CanvasElement::Frame { rect, .. } => (rect[1], rect[0]),
+                CanvasElement::Connector { from_pos, .. } => (from_pos[1], from_pos[0]),
+                CanvasElement::FreehandStroke { points, .. } => {
+                    points.first().map(|p| (p[1], p[0])).unwrap_or((0.0, 0.0))
+                }
+            };
+            ay.partial_cmp(&by)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal))
+        });
+
+        for elem in sorted_elements {
+            match elem {
+                CanvasElement::Shape { text, .. } => {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        tree.add_root_block(crate::block::BlockNode::new(BlockKind::Heading {
+                            level: 1,
+                            text: trimmed.to_string(),
+                        }));
+                    }
+                }
+                CanvasElement::StickyNote { text, .. } => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if trimmed.starts_with("✓ ") || trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
+                        let content = if trimmed.starts_with("✓ ") {
+                            trimmed[3..].trim()
+                        } else {
+                            trimmed[6..].trim()
+                        };
+                        tree.add_root_block(crate::block::BlockNode::new(BlockKind::Checklist {
+                            checked: true,
+                            text: content.to_string(),
+                        }));
+                    } else if trimmed.starts_with("☐ ") || trimmed.starts_with("- [ ] ") {
+                        let content = if trimmed.starts_with("☐ ") {
+                            trimmed[3..].trim()
+                        } else {
+                            trimmed[6..].trim()
+                        };
+                        tree.add_root_block(crate::block::BlockNode::new(BlockKind::Checklist {
+                            checked: false,
+                            text: content.to_string(),
+                        }));
+                    } else if trimmed.starts_with('[') && trimmed.contains(']') {
+                        if let Some(close_idx) = trimmed.find(']') {
+                            let kind = trimmed[1..close_idx].to_lowercase();
+                            let content = trimmed[close_idx + 1..].trim();
+                            tree.add_root_block(crate::block::BlockNode::new(BlockKind::Callout {
+                                kind,
+                                text: content.to_string(),
+                            }));
+                        } else {
+                            tree.add_root_block(crate::block::BlockNode::new(BlockKind::Paragraph(trimmed.to_string())));
+                        }
+                    } else {
+                        tree.add_root_block(crate::block::BlockNode::new(BlockKind::Paragraph(trimmed.to_string())));
+                    }
+                }
+                CanvasElement::DocCard { title, .. } => {
+                    tree.add_root_block(crate::block::BlockNode::new(BlockKind::Paragraph(format!("[[{title}]]"))));
+                }
+                CanvasElement::Frame { title, .. } => {
+                    if !title.trim().is_empty() {
+                        tree.add_root_block(crate::block::BlockNode::new(BlockKind::Heading {
+                            level: 2,
+                            text: title.trim().to_string(),
+                        }));
+                    }
+                }
+                _ => {}
+            }
         }
+
+        tree
+    }
+
+    /// Converts canvas elements into clean, human-readable Markdown (no raw JSON blocks).
+    pub fn to_markdown_body(&self) -> String {
+        let tree = self.to_block_tree();
+        let md = tree.to_markdown();
+        if md.trim().is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", md.trim())
+        }
+    }
+
+    /// Try parsing a `CanvasDocument` from a Draw.io XML string.
+    pub fn from_drawio_xml(title: &str, xml: &str) -> anyhow::Result<Self> {
+        DrawioImporter::from_xml(title, xml)
+    }
+
+    /// Export this `CanvasDocument` into standard Draw.io XML format.
+    pub fn to_drawio_xml(&self) -> String {
+        DrawioExporter::to_xml(self)
     }
 
     /// Try parsing a `CanvasDocument` from markdown body, or convert from block tree if not a serialized canvas.
     pub fn from_markdown_body(title: &str, body: &str) -> Self {
         let trimmed = body.trim();
-        // Check if body contains ```canvas ... ```
+        // Check if body is Draw.io XML or ```drawio codeblock
+        if trimmed.starts_with("<?xml")
+            || trimmed.starts_with("<mxfile")
+            || trimmed.starts_with("<mxGraphModel")
+            || trimmed.contains("```drawio")
+        {
+            if let Ok(doc) = Self::from_drawio_xml(title, trimmed) {
+                return doc;
+            }
+        }
+
+        // Check if body contains legacy ```canvas ... ```
         if let Some(start_idx) = trimmed.find("```canvas") {
             let after_start = &trimmed[start_idx + 9..];
             if let Some(end_idx) = after_start.find("```") {
@@ -190,7 +316,7 @@ impl CanvasDocument {
             }
         }
 
-        // Fallback: construct canvas from markdown block tree
+        // Standard: construct canvas from markdown block tree
         let tree = crate::block::BlockTree::from_markdown(body);
         Self::from_block_tree(title, &tree)
     }
@@ -380,7 +506,9 @@ mod tests {
         });
 
         let md_body = canvas.to_markdown_body();
-        assert!(md_body.starts_with("```canvas"));
+        assert!(md_body.contains("Backend API"));
+        assert!(md_body.contains("Database PostgreSQL"));
+        assert!(!md_body.contains("```canvas"));
 
         let loaded = CanvasDocument::from_markdown_body("Architecture Diagram", &md_body);
         assert_eq!(loaded.elements.len(), 2);

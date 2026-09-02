@@ -87,54 +87,10 @@ enum DocFilter {
     Tag(String),
 }
 
-/// One clickable reference an assistant reply grounded its answer on
-/// (§3.4 point 4) — carries enough to jump straight to the source instead
-/// of just naming it, added in Fase 8 once the PDF viewer existed to jump
-/// to.
-#[derive(Clone)]
-struct Citation {
-    file_path: PathBuf,
-    /// `None` for a note citation; `Some(0-based page)` for a PDF one.
-    page_index: Option<usize>,
-    label: String,
-}
-
-/// One rendered bubble in the Chat tab's transcript. `Clone` lets
-/// `show_chat` snapshot the transcript into a plain local before entering
-/// nested `egui` closures — same reasoning as `show_grid`'s
-/// `let notes: Vec<Note> = ...clone()`.
-#[derive(Clone)]
-struct ChatMessage {
-    role: ChatRole,
-    text: String,
-    /// Source citations the assistant grounded its reply on — empty for
-    /// user messages and for a reply that found no relevant context.
-    citations: Vec<Citation>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ChatRole {
-    User,
-    Assistant,
-}
-
-impl ChatMessage {
-    fn user(text: String) -> ChatMessage {
-        ChatMessage {
-            role: ChatRole::User,
-            text,
-            citations: Vec::new(),
-        }
-    }
-
-    fn assistant(text: String, citations: Vec<Citation>) -> ChatMessage {
-        ChatMessage {
-            role: ChatRole::Assistant,
-            text,
-            citations,
-        }
-    }
-}
+/// Type aliases to unified UI chat sidebar types.
+type Citation = ui::ChatCitationItem;
+type ChatMessage = ui::ChatMessageItem;
+type ChatRole = ui::ChatRole;
 
 /// Lazily-constructed `PdfRenderer` state (§Fase 8), mirroring
 /// `core::indexer`'s `EmbedderState`: binding to the native PDFium library
@@ -258,6 +214,30 @@ enum PdfLibraryAction {
     Remove(PathBuf),
 }
 
+#[derive(Debug, Clone)]
+enum PromptKind {
+    CreateFolder { parent_dir: PathBuf },
+    RenameItem { path: PathBuf, is_dir: bool },
+}
+
+#[derive(Debug, Clone)]
+struct PromptModalState {
+    kind: PromptKind,
+    title: String,
+    message: String,
+    value: String,
+    placeholder: String,
+    confirm_label: String,
+}
+
+#[derive(Debug, Clone)]
+struct MoveModalState {
+    src_path: PathBuf,
+    is_dir: bool,
+    item_name: String,
+    search_filter: String,
+}
+
 pub struct MnemonicApp {
     locales: LocaleManager,
     vault: Option<Vault>,
@@ -276,10 +256,18 @@ pub struct MnemonicApp {
     selected: HashSet<Uuid>,
     show_label_manager: bool,
     tag_rename: Option<(String, String)>,
+    confirm_archive: Option<(Uuid, bool)>,
+    confirm_trash: Option<Uuid>,
     confirm_delete: Option<Uuid>,
 
     /// Whether the floating sidebar overlay is currently open.
     sidebar_open: bool,
+    sidebar_tab: ui::SidebarTab,
+    sidebar_search: String,
+    expanded_folders: HashSet<PathBuf>,
+    prompt_modal: Option<PromptModalState>,
+    move_modal: Option<MoveModalState>,
+    confirm_delete_folder: Option<(PathBuf, String)>,
 
     view: View,
 
@@ -289,7 +277,8 @@ pub struct MnemonicApp {
     search_results: Vec<SearchHit>,
     search_status: String,
 
-    // Chat tab (§Fase 7).
+    // Chat tab & AI Copilot Right Sidebar (§Fase 7).
+    chat_sidebar_open: bool,
     chat_input: String,
     chat_messages: Vec<ChatMessage>,
     chat_pending_embed_id: Option<Uuid>,
@@ -335,13 +324,22 @@ impl MnemonicApp {
             selected: HashSet::new(),
             show_label_manager: false,
             tag_rename: None,
+            confirm_archive: None,
+            confirm_trash: None,
             confirm_delete: None,
-            sidebar_open: false,
+            sidebar_open: true,
+            sidebar_tab: ui::SidebarTab::Files,
+            sidebar_search: String::new(),
+            expanded_folders: HashSet::new(),
+            prompt_modal: None,
+            move_modal: None,
+            confirm_delete_folder: None,
             view: View::Notes,
             search_query: String::new(),
             search_pending_id: None,
             search_results: Vec::new(),
             search_status: String::new(),
+            chat_sidebar_open: false,
             chat_input: String::new(),
             chat_messages: Vec::new(),
             chat_pending_embed_id: None,
@@ -675,6 +673,110 @@ impl MnemonicApp {
         self.editor = Some(MarkdownEditor::open(note));
     }
 
+    /// Flush and autosave dirty editor state if an editor is currently open.
+    fn flush_current_editor_if_any(&mut self) {
+        if let Some(editor) = &mut self.editor {
+            if editor.is_dirty() {
+                if let Err(e) = editor.autosave() {
+                    log::warn!("failed to autosave editor on file switch: {e}");
+                }
+            }
+        }
+    }
+
+    /// Open any file (Note, Canvas, PDF) by its path, safely flushing the active editor.
+    fn open_file_by_path(&mut self, path: PathBuf) {
+        let is_pdf = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false);
+
+        if is_pdf {
+            self.flush_current_editor_if_any();
+            self.open_pdf(path);
+            return;
+        }
+
+        // Jika note yang sama sedang dibuka, tidak perlu reload
+        if let Some(editor) = &self.editor {
+            if editor.note.path == path {
+                return;
+            }
+        }
+
+        self.flush_current_editor_if_any();
+
+        // Cari note dari vault atau muat dari disk
+        let note_opt = self
+            .vault
+            .as_ref()
+            .and_then(|v| v.notes.iter().find(|n| n.path == path).cloned())
+            .or_else(|| Note::load(&path).ok());
+
+        if let Some(note) = note_opt {
+            self.editor = Some(MarkdownEditor::open(note));
+            self.pdf_viewer = None;
+            self.view = View::Notes;
+        }
+    }
+
+    /// Pindahkan berkas atau folder ke folder tujuan (Reorganisasi struktur).
+    fn move_item_to_folder(&mut self, src_path: PathBuf, dest_dir: PathBuf, _is_dir: bool) {
+        if !src_path.exists() {
+            return;
+        }
+        // Cegah memindahkan folder ke dalam dirinya sendiri atau anak foldernya
+        if dest_dir.starts_with(&src_path) {
+            return;
+        }
+
+        let Some(file_name) = src_path.file_name() else {
+            return;
+        };
+        let target_path = dest_dir.join(file_name);
+
+        if target_path == src_path {
+            return;
+        }
+
+        self.flush_current_editor_if_any();
+
+        if let Err(e) = std::fs::rename(&src_path, &target_path) {
+            self.report_error("error-context-move-file", e);
+            return;
+        }
+
+        // Perbarui path di editor jika note aktif berada di target yang dipindahkan
+        if let Some(editor) = &mut self.editor {
+            if editor.note.path == src_path {
+                editor.note.path = target_path.clone();
+            } else if editor.note.path.starts_with(&src_path) {
+                if let Ok(rel) = editor.note.path.strip_prefix(&src_path) {
+                    editor.note.path = target_path.join(rel);
+                }
+            }
+        }
+
+        self.rescan_and_reindex();
+    }
+
+    /// Hapus folder secara rekursif dan tutup editor jika note yang aktif ada di dalamnya.
+    fn delete_folder_recursive(&mut self, folder_path: PathBuf) {
+        if let Some(editor) = &self.editor {
+            if editor.note.path.starts_with(&folder_path) {
+                self.editor = None;
+            }
+        }
+
+        if let Err(e) = std::fs::remove_dir_all(&folder_path) {
+            self.report_error("error-context-delete-folder", e);
+        } else {
+            self.expanded_folders.remove(&folder_path);
+            self.rescan_and_reindex();
+        }
+    }
+
     /// Resolve a clicked `[[wikilink]]` to an existing note, or — per
     /// §3.2.2 — auto-create a new (empty) note with that title if none
     /// exists yet, then open it for editing.
@@ -965,7 +1067,6 @@ impl MnemonicApp {
 
         let t_back = self.t("editor-back");
         let t_source = self.t("editor-mode-source");
-        let t_live_preview = self.t("editor-mode-live-preview");
         let t_reading = self.t("editor-mode-reading");
         let t_undo = self.t("editor-undo");
         let t_redo = self.t("editor-redo");
@@ -1007,74 +1108,85 @@ impl MnemonicApp {
         let mut scroll_to_slug: Option<String> = None;
 
         let is_edgeless = editor.mode == EditorMode::Edgeless;
+        let is_page = !is_edgeless;
         let is_dark = ui.visuals().dark_mode;
 
-        ui.horizontal(|ui| {
-            if ui.button(t_back.as_str()).clicked() {
-                close_requested = true;
-            }
+        // ─── Floating Editor Header HUD Menu ────────────────────────────────
+        theme::glass_topbar_frame().show(ui, |ui| {
+            ui.set_height(34.0);
+            ui.horizontal(|ui| {
+                // 1. Tombol Kembali (Icon)
+                let back_btn = egui::Button::new(
+                    egui::RichText::new(egui_icons::icons::ICON_ARROW_BACK.codepoint)
+                        .size(15.0)
+                        .color(theme::TEXT_PRIMARY),
+                )
+                .frame(false);
+                if ui.add(back_btn).on_hover_text(t_back.as_str()).clicked() {
+                    close_requested = true;
+                }
 
-            // Editable title with double-click support
-            if editor.is_editing_title {
-                let edit_resp = ui.add(
-                    egui::TextEdit::singleline(&mut editor.title_edit_buffer)
-                        .font(egui::TextStyle::Heading)
-                        .desired_width(260.0),
-                );
-                edit_resp.request_focus();
+                ui.add_space(4.0);
 
-                let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                // 2. Judul Dokumen (Editable on double-click)
+                if editor.is_editing_title {
+                    let edit_resp = ui.add(
+                        egui::TextEdit::singleline(&mut editor.title_edit_buffer)
+                            .font(egui::TextStyle::Heading)
+                            .desired_width(240.0),
+                    );
+                    edit_resp.request_focus();
 
-                if enter_pressed || edit_resp.lost_focus() {
-                    let trimmed = editor.title_edit_buffer.trim().to_string();
-                    if !trimmed.is_empty() {
-                        editor.set_title(trimmed);
-                    } else {
+                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                    if enter_pressed || edit_resp.lost_focus() {
+                        let trimmed = editor.title_edit_buffer.trim().to_string();
+                        if !trimmed.is_empty() {
+                            editor.set_title(trimmed);
+                        } else {
+                            editor.title_edit_buffer = editor.note.frontmatter.title.clone();
+                        }
+                        editor.is_editing_title = false;
+                    } else if esc_pressed {
+                        editor.title_edit_buffer = editor.note.frontmatter.title.clone();
+                        editor.is_editing_title = false;
+                    }
+                } else {
+                    let title_label = egui::RichText::new(editor.note.frontmatter.title.as_str())
+                        .heading()
+                        .strong()
+                        .color(theme::TEXT_PRIMARY);
+                    let title_resp = ui.add(egui::Label::new(title_label).sense(egui::Sense::click()));
+                    let title_resp = title_resp.on_hover_text("Klik 2x untuk mengganti nama dokumen");
+                    if title_resp.double_clicked() {
+                        editor.is_editing_title = true;
                         editor.title_edit_buffer = editor.note.frontmatter.title.clone();
                     }
-                    editor.is_editing_title = false;
-                } else if esc_pressed {
-                    editor.title_edit_buffer = editor.note.frontmatter.title.clone();
-                    editor.is_editing_title = false;
                 }
-            } else {
-                let title_label = egui::RichText::new(editor.note.frontmatter.title.as_str())
-                    .heading()
-                    .strong();
-                let title_resp = ui.add(egui::Label::new(title_label).sense(egui::Sense::click()));
-                let title_resp = title_resp.on_hover_text("Klik 2x untuk mengganti nama dokumen");
-                if title_resp.double_clicked() {
-                    editor.is_editing_title = true;
-                    editor.title_edit_buffer = editor.note.frontmatter.title.clone();
+
+                // Word count & reading time badge di Header HUD (hanya saat mode Dokumen)
+                if is_page {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(format!("{t_word_count} · {t_reading_time}"))
+                            .size(11.5)
+                            .color(theme::TEXT_MUTED),
+                    );
                 }
-            }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // AFFiNE Dual-State Switcher: [ 📄 Page | 🎨 Edgeless ]
-                let is_page = editor.mode != EditorMode::Edgeless;
-                let page_btn = egui::Button::new(egui::RichText::new("📄 Page").size(13.0).color(
-                    if is_page {
-                        theme::GLASS_ACCENT_HOVER
-                    } else {
-                        theme::GLASS_TEXT_SECONDARY
-                    },
-                ))
-                .fill(if is_page {
-                    theme::GLASS_SURFACE_HIGH
-                } else {
-                    egui::Color32::TRANSPARENT
-                })
-                .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
-
-                let edgeless_btn =
-                    egui::Button::new(egui::RichText::new("🎨 Edgeless").size(13.0).color(
-                        if is_edgeless {
-                            theme::GLASS_ACCENT_HOVER
-                        } else {
-                            theme::GLASS_TEXT_SECONDARY
-                        },
-                    ))
+                // 3. Right HUD controls (Right to Left): [ Dual-Mode Switcher | Sub-modes (Read/Edit) | Undo/Redo ]
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Dual-State Switcher: [ 📄 Dokumen / Page | 🎨 Kanvas / Edgeless (Draw.io) ]
+                    let edgeless_btn = egui::Button::new(
+                        egui::RichText::new(egui_icons::icons::ICON_DRAW.codepoint)
+                            .size(14.0)
+                            .color(if is_edgeless {
+                                theme::GLASS_ACCENT_HOVER
+                            } else {
+                                theme::GLASS_TEXT_SECONDARY
+                            }),
+                    )
                     .fill(if is_edgeless {
                         theme::GLASS_SURFACE_HIGH
                     } else {
@@ -1082,41 +1194,112 @@ impl MnemonicApp {
                     })
                     .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
 
-                if ui.add(edgeless_btn).clicked() {
-                    editor.mode = EditorMode::Edgeless;
-                    editor.ensure_canvas();
-                }
-                if ui.add(page_btn).clicked() {
-                    editor.sync_canvas_to_body();
-                    editor.mode = EditorMode::LivePreview;
-                }
+                    let page_btn = egui::Button::new(
+                        egui::RichText::new(egui_icons::icons::ICON_DESCRIPTION.codepoint)
+                            .size(14.0)
+                            .color(if is_page {
+                                theme::GLASS_ACCENT_HOVER
+                            } else {
+                                theme::GLASS_TEXT_SECONDARY
+                            }),
+                    )
+                    .fill(if is_page {
+                        theme::GLASS_SURFACE_HIGH
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    })
+                    .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
 
-                ui.add_space(8.0);
+                    if ui
+                        .add(edgeless_btn)
+                        .on_hover_text("Mode Kanvas / Diagram Draw.io (🎨)")
+                        .clicked()
+                    {
+                        editor.mode = EditorMode::Edgeless;
+                        editor.ensure_canvas();
+                    }
+                    if ui
+                        .add(page_btn)
+                        .on_hover_text("Mode Dokumen Teks Markdown (📄)")
+                        .clicked()
+                    {
+                        editor.sync_canvas_to_body();
+                        editor.mode = EditorMode::Source;
+                    }
 
-                if !is_edgeless {
-                    ui.selectable_value(&mut editor.mode, EditorMode::Reading, t_reading.as_str());
-                    ui.selectable_value(
-                        &mut editor.mode,
-                        EditorMode::LivePreview,
-                        t_live_preview.as_str(),
-                    );
-                    ui.selectable_value(&mut editor.mode, EditorMode::Source, t_source.as_str());
-                }
+                    ui.add_space(8.0);
 
-                ui.separator();
-                if ui.button(t_redo.as_str()).clicked() {
-                    editor.redo();
-                }
-                if ui.button(t_undo.as_str()).clicked() {
-                    editor.undo();
-                }
+                    if is_page {
+                        // Sub-modes untuk Page: [ Mode Baca (👁️) | Mode Edit (</>) ]
+                        let is_reading = editor.mode == EditorMode::Reading;
+                        let reading_btn = egui::Button::new(
+                            egui::RichText::new(egui_icons::icons::ICON_VISIBILITY.codepoint)
+                                .size(14.0)
+                                .color(if is_reading {
+                                    theme::GLASS_ACCENT_HOVER
+                                } else {
+                                    theme::GLASS_TEXT_SECONDARY
+                                }),
+                        )
+                        .fill(if is_reading {
+                            theme::GLASS_SURFACE_HIGH
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        })
+                        .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
+
+                        let is_source = editor.mode == EditorMode::Source;
+                        let source_btn = egui::Button::new(
+                            egui::RichText::new(egui_icons::icons::ICON_CODE.codepoint)
+                                .size(14.0)
+                                .color(if is_source {
+                                    theme::GLASS_ACCENT_HOVER
+                                } else {
+                                    theme::GLASS_TEXT_SECONDARY
+                                }),
+                        )
+                        .fill(if is_source {
+                            theme::GLASS_SURFACE_HIGH
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        })
+                        .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
+
+                        if ui.add(reading_btn).on_hover_text(t_reading.as_str()).clicked() {
+                            editor.mode = EditorMode::Reading;
+                        }
+                        if ui.add(source_btn).on_hover_text(t_source.as_str()).clicked() {
+                            editor.mode = EditorMode::Source;
+                        }
+
+                        ui.separator();
+                        let redo_btn = egui::Button::new(
+                            egui::RichText::new(egui_icons::icons::ICON_REDO.codepoint)
+                                .size(14.0)
+                                .color(theme::TEXT_SECONDARY),
+                        )
+                        .frame(false);
+                        if ui.add(redo_btn).on_hover_text(t_redo.as_str()).clicked() {
+                            editor.redo();
+                        }
+
+                        let undo_btn = egui::Button::new(
+                            egui::RichText::new(egui_icons::icons::ICON_UNDO.codepoint)
+                                .size(14.0)
+                                .color(theme::TEXT_SECONDARY),
+                        )
+                        .frame(false);
+                        if ui.add(undo_btn).on_hover_text(t_undo.as_str()).clicked() {
+                            editor.undo();
+                        }
+                    }
+                });
             });
         });
 
-        if !is_edgeless {
-            ui.label(format!("{t_word_count} · {t_reading_time}"));
-            ui.separator();
+        ui.add_space(4.0);
 
+        if !is_edgeless {
             egui::Panel::right("editor_side_panel")
                 .resizable(true)
                 .default_size(220.0)
@@ -1200,7 +1383,7 @@ impl MnemonicApp {
                             }
                         }
                     }
-                    EditorMode::LivePreview | EditorMode::Reading => {
+                    EditorMode::Reading => {
                         let outcome = editor.render(ui, cache, viewport);
                         if let Some(new_body) = outcome.updated_body {
                             editor.set_body(new_body);
@@ -1560,6 +1743,34 @@ impl MnemonicApp {
                         ui::LeftToolbarEvent::SelectCanvasTool(tool) => {
                             interaction.active_tool = tool;
                         }
+                        ui::LeftToolbarEvent::ExportDrawio => {
+                            if let Some(save_path) = rfd::FileDialog::new()
+                                .add_filter("Draw.io XML", &["drawio", "xml"])
+                                .set_file_name(&format!("{}.drawio", canvas.title.replace(' ', "_")))
+                                .save_file()
+                            {
+                                let xml = canvas.to_drawio_xml();
+                                let _ = std::fs::write(&save_path, xml);
+                            }
+                        }
+                        ui::LeftToolbarEvent::ImportDrawio => {
+                            if let Some(load_path) = rfd::FileDialog::new()
+                                .add_filter("Draw.io XML", &["drawio", "xml"])
+                                .pick_file()
+                            {
+                                if let Ok(content) = std::fs::read_to_string(&load_path) {
+                                    let doc_title = load_path
+                                        .file_stem()
+                                        .map(|s| s.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| "Imported Diagram".to_string());
+                                    if let Ok(imported) = CanvasDocument::from_drawio_xml(&doc_title, &content) {
+                                        canvas.elements = imported.elements;
+                                        canvas.title = imported.title;
+                                        modified = true;
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1758,9 +1969,7 @@ impl MnemonicApp {
                     self.pdf_viewer = None;
                 }
                 "nav_chat" => {
-                    self.view = View::Chat;
-                    self.editor = None;
-                    self.pdf_viewer = None;
+                    self.chat_sidebar_open = true;
                 }
                 "import_pdf" => {
                     if let Some(file) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() {
@@ -1936,6 +2145,15 @@ impl MnemonicApp {
         let t_confirm_title = self.t("confirm-delete-title");
         let t_confirm_body = self.t("confirm-delete-body");
         let t_confirm_yes = self.t("confirm-yes");
+        let t_confirm_archive_title = self.t("confirm-archive-title");
+        let t_confirm_archive_body = self.t("confirm-archive-body");
+        let t_confirm_archive_yes = self.t("confirm-archive-yes");
+        let t_confirm_unarchive_title = self.t("confirm-unarchive-title");
+        let t_confirm_unarchive_body = self.t("confirm-unarchive-body");
+        let t_confirm_unarchive_yes = self.t("confirm-unarchive-yes");
+        let t_confirm_trash_title = self.t("confirm-trash-title");
+        let t_confirm_trash_body = self.t("confirm-trash-body");
+        let t_confirm_trash_yes = self.t("confirm-trash-yes");
         let card = CardStrings {
             pin: self.t("notes-pin"),
             unpin: self.t("notes-unpin"),
@@ -1960,6 +2178,8 @@ impl MnemonicApp {
         let mut selected = self.selected.clone();
         let mut show_label_manager = self.show_label_manager;
         let mut tag_rename = self.tag_rename.clone();
+        let mut confirm_archive = self.confirm_archive;
+        let mut confirm_trash = self.confirm_trash;
         let mut confirm_delete = self.confirm_delete;
         let mut actions: Vec<GridAction> = Vec::new();
         let mut open_pdf: Option<std::path::PathBuf> = None;
@@ -2224,6 +2444,8 @@ impl MnemonicApp {
                                             in_trash_view,
                                             &mut actions,
                                             &mut selected,
+                                            &mut confirm_archive,
+                                            &mut confirm_trash,
                                             &mut confirm_delete,
                                         );
                                     }
@@ -2244,6 +2466,49 @@ impl MnemonicApp {
         }
 
         // ── Dialogs ────────────────────────────────────────────────────────
+        if let Some((id, is_archived)) = confirm_archive {
+            let (title, body, yes_label) = if is_archived {
+                (
+                    &t_confirm_unarchive_title,
+                    &t_confirm_unarchive_body,
+                    &t_confirm_unarchive_yes,
+                )
+            } else {
+                (
+                    &t_confirm_archive_title,
+                    &t_confirm_archive_body,
+                    &t_confirm_archive_yes,
+                )
+            };
+            if let Some(confirmed) = ui::ConfirmModal::show(
+                ui.ctx(),
+                title,
+                body,
+                yes_label,
+                false,
+            ) {
+                if confirmed {
+                    actions.push(GridAction::ToggleArchived(id));
+                }
+                confirm_archive = None;
+            }
+        }
+
+        if let Some(id) = confirm_trash {
+            if let Some(confirmed) = ui::ConfirmModal::show(
+                ui.ctx(),
+                &t_confirm_trash_title,
+                &t_confirm_trash_body,
+                &t_confirm_trash_yes,
+                true,
+            ) {
+                if confirmed {
+                    actions.push(GridAction::Trash(id));
+                }
+                confirm_trash = None;
+            }
+        }
+
         if let Some(id) = confirm_delete {
             if let Some(confirmed) = ui::ConfirmModal::show(
                 ui.ctx(),
@@ -2296,6 +2561,8 @@ impl MnemonicApp {
         self.selected = selected;
         self.show_label_manager = show_label_manager;
         self.tag_rename = tag_rename;
+        self.confirm_archive = confirm_archive;
+        self.confirm_trash = confirm_trash;
         self.confirm_delete = confirm_delete;
 
         for action in actions {
@@ -3249,6 +3516,8 @@ fn render_note_card(
     in_trash_view: bool,
     actions: &mut Vec<GridAction>,
     selected: &mut HashSet<Uuid>,
+    confirm_archive: &mut Option<(Uuid, bool)>,
+    confirm_trash: &mut Option<Uuid>,
     confirm_delete: &mut Option<Uuid>,
 ) {
     let id = note.frontmatter.id;
@@ -3302,9 +3571,11 @@ fn render_note_card(
                     if ui.button(&card.restore).clicked() {
                         actions.push(GridAction::Restore(id));
                     }
-                    if ui.button(&card.delete_permanent).clicked() {
-                        *confirm_delete = Some(id);
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(&card.delete_permanent).clicked() {
+                            *confirm_delete = Some(id);
+                        }
+                    });
                 } else {
                     let pin_label = if note.frontmatter.pinned {
                         &card.unpin
@@ -3332,11 +3603,13 @@ fn render_note_card(
                         &card.archive
                     };
                     if ui.button(archive_label).clicked() {
-                        actions.push(GridAction::ToggleArchived(id));
+                        *confirm_archive = Some((id, note.frontmatter.archived));
                     }
-                    if ui.button(&card.trash).clicked() {
-                        actions.push(GridAction::Trash(id));
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("🗑").on_hover_text(&card.trash).clicked() {
+                            *confirm_trash = Some(id);
+                        }
+                    });
                 }
             });
         });
@@ -3360,6 +3633,8 @@ fn render_note_card_glass(
     in_trash_view: bool,
     actions: &mut Vec<GridAction>,
     selected: &mut HashSet<Uuid>,
+    confirm_archive: &mut Option<(Uuid, bool)>,
+    confirm_trash: &mut Option<Uuid>,
     confirm_delete: &mut Option<Uuid>,
 ) {
     let id = note.frontmatter.id;
@@ -3533,27 +3808,34 @@ fn render_note_card_glass(
             ui.add(egui::Separator::default().spacing(0.0));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
 
                 if in_trash_view {
                     let restore_btn = egui::Button::new(
-                        egui::RichText::new(&card.restore)
-                            .size(11.0)
-                            .color(theme::ACCENT_BLUE),
+                        egui::RichText::new(format!(
+                            "{} {}",
+                            egui_icons::icons::ICON_RESTART_ALT.codepoint,
+                            &card.restore
+                        ))
+                        .size(11.5)
+                        .color(theme::ACCENT_BLUE),
                     )
                     .frame(false);
-                    if ui.add(restore_btn).clicked() {
+                    if ui.add(restore_btn).on_hover_text("Pulihkan catatan").clicked() {
                         actions.push(GridAction::Restore(id));
                     }
-                    let del_btn = egui::Button::new(
-                        egui::RichText::new(&card.delete_permanent)
-                            .size(11.0)
-                            .color(theme::GLASS_ERROR),
-                    )
-                    .frame(false);
-                    if ui.add(del_btn).clicked() {
-                        *confirm_delete = Some(id);
-                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let del_btn = egui::Button::new(
+                            egui::RichText::new(egui_icons::icons::ICON_DELETE.codepoint)
+                                .size(13.0)
+                                .color(theme::GLASS_ERROR),
+                        )
+                        .frame(false);
+                        if ui.add(del_btn).on_hover_text(&card.delete_permanent).clicked() {
+                            *confirm_delete = Some(id);
+                        }
+                    });
                 } else {
                     // Pin toggle
                     let pin_icon = if note.frontmatter.pinned {
@@ -3570,7 +3852,7 @@ fn render_note_card_glass(
                         .add(
                             egui::Button::new(
                                 egui::RichText::new(pin_icon)
-                                    .size(12.0)
+                                    .size(12.5)
                                     .color(if note.frontmatter.pinned {
                                         theme::ACCENT_ORANGE
                                     } else {
@@ -3588,7 +3870,7 @@ fn render_note_card_glass(
                     // Colour picker menu
                     ui.menu_button(
                         egui::RichText::new(egui_icons::icons::ICON_PALETTE.codepoint)
-                            .size(12.0)
+                            .size(12.5)
                             .color(theme::TEXT_SECONDARY),
                         |ui| {
                             ui.horizontal_wrapped(|ui| {
@@ -3613,10 +3895,12 @@ fn render_note_card_glass(
                                 }
                             });
                         },
-                    );
+                    )
+                    .response
+                    .on_hover_text("Ganti Warna");
 
                     // Archive toggle
-                    let arch_label = if note.frontmatter.archived {
+                    let arch_tip = if note.frontmatter.archived {
                         &card.unarchive
                     } else {
                         &card.archive
@@ -3624,31 +3908,39 @@ fn render_note_card_glass(
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new(arch_label)
-                                    .size(11.0)
-                                    .color(theme::TEXT_MUTED),
+                                egui::RichText::new(egui_icons::icons::ICON_INVENTORY_2.codepoint)
+                                    .size(12.5)
+                                    .color(if note.frontmatter.archived {
+                                        theme::ACCENT_BLUE
+                                    } else {
+                                        theme::TEXT_MUTED
+                                    }),
                             )
                             .frame(false),
                         )
+                        .on_hover_text(arch_tip.as_str())
                         .clicked()
                     {
-                        actions.push(GridAction::ToggleArchived(id));
+                        *confirm_archive = Some((id, note.frontmatter.archived));
                     }
 
-                    // Trash
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new(&card.trash)
-                                    .size(11.0)
-                                    .color(theme::TEXT_MUTED),
+                    // Trash (Pindahkan ke Sampah) di pojok kanan bawah
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(egui_icons::icons::ICON_DELETE.codepoint)
+                                        .size(12.5)
+                                        .color(theme::TEXT_MUTED),
+                                )
+                                .frame(false),
                             )
-                            .frame(false),
-                        )
-                        .clicked()
-                    {
-                        actions.push(GridAction::Trash(id));
-                    }
+                            .on_hover_text(&card.trash)
+                            .clicked()
+                        {
+                            *confirm_trash = Some(id);
+                        }
+                    });
                 }
             });
         });
@@ -3807,13 +4099,336 @@ impl eframe::App for MnemonicApp {
             self.command_palette.toggle();
         }
 
+        // ─── Fixed Left Sidebar Panel (Pohon Berkas & Filter) ────────────────
+        if vault_open {
+            let notes_for_sidebar: Vec<Note> = self
+                .vault
+                .as_ref()
+                .map(|v| v.notes.clone())
+                .unwrap_or_default();
+            let all_tags = tags::all_tags(&notes_for_sidebar);
+            let total_notes = notes_for_sidebar
+                .iter()
+                .filter(|n| !n.frontmatter.archived && !n.frontmatter.trashed)
+                .count();
+            let total_archived = notes_for_sidebar
+                .iter()
+                .filter(|n| n.frontmatter.archived && !n.frontmatter.trashed)
+                .count();
+            let total_trashed = notes_for_sidebar
+                .iter()
+                .filter(|n| n.frontmatter.trashed)
+                .count();
+
+            let sidebar_filter = match &self.doc_filter {
+                DocFilter::All => ui::SidebarDocFilter::All,
+                DocFilter::NotesOnly => ui::SidebarDocFilter::NotesOnly,
+                DocFilter::WhiteboardsOnly => ui::SidebarDocFilter::WhiteboardsOnly,
+                DocFilter::PdfsOnly => ui::SidebarDocFilter::PdfsOnly,
+                DocFilter::Archived => ui::SidebarDocFilter::Archived,
+                DocFilter::Trashed => ui::SidebarDocFilter::Trashed,
+                DocFilter::Tag(t) => ui::SidebarDocFilter::Tag(t.clone()),
+            };
+
+            let active_file_path = self
+                .editor
+                .as_ref()
+                .map(|e| e.note.path.clone())
+                .or_else(|| self.pdf_viewer.as_ref().map(|p| p.path.clone()));
+
+            let vault_root = self.vault.as_ref().map(|v| v.root.clone());
+            let vault_name = vault_root
+                .as_ref()
+                .and_then(|r| r.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Vault".to_string());
+
+            let file_tree = if let Some(root) = &vault_root {
+                ui::FileTreeNode::build(root, &notes_for_sidebar, &self.pdf_documents)
+            } else {
+                None
+            };
+
+            let sidebar_state = ui::SidebarState {
+                is_open: self.sidebar_open,
+                active_tab: self.sidebar_tab,
+                vault_root,
+                vault_name,
+                active_file_path,
+                expanded_folders: self.expanded_folders.clone(),
+                file_tree: file_tree.clone(),
+                search_filter: self.sidebar_search.clone(),
+                current_filter: sidebar_filter,
+                all_tags,
+                pdf_documents: self.pdf_documents.clone(),
+                total_notes,
+                total_pdfs: self.pdf_documents.len(),
+                total_whiteboards: if self.standalone_canvas.is_some() {
+                    1
+                } else {
+                    0
+                },
+                total_archived,
+                total_trashed,
+            };
+
+            if let Some(side_event) = ui::SidebarDrawer::show(ui, &sidebar_state) {
+                match side_event {
+                    ui::SidebarEvent::SetTab(tab) => {
+                        self.sidebar_tab = tab;
+                    }
+                    ui::SidebarEvent::SearchFilterChanged(q) => {
+                        self.sidebar_search = q;
+                    }
+                    ui::SidebarEvent::ToggleFolder(path) => {
+                        if self.expanded_folders.contains(&path) {
+                            self.expanded_folders.remove(&path);
+                        } else {
+                            self.expanded_folders.insert(path);
+                        }
+                    }
+                    ui::SidebarEvent::ExpandAllFolders => {
+                        if let Some(tree) = &file_tree {
+                            let mut dirs = Vec::new();
+                            if let Some(root) = self.vault.as_ref().map(|v| &v.root) {
+                                tree.collect_directories(root, &mut dirs);
+                                for (d, _) in dirs {
+                                    self.expanded_folders.insert(d);
+                                }
+                            }
+                        }
+                    }
+                    ui::SidebarEvent::CollapseAllFolders => {
+                        self.expanded_folders.clear();
+                    }
+                    ui::SidebarEvent::RescanVault => {
+                        self.rescan_and_reindex();
+                    }
+                    ui::SidebarEvent::OpenFile(path) => {
+                        self.open_file_by_path(path);
+                    }
+                    ui::SidebarEvent::OpenPdf(path) => {
+                        self.open_file_by_path(path);
+                    }
+                    ui::SidebarEvent::SelectFilter(f) => {
+                        self.view = View::Notes;
+                        self.doc_filter = match f {
+                            ui::SidebarDocFilter::All => DocFilter::All,
+                            ui::SidebarDocFilter::NotesOnly => DocFilter::NotesOnly,
+                            ui::SidebarDocFilter::WhiteboardsOnly => DocFilter::WhiteboardsOnly,
+                            ui::SidebarDocFilter::PdfsOnly => DocFilter::PdfsOnly,
+                            ui::SidebarDocFilter::Archived => DocFilter::Archived,
+                            ui::SidebarDocFilter::Trashed => DocFilter::Trashed,
+                            ui::SidebarDocFilter::Tag(t) => DocFilter::Tag(t),
+                        };
+                    }
+                    ui::SidebarEvent::ImportPdf => {
+                        if let Some(file) =
+                            rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file()
+                        {
+                            self.import_pdf(file);
+                        }
+                    }
+                    ui::SidebarEvent::ManageLabels => {
+                        self.show_label_manager = true;
+                    }
+                    ui::SidebarEvent::CloseSidebar => {
+                        self.sidebar_open = false;
+                    }
+                    ui::SidebarEvent::OpenVaultPicker => {
+                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                            match Vault::open(folder) {
+                                Ok(v) => self.activate_vault(v),
+                                Err(e) => self.report_error("error-context-open-vault", e),
+                            }
+                        }
+                    }
+                    ui::SidebarEvent::CreateNote { parent_dir } => {
+                        let target_dir = parent_dir
+                            .or_else(|| self.vault.as_ref().map(|v| v.root.clone()))
+                            .unwrap_or_else(|| PathBuf::from("."));
+
+                        self.flush_current_editor_if_any();
+                        match Note::create(&target_dir, "New Doc", "") {
+                            Ok(note) => {
+                                self.expanded_folders.insert(target_dir);
+                                self.rescan_and_reindex();
+                                self.open_note(note);
+                                self.view = View::Notes;
+                            }
+                            Err(e) => self.report_error("error-context-create-note", e),
+                        }
+                    }
+                    ui::SidebarEvent::NewCanvas { parent_dir } => {
+                        let target_dir = parent_dir
+                            .or_else(|| self.vault.as_ref().map(|v| v.root.clone()))
+                            .unwrap_or_else(|| PathBuf::from("."));
+
+                        self.flush_current_editor_if_any();
+                        match Note::create_canvas(&target_dir, "Kanvas Baru") {
+                            Ok(note) => {
+                                self.expanded_folders.insert(target_dir);
+                                self.rescan_and_reindex();
+                                self.open_note(note);
+                                self.view = View::Notes;
+                            }
+                            Err(e) => self.report_error("error-context-create-note", e),
+                        }
+                    }
+                    ui::SidebarEvent::CreateFolder { parent_dir } => {
+                        self.prompt_modal = Some(PromptModalState {
+                            kind: PromptKind::CreateFolder { parent_dir },
+                            title: "Buat Folder Baru".to_string(),
+                            message: "Masukkan nama folder baru:".to_string(),
+                            value: String::new(),
+                            placeholder: "Nama folder...".to_string(),
+                            confirm_label: "Buat Folder".to_string(),
+                        });
+                    }
+                    ui::SidebarEvent::RenameItem {
+                        path,
+                        is_dir,
+                        current_name,
+                    } => {
+                        self.prompt_modal = Some(PromptModalState {
+                            kind: PromptKind::RenameItem { path, is_dir },
+                            title: if is_dir {
+                                "Ganti Nama Folder".to_string()
+                            } else {
+                                "Ganti Nama Berkas".to_string()
+                            },
+                            message: format!("Masukkan nama baru untuk \"{current_name}\":"),
+                            value: current_name,
+                            placeholder: "Nama baru...".to_string(),
+                            confirm_label: "Simpan".to_string(),
+                        });
+                    }
+                    ui::SidebarEvent::MoveItemPrompt {
+                        path,
+                        is_dir,
+                        name,
+                    } => {
+                        self.move_modal = Some(MoveModalState {
+                            src_path: path,
+                            is_dir,
+                            item_name: name,
+                            search_filter: String::new(),
+                        });
+                    }
+                    ui::SidebarEvent::DirectMove {
+                        src_path,
+                        dest_dir,
+                    } => {
+                        self.move_item_to_folder(src_path, dest_dir, false);
+                    }
+                    ui::SidebarEvent::DeleteItem {
+                        path,
+                        is_dir,
+                        name,
+                    } => {
+                        if is_dir {
+                            self.confirm_delete_folder = Some((path, name));
+                        } else {
+                            // Cek jika note
+                            let matched_note = self
+                                .vault
+                                .as_ref()
+                                .and_then(|v| v.notes.iter().find(|n| n.path == path).cloned());
+
+                            if let Some(note) = matched_note {
+                                if let Some(vault) = &self.vault {
+                                    if let Some(editor) = &self.editor {
+                                        if editor.note.path == path {
+                                            self.editor = None;
+                                        }
+                                    }
+                                    if let Err(e) = note.move_to_trash(&vault.root) {
+                                        self.report_error("error-context-trash-note", e);
+                                    } else {
+                                        self.rescan_and_reindex();
+                                    }
+                                }
+                            } else {
+                                // PDF atau file lain
+                                if let Some(index) = &self.index {
+                                    let _ = index.remove_pdf_document(&path);
+                                }
+                                self.pdf_documents.retain(|p| p != &path);
+                                if let Some(pv) = &self.pdf_viewer {
+                                    if pv.path == path {
+                                        self.pdf_viewer = None;
+                                    }
+                                }
+                                let _ = std::fs::remove_file(&path);
+                                self.rescan_and_reindex();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ─── Floating AI Chat Sidebar Drawer (Right Side) ────────────────────
+        if vault_open {
+            let busy = self.chat_pending_embed_id.is_some() || self.chat_pending_gen_id.is_some();
+            let mut chat_state = ui::ChatSidebarState {
+                is_open: self.chat_sidebar_open,
+                messages: &self.chat_messages,
+                busy,
+                input_text: &mut self.chat_input,
+            };
+
+            if let Some(chat_event) = ui::ChatSidebarDrawer::show(ui.ctx(), &mut chat_state) {
+                match chat_event {
+                    ui::ChatSidebarEvent::SendMessage(text) => {
+                        self.chat_input = text;
+                        self.send_chat_message();
+                    }
+                    ui::ChatSidebarEvent::ClearHistory => {
+                        self.chat_messages.clear();
+                    }
+                    ui::ChatSidebarEvent::Close => {
+                        self.chat_sidebar_open = false;
+                    }
+                    ui::ChatSidebarEvent::OpenCitation(citation) => {
+                        match citation.page_index {
+                            Some(page_index) => {
+                                self.open_pdf_at_page(citation.file_path, page_index);
+                            }
+                            None => {
+                                let found = self.vault.as_ref().and_then(|v| {
+                                    v.notes
+                                        .iter()
+                                        .find(|n| n.path == citation.file_path)
+                                        .cloned()
+                                });
+                                if let Some(note) = found {
+                                    self.open_note(note);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ─── Floating Top Bar (Shapr3D / DUCAD Style) ────────────────────────
         if !in_editor && !in_pdf {
             let screen_rect = ui.ctx().viewport_rect();
+            let left_offset = if vault_open && self.sidebar_open {
+                ui::theme::SIDEBAR_WIDTH
+            } else {
+                0.0
+            };
+
+            let center_min_x = screen_rect.min.x + left_offset;
+            let center_max_x = screen_rect.max.x;
+            let center_width = (center_max_x - center_min_x).max(200.0);
+
             let topbar_margin_x = 12.0;
             let topbar_margin_y = 8.0;
-            let topbar_pos = screen_rect.min + egui::vec2(topbar_margin_x, topbar_margin_y);
-            let topbar_width = (screen_rect.width() - (topbar_margin_x * 2.0)).max(200.0);
+            let topbar_pos = egui::pos2(center_min_x + topbar_margin_x, screen_rect.min.y + topbar_margin_y);
+            let topbar_width = (center_width - (topbar_margin_x * 2.0)).max(200.0);
 
             egui::Area::new(egui::Id::new("mnemonic_floating_topbar_area"))
                 .fixed_pos(topbar_pos)
@@ -3853,6 +4468,7 @@ impl eframe::App for MnemonicApp {
                         vault_open,
                         active_tab,
                         sidebar_open: self.sidebar_open,
+                        chat_open: self.chat_sidebar_open,
                         theme_mode: self.theme_mode,
                         active_locale: self.locales.active_locale().to_string(),
                         search_text: self.search_text.clone(),
@@ -3884,12 +4500,15 @@ impl eframe::App for MnemonicApp {
                                         self.doc_filter = DocFilter::WhiteboardsOnly;
                                     }
                                     ui::TopBarNavTab::Chat => {
-                                        self.view = View::Chat;
+                                        self.chat_sidebar_open = true;
                                     }
                                 }
                             }
                             ui::TopBarEvent::ToggleSidebar => {
                                 self.sidebar_open = !self.sidebar_open;
+                            }
+                            ui::TopBarEvent::ToggleChatSidebar => {
+                                self.chat_sidebar_open = !self.chat_sidebar_open;
                             }
                             ui::TopBarEvent::OpenCommandPalette => {
                                 self.command_palette.open();
@@ -3907,119 +4526,120 @@ impl eframe::App for MnemonicApp {
                 });
         }
 
-        // ─── Floating Sidebar Slide-Over Drawer ──────────────────────────────
-        if vault_open && !in_editor && !in_pdf {
-            let notes_for_sidebar: Vec<Note> = self
-                .vault
-                .as_ref()
-                .map(|v| v.notes.clone())
-                .unwrap_or_default();
-            let all_tags = tags::all_tags(&notes_for_sidebar);
-            let total_notes = notes_for_sidebar
-                .iter()
-                .filter(|n| !n.frontmatter.archived && !n.frontmatter.trashed)
-                .count();
-            let total_archived = notes_for_sidebar
-                .iter()
-                .filter(|n| n.frontmatter.archived && !n.frontmatter.trashed)
-                .count();
-            let total_trashed = notes_for_sidebar
-                .iter()
-                .filter(|n| n.frontmatter.trashed)
-                .count();
+        // ─── Modal Dialogs untuk Reorganisasi Folder & File ───────────────────
+        if let Some(mut modal) = self.prompt_modal.take() {
+            let res = ui::PromptInputModal::show(
+                ui.ctx(),
+                &modal.title,
+                &modal.message,
+                &mut modal.value,
+                &modal.placeholder,
+                &modal.confirm_label,
+            );
 
-            let sidebar_filter = match &self.doc_filter {
-                DocFilter::All => ui::SidebarDocFilter::All,
-                DocFilter::NotesOnly => ui::SidebarDocFilter::NotesOnly,
-                DocFilter::WhiteboardsOnly => ui::SidebarDocFilter::WhiteboardsOnly,
-                DocFilter::PdfsOnly => ui::SidebarDocFilter::PdfsOnly,
-                DocFilter::Archived => ui::SidebarDocFilter::Archived,
-                DocFilter::Trashed => ui::SidebarDocFilter::Trashed,
-                DocFilter::Tag(t) => ui::SidebarDocFilter::Tag(t.clone()),
-            };
-
-            let sidebar_state = ui::SidebarState {
-                is_open: self.sidebar_open,
-                current_filter: sidebar_filter,
-                all_tags,
-                pdf_documents: self.pdf_documents.clone(),
-                total_notes,
-                total_pdfs: self.pdf_documents.len(),
-                total_whiteboards: if self.standalone_canvas.is_some() {
-                    1
-                } else {
-                    0
-                },
-                total_archived,
-                total_trashed,
-            };
-
-            if let Some(side_event) = ui::SidebarDrawer::show(ui.ctx(), &sidebar_state) {
-                match side_event {
-                    ui::SidebarEvent::SelectFilter(f) => {
-                        self.view = View::Notes;
-                        self.doc_filter = match f {
-                            ui::SidebarDocFilter::All => DocFilter::All,
-                            ui::SidebarDocFilter::NotesOnly => DocFilter::NotesOnly,
-                            ui::SidebarDocFilter::WhiteboardsOnly => DocFilter::WhiteboardsOnly,
-                            ui::SidebarDocFilter::PdfsOnly => DocFilter::PdfsOnly,
-                            ui::SidebarDocFilter::Archived => DocFilter::Archived,
-                            ui::SidebarDocFilter::Trashed => DocFilter::Trashed,
-                            ui::SidebarDocFilter::Tag(t) => DocFilter::Tag(t),
-                        };
-                    }
-                    ui::SidebarEvent::OpenPdf(path) => {
-                        self.open_pdf(path);
-                    }
-                    ui::SidebarEvent::ImportPdf => {
-                        if let Some(file) =
-                            rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file()
-                        {
-                            self.import_pdf(file);
-                        }
-                    }
-                    ui::SidebarEvent::ManageLabels => {
-                        self.show_label_manager = true;
-                    }
-                    ui::SidebarEvent::CloseSidebar => {
-                        self.sidebar_open = false;
-                    }
-                    ui::SidebarEvent::OpenVaultPicker => {
-                        self.sidebar_open = false;
-                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                            match Vault::open(folder) {
-                                Ok(v) => self.activate_vault(v),
-                                Err(e) => self.report_error("error-context-open-vault", e),
-                            }
-                        }
-                    }
-                    ui::SidebarEvent::CreateNote => {
-                        self.sidebar_open = false;
-                        self.view = View::Notes;
-                        if let Some(vault) = self.vault.as_mut() {
-                            match Note::create(&vault.root, "New Doc", "") {
-                                Ok(note) => {
+            match res {
+                Some(true) => {
+                    let input_str = modal.value.trim().to_string();
+                    if !input_str.is_empty() {
+                        match modal.kind {
+                            PromptKind::CreateFolder { parent_dir } => {
+                                let new_folder = parent_dir.join(&input_str);
+                                if let Err(e) = std::fs::create_dir_all(&new_folder) {
+                                    self.report_error("error-context-create-folder", e);
+                                } else {
+                                    self.expanded_folders.insert(new_folder);
                                     self.rescan_and_reindex();
-                                    self.open_note(note);
                                 }
-                                Err(e) => self.report_error("error-context-create-note", e),
                             }
-                        }
-                    }
-                    ui::SidebarEvent::NewCanvas => {
-                        self.sidebar_open = false;
-                        self.view = View::Notes;
-                        if let Some(vault) = self.vault.as_mut() {
-                            match Note::create_canvas(&vault.root, "Kanvas Baru") {
-                                Ok(note) => {
+                            PromptKind::RenameItem { path, is_dir } => {
+                                if is_dir {
+                                    if let Some(parent) = path.parent() {
+                                        let new_path = parent.join(&input_str);
+                                        if let Err(e) = std::fs::rename(&path, &new_path) {
+                                            self.report_error("error-context-rename-folder", e);
+                                        } else {
+                                            self.expanded_folders.remove(&path);
+                                            self.expanded_folders.insert(new_path.clone());
+                                            if let Some(editor) = &mut self.editor {
+                                                if editor.note.path.starts_with(&path) {
+                                                    if let Ok(rel) = editor.note.path.strip_prefix(&path) {
+                                                        editor.note.path = new_path.join(rel);
+                                                    }
+                                                }
+                                            }
+                                            self.rescan_and_reindex();
+                                        }
+                                    }
+                                } else {
+                                    // Rename Note atau Berkas
+                                    if let Some(editor) = &mut self.editor {
+                                        if editor.note.path == path {
+                                            editor.set_title(input_str.clone());
+                                            let _ = editor.autosave();
+                                        }
+                                    }
+                                    if let Some(vault) = self.vault.as_mut() {
+                                        if let Some(note) = vault.notes.iter_mut().find(|n| n.path == path) {
+                                            note.frontmatter.title = input_str;
+                                            let _ = note.save();
+                                        }
+                                    }
                                     self.rescan_and_reindex();
-                                    self.open_note(note);
                                 }
-                                Err(e) => self.report_error("error-context-create-note", e),
                             }
                         }
                     }
                 }
+                Some(false) => {
+                    // Dibatalkan
+                }
+                None => {
+                    // Tetap terbuka
+                    self.prompt_modal = Some(modal);
+                }
+            }
+        }
+
+        if let Some(mut modal) = self.move_modal.take() {
+            let mut available_folders = Vec::new();
+            if let Some(vault) = &self.vault {
+                let notes_for_tree = vault.notes.clone();
+                if let Some(tree) = ui::FileTreeNode::build(&vault.root, &notes_for_tree, &self.pdf_documents) {
+                    tree.collect_directories(&vault.root, &mut available_folders);
+                }
+            }
+
+            // Exclude src folder if moving a folder to prevent circular loops
+            if modal.is_dir {
+                available_folders.retain(|(p, _)| !p.starts_with(&modal.src_path));
+            }
+
+            let res = ui::MoveFolderModal::show(
+                ui.ctx(),
+                &modal.item_name,
+                &available_folders,
+                &mut modal.search_filter,
+            );
+
+            if let Some(target_opt) = res {
+                let root = self.vault.as_ref().map(|v| v.root.clone()).unwrap_or_else(|| PathBuf::from("."));
+                let dest_dir = target_opt.unwrap_or(root);
+                self.move_item_to_folder(modal.src_path, dest_dir, modal.is_dir);
+            }
+        }
+
+        if let Some((folder_path, folder_name)) = self.confirm_delete_folder.clone() {
+            if let Some(confirmed) = ui::ConfirmModal::show(
+                ui.ctx(),
+                "Hapus Folder",
+                &format!("Apakah Anda yakin ingin menghapus folder \"{}\" beserta seluruh isinya?", folder_name),
+                "Hapus Folder",
+                true,
+            ) {
+                if confirmed {
+                    self.delete_folder_recursive(folder_path);
+                }
+                self.confirm_delete_folder = None;
             }
         }
 

@@ -110,6 +110,10 @@ impl ConfirmModal {
                 });
             });
 
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            result = Some(false);
+        }
+
         result
     }
 }
@@ -303,6 +307,264 @@ pub enum LabelManagerEvent {
     Close,
 }
 
+pub struct PromptInputModal;
+
+impl PromptInputModal {
+    /// Render modal input teks serbaguna (buat folder, rename, dll).
+    pub fn show(
+        ctx: &egui::Context,
+        title: &str,
+        message: &str,
+        input_value: &mut String,
+        placeholder: &str,
+        confirm_label: &str,
+    ) -> Option<bool> {
+        let mut result = None;
+        let screen_rect = ctx.viewport_rect();
+
+        let backdrop_layer = egui::LayerId::new(
+            egui::Order::Middle,
+            egui::Id::new("prompt_modal_backdrop"),
+        );
+        let backdrop_painter = ctx.layer_painter(backdrop_layer);
+        backdrop_painter.rect_filled(
+            screen_rect,
+            CornerRadius::ZERO,
+            Color32::from_black_alpha(120),
+        );
+
+        let modal_width = 380.0;
+        let modal_height = 180.0;
+        let modal_pos = Pos2::new(
+            screen_rect.center().x - modal_width / 2.0,
+            screen_rect.center().y - modal_height / 2.0,
+        );
+
+        egui::Window::new("prompt_modal_dialog")
+            .title_bar(false)
+            .resizable(false)
+            .collapsible(false)
+            .fixed_rect(Rect::from_min_size(
+                modal_pos,
+                Vec2::new(modal_width, modal_height),
+            ))
+            .frame(glass_frame())
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(ICON_EDIT.codepoint)
+                            .size(18.0)
+                            .color(ACCENT_BLUE),
+                    );
+                    ui.label(RichText::new(title).size(14.0).strong().color(TEXT_PRIMARY));
+                });
+
+                ui.add_space(6.0);
+                ui.label(RichText::new(message).size(12.0).color(TEXT_SECONDARY));
+                ui.add_space(8.0);
+
+                let edit_resp = ui.add(
+                    egui::TextEdit::singleline(input_value)
+                        .hint_text(placeholder)
+                        .desired_width(ui.available_width() - 8.0),
+                );
+                edit_resp.request_focus();
+
+                let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                if esc_pressed {
+                    result = Some(false);
+                }
+
+                ui.add_space(14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let is_valid = !input_value.trim().is_empty();
+                    let confirm_btn = egui::Button::new(
+                        RichText::new(confirm_label)
+                            .size(12.0)
+                            .color(if is_valid { Color32::WHITE } else { TEXT_MUTED }),
+                    )
+                    .fill(if is_valid { ACCENT_BLUE } else { BG_CARD_DARK })
+                    .corner_radius(CornerRadius::same(ROUNDING_SM));
+
+                    if ui.add_enabled(is_valid, confirm_btn).clicked() || (enter_pressed && is_valid) {
+                        result = Some(true);
+                    }
+
+                    ui.add_space(8.0);
+
+                    let cancel_btn = egui::Button::new(
+                        RichText::new("Batal")
+                            .size(12.0)
+                            .color(TEXT_SECONDARY),
+                    )
+                    .frame(false);
+
+                    if ui.add(cancel_btn).clicked() {
+                        result = Some(false);
+                    }
+                });
+            });
+
+        result
+    }
+}
+
+pub struct MoveFolderModal;
+
+impl MoveFolderModal {
+    /// Render modal pemilihan folder tujuan untuk pemindahan berkas/folder.
+    /// Mengembalikan:
+    /// - `Some(Some(path))` jika folder tertentu dipilih dan dikonfirmasi
+    /// - `Some(None)` jika Root Vault dipilih dan dikonfirmasi
+    /// - `None` jika belum selesai / dibatalkan
+    pub fn show(
+        ctx: &egui::Context,
+        item_name: &str,
+        available_folders: &[(std::path::PathBuf, String)],
+        search_filter: &mut String,
+    ) -> Option<Option<std::path::PathBuf>> {
+        let mut result = None;
+        let mut close_requested = false;
+        let screen_rect = ctx.viewport_rect();
+
+        let backdrop_layer = egui::LayerId::new(
+            egui::Order::Middle,
+            egui::Id::new("move_modal_backdrop"),
+        );
+        let backdrop_painter = ctx.layer_painter(backdrop_layer);
+        backdrop_painter.rect_filled(
+            screen_rect,
+            CornerRadius::ZERO,
+            Color32::from_black_alpha(120),
+        );
+
+        let modal_width = 420.0;
+        let modal_height = 360.0;
+        let modal_pos = Pos2::new(
+            screen_rect.center().x - modal_width / 2.0,
+            screen_rect.center().y - modal_height / 2.0,
+        );
+
+        egui::Window::new("move_folder_dialog")
+            .title_bar(false)
+            .resizable(false)
+            .collapsible(false)
+            .fixed_rect(Rect::from_min_size(
+                modal_pos,
+                Vec2::new(modal_width, modal_height),
+            ))
+            .frame(glass_frame())
+            .show(ctx, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("📁")
+                            .size(16.0),
+                    );
+                    ui.label(
+                        RichText::new(format!("Pindahkan \"{item_name}\" ke..."))
+                            .size(13.5)
+                            .strong()
+                            .color(TEXT_PRIMARY),
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let close_btn = egui::Button::new(
+                            RichText::new(ICON_CLOSE.codepoint)
+                                .size(13.0)
+                                .color(TEXT_SECONDARY),
+                        )
+                        .frame(false);
+
+                        if ui.add(close_btn).clicked() {
+                            close_requested = true;
+                        }
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.add(
+                    egui::TextEdit::singleline(search_filter)
+                        .hint_text("Cari folder tujuan...")
+                        .desired_width(ui.available_width() - 8.0),
+                );
+                ui.add_space(8.0);
+                ui.add(egui::Separator::default().spacing(0.0));
+                ui.add_space(6.0);
+
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        // Opsi 1: Root Vault
+                        let root_match = search_filter.is_empty()
+                            || "root".contains(&search_filter.to_lowercase())
+                            || "utama".contains(&search_filter.to_lowercase());
+
+                        if root_match {
+                            let root_btn = egui::Button::new(
+                                RichText::new("📁 [Root] Folder Utama Vault")
+                                    .size(12.5)
+                                    .color(ACCENT_BLUE),
+                            )
+                            .fill(BG_CARD_DARK)
+                            .corner_radius(CornerRadius::same(ROUNDING_SM));
+
+                            if ui.add_sized(Vec2::new(ui.available_width() - 8.0, 28.0), root_btn).clicked() {
+                                result = Some(Some(None));
+                            }
+                            ui.add_space(4.0);
+                        }
+
+                        // Opsi 2+: Subfolder-subfolder
+                        let filter_lower = search_filter.to_lowercase();
+                        for (dir_path, display_name) in available_folders {
+                            if !filter_lower.is_empty()
+                                && !display_name.to_lowercase().contains(&filter_lower)
+                            {
+                                continue;
+                            }
+
+                            let folder_btn = egui::Button::new(
+                                RichText::new(format!("📁  {display_name}"))
+                                    .size(12.0)
+                                    .color(TEXT_PRIMARY),
+                            )
+                            .fill(BG_CARD_DARK)
+                            .corner_radius(CornerRadius::same(ROUNDING_SM));
+
+                            if ui.add_sized(Vec2::new(ui.available_width() - 8.0, 26.0), folder_btn).clicked() {
+                                result = Some(Some(Some(dir_path.clone())));
+                            }
+                            ui.add_space(2.0);
+                        }
+                    });
+
+                ui.add_space(8.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let cancel_btn = egui::Button::new(
+                        RichText::new("Batal")
+                            .size(12.0)
+                            .color(TEXT_SECONDARY),
+                    )
+                    .frame(false);
+
+                    if ui.add(cancel_btn).clicked() {
+                        close_requested = true;
+                    }
+                });
+            });
+
+        if close_requested {
+            return Some(None);
+        }
+
+        result.flatten()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,3 +584,4 @@ mod tests {
         );
     }
 }
+

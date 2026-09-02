@@ -4,16 +4,13 @@
 //! zoom, pemilihan warna goresan, ketebalan garis, dan status kanvas.
 
 use egui::{
-    Align2, Color32, CornerRadius, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
+    Align2, Color32, CornerRadius, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
 };
-use egui_icons::icons::{
-    ICON_ADD, ICON_FIT_SCREEN, ICON_PALETTE, ICON_REMOVE, ICON_RESTART_ALT, ICON_ZOOM_IN,
-    ICON_ZOOM_OUT,
-};
+use egui_icons::icons::{ICON_ADD, ICON_REMOVE};
 
 use crate::ui::theme::{
-    pill_frame, ACCENT_BLUE, BG_CARD_DARK, BG_HOVER_DARK, BORDER_SUBTLE, ROUNDING_LG,
-    ROUNDING_MD, ROUNDING_SM, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    pill_frame, ACCENT_BLUE, BG_CARD_DARK, BG_HOVER_DARK, ROUNDING_SM, TEXT_PRIMARY,
+    TEXT_SECONDARY,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]

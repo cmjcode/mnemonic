@@ -28,6 +28,7 @@ pub enum TopBarNavTab {
 pub enum TopBarEvent {
     SelectTab(TopBarNavTab),
     ToggleSidebar,
+    ToggleChatSidebar,
     OpenCommandPalette,
     ToggleTheme,
     SetLanguage(String),
@@ -39,6 +40,7 @@ pub struct TopBarState {
     pub vault_open: bool,
     pub active_tab: TopBarNavTab,
     pub sidebar_open: bool,
+    pub chat_open: bool,
     pub theme_mode: ThemeMode,
     pub active_locale: String,
     pub search_text: String,
@@ -159,63 +161,63 @@ impl TopBar {
                             event = Some(TopBarEvent::SearchChanged(String::new()));
                         }
                     }
-
-                    ui.add_space(4.0);
-
-                    // AI Chat Tab Pill
-                    let is_chat_active = state.active_tab == TopBarNavTab::Chat;
-                    let text_color = if is_chat_active {
-                        Color32::WHITE
-                    } else {
-                        TEXT_SECONDARY
-                    };
-
-                    let bg_color = if is_chat_active {
-                        ACCENT_BLUE
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-
-                    let chat_btn_frame = Frame {
-                        inner_margin: Margin::symmetric(8, 3),
-                        outer_margin: Margin::ZERO,
-                        corner_radius: CornerRadius::same(ROUNDING_SM),
-                        fill: bg_color,
-                        stroke: if is_chat_active {
-                            Stroke::new(1.0, ACCENT_BLUE)
-                        } else {
-                            Stroke::NONE
-                        },
-                        shadow: egui::Shadow::NONE,
-                    };
-
-                    let resp = chat_btn_frame
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(ICON_AUTO_AWESOME.codepoint)
-                                        .size(icon_sz - 1.0)
-                                        .color(text_color),
-                                );
-                                ui.label(
-                                    RichText::new("AI Chat").size(12.0).color(text_color),
-                                );
-                            });
-                        })
-                        .response;
-
-                    if resp.interact(Sense::click()).clicked() {
-                        if is_chat_active {
-                            event = Some(TopBarEvent::SelectTab(TopBarNavTab::Notes));
-                        } else {
-                            event = Some(TopBarEvent::SelectTab(TopBarNavTab::Chat));
-                        }
-                    }
                 }
 
-                // 4. Right Layout: Omnibox ⌘K + Theme + Language
+                // 4. Right Layout: AI Chat Toggle Icon + Theme Switcher + Language Selector + Omnibox ⌘K
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Theme Switcher button
+                    // 4a. AI Chat Toggle Icon (Ujung Kanan Header)
+                    if state.vault_open {
+                        let is_chat_active = state.chat_open;
+                        let chat_color = if is_chat_active {
+                            ACCENT_BLUE
+                        } else {
+                            TEXT_SECONDARY
+                        };
+                        let (c_rect, c_resp) =
+                            ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
+                        let is_c_hovered = c_resp.hovered();
+
+                        if is_c_hovered || is_chat_active {
+                            let fill = if is_chat_active {
+                                Color32::from_rgba_premultiplied(10, 132, 255, 45)
+                            } else {
+                                BG_HOVER_DARK
+                            };
+                            ui.painter().rect(
+                                c_rect,
+                                CornerRadius::same(ROUNDING_SM),
+                                fill,
+                                Stroke::new(
+                                    0.5,
+                                    if is_chat_active {
+                                        ACCENT_BLUE
+                                    } else {
+                                        BORDER_SUBTLE
+                                    },
+                                ),
+                                StrokeKind::Inside,
+                            );
+                        }
+
+                        ui.painter().text(
+                            c_rect.center(),
+                            Align2::CENTER_CENTER,
+                            ICON_AUTO_AWESOME.codepoint,
+                            egui::FontId::proportional(icon_sz),
+                            chat_color,
+                        );
+
+                        if c_resp
+                            .on_hover_text("Buka / Tutup Asisten AI")
+                            .clicked()
+                        {
+                            event = Some(TopBarEvent::ToggleChatSidebar);
+                        }
+
+                        ui.add_space(2.0);
+                    }
+
+                    // 4b. Theme Switcher button
                     let theme_icon = match state.theme_mode {
                         ThemeMode::Dark => ICON_LIGHT_MODE.codepoint,
                         ThemeMode::Light => ICON_DARK_MODE.codepoint,
@@ -242,7 +244,7 @@ impl TopBar {
                         event = Some(TopBarEvent::ToggleTheme);
                     }
 
-                    // Language Selector Dropdown
+                    // 4c. Language Selector Dropdown
                     ui.menu_button(
                         RichText::new(ICON_LANGUAGE.codepoint)
                             .size(icon_sz)
@@ -261,7 +263,7 @@ impl TopBar {
 
                     ui.add_space(4.0);
 
-                    // Omnibox Command Palette Trigger (⌘K)
+                    // 4d. Omnibox Command Palette Trigger (⌘K)
                     let palette_btn_frame = Frame {
                         inner_margin: Margin::symmetric(8, 3),
                         outer_margin: Margin::ZERO,
@@ -314,6 +316,7 @@ mod tests {
             vault_open: true,
             active_tab: TopBarNavTab::Notes,
             sidebar_open: false,
+            chat_open: false,
             theme_mode: ThemeMode::Dark,
             active_locale: "id-ID".to_string(),
             search_text: String::new(),
@@ -324,6 +327,7 @@ mod tests {
 
         assert_eq!(state.vault_name, "MyVault");
         assert_eq!(state.active_tab, TopBarNavTab::Notes);
+        assert!(!state.chat_open);
         assert_eq!(state.theme_mode, ThemeMode::Dark);
         assert_eq!(state.search_text, "");
     }

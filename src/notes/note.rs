@@ -88,12 +88,105 @@ impl Note {
         Ok(note)
     }
 
+    /// Create a new Draw.io diagram note file in `dir` with the given title.
+    pub fn create_drawio(dir: &Path, title: &str) -> Result<Note> {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating vault dir {}", dir.display()))?;
+
+        let now = Utc::now();
+        let mut frontmatter = NoteFrontmatter::default();
+        frontmatter.title = title.to_string();
+        frontmatter.note_type = NoteType::Canvas;
+        frontmatter.tags = vec!["canvas".to_string(), "drawio".to_string()];
+        frontmatter.created = now;
+        frontmatter.modified = now;
+
+        let file_name = format!("{}.md", frontmatter.id);
+        let path = dir.join(file_name);
+
+        let mut canvas = crate::canvas::CanvasDocument::new(title);
+        // Add sample starter flowchart elements
+        let start_id = canvas.add_element(crate::canvas::CanvasElement::Shape {
+            id: crate::canvas::CanvasElementId::new(),
+            kind: crate::canvas::ShapeKind::RoundedRect,
+            rect: [100.0, 100.0, 240.0, 160.0],
+            stroke_color: [0.23, 0.51, 0.96],
+            stroke_width: 2.0,
+            fill_color: Some([0.15, 0.20, 0.35]),
+            text: "🚀 Mulai / Start".to_string(),
+        });
+
+        let decision_id = canvas.add_element(crate::canvas::CanvasElement::Shape {
+            id: crate::canvas::CanvasElementId::new(),
+            kind: crate::canvas::ShapeKind::Diamond,
+            rect: [100.0, 220.0, 240.0, 320.0],
+            stroke_color: [0.95, 0.60, 0.07],
+            stroke_width: 2.0,
+            fill_color: Some([0.28, 0.22, 0.10]),
+            text: "Validasi?\nValid?".to_string(),
+        });
+
+        let process_id = canvas.add_element(crate::canvas::CanvasElement::Shape {
+            id: crate::canvas::CanvasElementId::new(),
+            kind: crate::canvas::ShapeKind::Rectangle,
+            rect: [320.0, 240.0, 460.0, 300.0],
+            stroke_color: [0.13, 0.77, 0.37],
+            stroke_width: 2.0,
+            fill_color: Some([0.10, 0.25, 0.16]),
+            text: "Proses Data".to_string(),
+        });
+
+        canvas.add_element(crate::canvas::CanvasElement::Connector {
+            id: crate::canvas::CanvasElementId::new(),
+            from_elem: Some(start_id),
+            to_elem: Some(decision_id),
+            from_pos: [170.0, 160.0],
+            to_pos: [170.0, 220.0],
+            routing: crate::canvas::ConnectorRouting::Straight,
+            stroke_color: [0.23, 0.51, 0.96],
+            stroke_width: 2.0,
+            label: "".to_string(),
+            arrow_end: true,
+        });
+
+        canvas.add_element(crate::canvas::CanvasElement::Connector {
+            id: crate::canvas::CanvasElementId::new(),
+            from_elem: Some(decision_id),
+            to_elem: Some(process_id),
+            from_pos: [240.0, 270.0],
+            to_pos: [320.0, 270.0],
+            routing: crate::canvas::ConnectorRouting::Orthogonal,
+            stroke_color: [0.13, 0.77, 0.37],
+            stroke_width: 2.0,
+            label: "Ya".to_string(),
+            arrow_end: true,
+        });
+
+        let xml = canvas.to_drawio_xml();
+        let body = format!("```drawio\n{}\n```\n", xml.trim());
+
+        let note = Note {
+            path,
+            frontmatter,
+            body,
+        };
+        note.save()?;
+        Ok(note)
+    }
+
     /// Checks whether this note is a visual Whiteboard Canvas.
     pub fn is_canvas(&self) -> bool {
         self.frontmatter.note_type == NoteType::Canvas
             || self.body.contains("```canvas")
+            || self.body.contains("```drawio")
+            || self.body.starts_with("<?xml")
+            || self.body.starts_with("<mxfile")
+            || self.body.starts_with("<mxGraphModel")
+            || self.path.extension().map_or(false, |ext| ext == "drawio")
             || self.frontmatter.tags.iter().any(|t| {
-                t.eq_ignore_ascii_case("whiteboard") || t.eq_ignore_ascii_case("canvas")
+                t.eq_ignore_ascii_case("whiteboard")
+                    || t.eq_ignore_ascii_case("canvas")
+                    || t.eq_ignore_ascii_case("drawio")
             })
     }
 
@@ -283,7 +376,7 @@ mod tests {
         let canvas_note = Note::create_canvas(dir.path(), "Diagram Arsitektur").unwrap();
         assert!(canvas_note.is_canvas());
         assert_eq!(canvas_note.frontmatter.note_type, NoteType::Canvas);
-        assert!(canvas_note.body.contains("```canvas"));
+        assert!(canvas_note.body.contains("Catatan Kanvas Baru"));
 
         let loaded = Note::load(&canvas_note.path).unwrap();
         assert!(loaded.is_canvas());

@@ -8,6 +8,7 @@
 //! - Dialog modal & konfirmasi destruktif (`modal`)
 
 pub mod canvas_hud;
+pub mod chat_sidebar;
 pub mod command_palette;
 pub mod left_toolbar;
 pub mod modal;
@@ -16,14 +17,18 @@ pub mod theme;
 pub mod top_bar;
 
 pub use canvas_hud::{CanvasHud, CanvasHudEvent};
+pub use chat_sidebar::{
+    ChatCitationItem, ChatMessageItem, ChatRole, ChatSidebarDrawer, ChatSidebarEvent,
+    ChatSidebarState,
+};
 pub use command_palette::{CommandPalette, PaletteCommand};
 pub use left_toolbar::{LeftToolbar, LeftToolbarEvent};
-pub use modal::{ConfirmModal, LabelManagerEvent, LabelManagerModal};
-pub use sidebar::{SidebarDocFilter, SidebarDrawer, SidebarEvent, SidebarState};
+pub use modal::{ConfirmModal, LabelManagerEvent, LabelManagerModal, MoveFolderModal, PromptInputModal};
+pub use sidebar::{FileTreeNode, SidebarDocFilter, SidebarDrawer, SidebarEvent, SidebarState, SidebarTab};
 pub use theme::{
     apply_theme, card_frame, color_for, color_solid_for, glass_frame, glass_panel_frame,
     glass_topbar_frame, pill_frame, tag_chip_frame, tag_color, ThemeMode, ACCENT_BLUE,
     ACCENT_GREEN, ACCENT_ORANGE, ACCENT_PURPLE, BG_CANVAS, BG_CARD_DARK, BG_HOVER_DARK,
-    BG_PANEL_DARK, BORDER_SUBTLE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    BG_PANEL_DARK, BORDER_SUBTLE, CHAT_SIDEBAR_WIDTH, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 pub use top_bar::{TopBar, TopBarEvent, TopBarNavTab, TopBarState};
