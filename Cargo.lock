@@ -1688,6 +1688,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_icons"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e081222cdb816f2996e937c21dad3e789670082a0ff3d3bb82d1507783534319"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3423,43 +3432,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
-name = "lontar"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "chrono",
- "dhat",
- "dirs",
- "eframe",
- "egui",
- "egui_commonmark",
- "env_logger",
- "fastembed",
- "filetime",
- "fluent-bundle",
- "fluent-syntax",
- "hf-hub",
- "log",
- "lopdf",
- "notify",
- "pdf-extract",
- "pdfium-render",
- "rfd",
- "rusqlite",
- "serde",
- "serde_yaml",
- "tempfile",
- "tokenizers 0.23.1",
- "toml",
- "unic-langid",
- "uuid",
- "walkdir",
-]
-
-[[package]]
 name = "loop9"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3632,6 +3604,45 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mnemonic"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "chrono",
+ "dhat",
+ "dirs",
+ "eframe",
+ "egui",
+ "egui_commonmark",
+ "egui_icons",
+ "env_logger",
+ "fastembed",
+ "filetime",
+ "fluent-bundle",
+ "fluent-syntax",
+ "hf-hub",
+ "log",
+ "lopdf",
+ "notify",
+ "pdf-extract",
+ "pdfium-render",
+ "rfd",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokenizers 0.23.1",
+ "toml",
+ "unic-langid",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]

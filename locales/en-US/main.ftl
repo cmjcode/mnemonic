@@ -1,4 +1,4 @@
-app-title = LONTAR
+app-title = MNEMONIC
 
 vault-empty = No notes yet. Tap the + button to create a new note.
 vault-pick-folder = Choose Vault Folder
@@ -124,11 +124,23 @@ pdf-export = Export as New...
 
 # §Fase 10: generic error banner replacing failures that used to be only
 # logged (`log::warn!`) and never visible to the user — see
-# `LontarApp::report_error`.
+# `MnemonicApp::report_error`.
 error-banner = Error while { $context }: { $error }
 error-context-autosave = auto-saving
 error-context-save-note = saving the note
 error-context-delete-note = deleting the note
 error-context-move-note = moving the note
-error-context-create-note = creating the note
-error-context-open-vault = opening the vault
+error-context-create-note = creating a note
+error-context-open-vault = opening a vault
+
+nav-canvas = Whiteboard
+editor-mode-page = Page
+editor-mode-edgeless = Edgeless
+sidebar-whiteboards-only = Whiteboards & Canvas
+command-palette-title = Quick Commands & Navigation
+command-palette-hint = Type note title, PDF name, or action...
+command-palette-new-note = ＋ Create New Note
+command-palette-open-canvas = 🎨 Open Whiteboard Canvas
+command-palette-search = 🔍 Search Vault Semantics
+command-palette-chat = 💬 Ask AI Assistant (Local RAG)
+command-palette-switch-vault = 📂 Open Another Vault Folder

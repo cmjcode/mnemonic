@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::Utc;
 
-use super::frontmatter::{self, NoteFrontmatter};
+use super::frontmatter::{self, NoteFrontmatter, NoteType};
 
 /// A note loaded from (or about to be written to) disk.
 #[derive(Debug, Clone)]
@@ -51,6 +51,50 @@ impl Note {
         };
         note.save()?;
         Ok(note)
+    }
+
+    /// Create a new infinite canvas whiteboard note file in `dir` with the given title.
+    pub fn create_canvas(dir: &Path, title: &str) -> Result<Note> {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating vault dir {}", dir.display()))?;
+
+        let now = Utc::now();
+        let mut frontmatter = NoteFrontmatter::default();
+        frontmatter.title = title.to_string();
+        frontmatter.note_type = NoteType::Canvas;
+        frontmatter.tags = vec!["canvas".to_string()];
+        frontmatter.created = now;
+        frontmatter.modified = now;
+
+        let file_name = format!("{}.md", frontmatter.id);
+        let path = dir.join(file_name);
+
+        let mut canvas = crate::canvas::CanvasDocument::new(title);
+        canvas.add_element(crate::canvas::CanvasElement::StickyNote {
+            id: crate::canvas::CanvasElementId::new(),
+            pos: [100.0, 100.0],
+            size: [240.0, 130.0],
+            text: "🎨 Catatan Kanvas Baru\n\nKlik dua kali atau seret alat untuk mulai mendesain ide Anda.".to_string(),
+            color: crate::canvas::tools::PALETTE_STICKY_YELLOW,
+        });
+        let body = canvas.to_markdown_body();
+
+        let note = Note {
+            path,
+            frontmatter,
+            body,
+        };
+        note.save()?;
+        Ok(note)
+    }
+
+    /// Checks whether this note is a visual Whiteboard Canvas.
+    pub fn is_canvas(&self) -> bool {
+        self.frontmatter.note_type == NoteType::Canvas
+            || self.body.contains("```canvas")
+            || self.frontmatter.tags.iter().any(|t| {
+                t.eq_ignore_ascii_case("whiteboard") || t.eq_ignore_ascii_case("canvas")
+            })
     }
 
     /// Write current frontmatter + body back to `self.path`, bumping
@@ -231,5 +275,18 @@ mod tests {
         let dir = tempdir().unwrap();
         let note = Note::create(dir.path(), "Bebas", "cuma teks biasa").unwrap();
         assert_eq!(note.checklist_progress(), None);
+    }
+
+    #[test]
+    fn create_canvas_and_load_roundtrip() {
+        let dir = tempdir().unwrap();
+        let canvas_note = Note::create_canvas(dir.path(), "Diagram Arsitektur").unwrap();
+        assert!(canvas_note.is_canvas());
+        assert_eq!(canvas_note.frontmatter.note_type, NoteType::Canvas);
+        assert!(canvas_note.body.contains("```canvas"));
+
+        let loaded = Note::load(&canvas_note.path).unwrap();
+        assert!(loaded.is_canvas());
+        assert_eq!(loaded.frontmatter.title, "Diagram Arsitektur");
     }
 }

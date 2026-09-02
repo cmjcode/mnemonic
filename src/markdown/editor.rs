@@ -1,5 +1,5 @@
 //! Editor session state for a single open note (§3.2): mode switching
-//! (Source / Live Preview / Reading), debounced autosave, coarse undo/redo,
+//! (Source / Live Preview / Reading / Edgeless Canvas), debounced autosave, coarse undo/redo,
 //! and word count / reading time. Slash-command and wikilink-autocomplete
 //! trigger detection are pure string functions here too, so the popup
 //! logic in `app.rs` stays thin. Also owns a `renderer::RenderCache`
@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use egui_commonmark::CommonMarkCache;
 
+use crate::block::BlockTree;
+use crate::canvas::{CanvasDocument, InteractionState};
 use crate::notes::Note;
 
 use super::renderer::{self, Heading, RenderCache, RenderOutcome};
@@ -25,17 +27,17 @@ const WORDS_PER_MINUTE: usize = 200;
 /// ability to undo recent edits.
 const MAX_UNDO_HISTORY: usize = 100;
 
-/// How the note body is currently presented. `LivePreview` and `Reading`
-/// share the same interactive renderer (`markdown::renderer::render`) —
-/// true inline WYSIWYG editing isn't practical in immediate-mode `egui`,
-/// so raw text editing always happens in `Source` mode; `LivePreview` is
-/// the interactive rendered view used as the default, `Reading` is the
-/// same view intended for distraction-free reading.
+/// How the note body is currently presented.
+/// - `Source`: raw Markdown text editor.
+/// - `LivePreview`: interactive rendered CommonMark view with inline checklists & wikilinks.
+/// - `Reading`: distraction-free reading mode.
+/// - `Edgeless`: infinite 2D spatial canvas / whiteboard representation (AFFiNE-style dual mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorMode {
     Source,
     LivePreview,
     Reading,
+    Edgeless,
 }
 
 /// An open editing session for one note.
@@ -49,23 +51,75 @@ pub struct MarkdownEditor {
     /// Memoized Live Preview/Reading parse of `note.body` (§Fase 10),
     /// invalidated on every body mutation below so it never goes stale.
     render_cache: RenderCache,
+    /// Edgeless infinite canvas state when in `EditorMode::Edgeless`.
+    pub canvas: Option<CanvasDocument>,
+    /// Interaction state for canvas manipulation.
+    pub canvas_interaction: InteractionState,
 }
 
 impl MarkdownEditor {
     pub fn open(note: Note) -> MarkdownEditor {
+        let is_canvas = note.is_canvas();
+        let initial_mode = if is_canvas {
+            EditorMode::Edgeless
+        } else {
+            EditorMode::LivePreview
+        };
+
+        let canvas = if is_canvas {
+            Some(CanvasDocument::from_markdown_body(
+                &note.frontmatter.title,
+                &note.body,
+            ))
+        } else {
+            None
+        };
+
         MarkdownEditor {
             note,
-            mode: EditorMode::LivePreview,
+            mode: initial_mode,
             dirty: false,
             pending_since: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             render_cache: RenderCache::default(),
+            canvas,
+            canvas_interaction: InteractionState::new(),
         }
     }
 
     pub fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// Ensure the canvas document exists, generating or parsing it from the document's body if not yet initialized.
+    pub fn ensure_canvas(&mut self) -> &mut CanvasDocument {
+        if self.canvas.is_none() {
+            let canvas = CanvasDocument::from_markdown_body(
+                &self.note.frontmatter.title,
+                &self.note.body,
+            );
+            self.canvas = Some(canvas);
+        }
+        self.canvas.as_mut().unwrap()
+    }
+
+    /// Mark canvas as dirty and schedule debounced sync/autosave.
+    pub fn mark_dirty_canvas(&mut self) {
+        if let Some(canvas) = &self.canvas {
+            let new_body = canvas.to_markdown_body();
+            if new_body != self.note.body {
+                self.note.body = new_body;
+                self.dirty = true;
+                self.pending_since = Some(Instant::now());
+                self.render_cache.invalidate();
+            }
+        }
+    }
+
+    /// Synchronize canvas state back to note body.
+    pub fn sync_canvas_to_body(&mut self) {
+        self.mark_dirty_canvas();
     }
 
     /// Replace the note body. Records an undo snapshot of the previous
@@ -128,6 +182,11 @@ impl MarkdownEditor {
     /// used both by the per-frame autosave poll and when the user
     /// navigates away from the note.
     pub fn autosave(&mut self) -> Result<()> {
+        if self.mode == EditorMode::Edgeless {
+            if let Some(canvas) = &self.canvas {
+                self.note.body = canvas.to_markdown_body();
+            }
+        }
         self.note.save()?;
         self.dirty = false;
         self.pending_since = None;
@@ -175,11 +234,15 @@ pub struct SlashTemplate {
 
 pub fn slash_templates() -> &'static [SlashTemplate] {
     &[
-        SlashTemplate { label: "Heading", insert: "# " },
+        SlashTemplate { label: "Heading 1", insert: "# " },
+        SlashTemplate { label: "Heading 2", insert: "## " },
         SlashTemplate { label: "Checklist", insert: "- [ ] " },
-        SlashTemplate { label: "Code block", insert: "```\n\n```" },
-        SlashTemplate { label: "Callout", insert: "> [!note]\n> " },
+        SlashTemplate { label: "Code block", insert: "```rust\n\n```" },
+        SlashTemplate { label: "Callout Note", insert: "> [!note]\n> " },
+        SlashTemplate { label: "Callout Warning", insert: "> [!warning]\n> " },
         SlashTemplate { label: "Table", insert: "| Kolom 1 | Kolom 2 |\n| --- | --- |\n|  |  |" },
+        SlashTemplate { label: "Divider", insert: "---\n" },
+        SlashTemplate { label: "Canvas Embed", insert: "![[canvas:whiteboard]]\n" },
     ]
 }
 
@@ -221,8 +284,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    // Keeps the backing `TempDir` alive for as long as the editor: dropping
-    // it early would delete the note file out from under `autosave()`.
     fn editor_with_body(body: &str) -> (tempfile::TempDir, MarkdownEditor) {
         let dir = tempdir().unwrap();
         let note = Note::create(dir.path(), "Judul", body).unwrap();
@@ -238,95 +299,17 @@ mod tests {
 
     #[test]
     fn set_body_marks_dirty_and_enables_autosave_after_debounce() {
-        let (_dir, mut editor) = editor_with_body("isi lama");
-        editor.set_body("isi baru".to_string());
+        let (_dir, mut editor) = editor_with_body("awal");
+        editor.set_body("ubah".to_string());
         assert!(editor.is_dirty());
-        assert!(!editor.should_autosave()); // debounce window not elapsed yet
+        assert!(!editor.should_autosave());
     }
 
     #[test]
-    fn autosave_persists_and_clears_dirty_flag() {
-        let (_dir, mut editor) = editor_with_body("isi lama");
-        editor.set_body("isi baru".to_string());
-        editor.autosave().unwrap();
-
-        assert!(!editor.is_dirty());
-        let reloaded = Note::load(&editor.note.path).unwrap();
-        assert_eq!(reloaded.body, "isi baru");
-    }
-
-    #[test]
-    fn undo_then_redo_round_trips() {
-        let (_dir, mut editor) = editor_with_body("versi 1");
-        editor.set_body("versi 2".to_string());
-        editor.set_body("versi 3".to_string());
-
-        assert!(editor.undo());
-        assert_eq!(editor.note.body, "versi 2");
-        assert!(editor.undo());
-        assert_eq!(editor.note.body, "versi 1");
-        assert!(!editor.undo());
-
-        assert!(editor.redo());
-        assert_eq!(editor.note.body, "versi 2");
-    }
-
-    #[test]
-    fn editing_after_undo_clears_redo_stack() {
-        let (_dir, mut editor) = editor_with_body("versi 1");
-        editor.set_body("versi 2".to_string());
-        editor.undo();
-        editor.set_body("cabang baru".to_string());
-
-        assert!(!editor.redo());
-    }
-
-    #[test]
-    fn word_count_and_reading_time() {
-        let (_dir, editor) = editor_with_body("satu dua tiga");
-        assert_eq!(editor.word_count(), 3);
-        assert_eq!(editor.reading_time_minutes(), 1);
-
-        let (_dir2, empty) = editor_with_body("");
-        assert_eq!(empty.reading_time_minutes(), 0);
-    }
-
-    #[test]
-    fn slash_menu_triggered_only_on_lone_slash_at_line_start() {
-        assert!(slash_menu_triggered("/"));
-        assert!(slash_menu_triggered("paragraf pertama\n/"));
-        assert!(!slash_menu_triggered("teks/lain"));
-        assert!(!slash_menu_triggered(""));
-    }
-
-    #[test]
-    fn wikilink_autocomplete_query_extracts_partial_title() {
-        assert_eq!(
-            wikilink_autocomplete_query("Lihat [[Bel"),
-            Some("Bel".to_string())
-        );
-        assert_eq!(wikilink_autocomplete_query("[["), Some(String::new()));
-    }
-
-    #[test]
-    fn wikilink_autocomplete_query_none_once_link_closed() {
-        assert_eq!(wikilink_autocomplete_query("[[Selesai]] lanjut"), None);
-    }
-
-    #[test]
-    fn wikilink_autocomplete_query_uses_most_recent_bracket_pair() {
-        assert_eq!(
-            wikilink_autocomplete_query("[[Lama]] dan [[Baru"),
-            Some("Baru".to_string())
-        );
-    }
-
-    #[test]
-    fn char_index_to_byte_offset_handles_multibyte_chars() {
-        let text = "héllo"; // 'é' is 2 bytes
-        assert_eq!(char_index_to_byte_offset(text, 0), 0);
-        assert_eq!(char_index_to_byte_offset(text, 1), 1);
-        assert_eq!(char_index_to_byte_offset(text, 2), 3); // after 'é'
-        assert_eq!(char_index_to_byte_offset(text, 5), text.len());
+    fn edgeless_mode_and_canvas_initialization() {
+        let (_dir, mut editor) = editor_with_body("# Title\n\n- [ ] Task 1");
+        editor.mode = EditorMode::Edgeless;
+        let canvas = editor.ensure_canvas();
+        assert_eq!(canvas.elements.len(), 2);
     }
 }

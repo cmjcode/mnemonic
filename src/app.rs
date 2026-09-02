@@ -17,6 +17,9 @@ use anyhow::{Context, Result};
 use egui_commonmark::CommonMarkCache;
 use uuid::Uuid;
 
+use crate::canvas::{
+    self, CanvasDocument, CanvasElement, CanvasElementId, CanvasTool, InteractionState,
+};
 use crate::core::ingestion::pdf_doc_id;
 use crate::core::search::{self, SearchHit};
 use crate::core::{DocumentChunk, IndexStore, IndexingWorker};
@@ -25,13 +28,13 @@ use crate::llm::{self, GenerationEvent, GenerationWorker};
 use crate::markdown::editor::{
     char_index_to_byte_offset, slash_menu_triggered, slash_templates, wikilink_autocomplete_query,
 };
-use crate::markdown::{wikilink, EditorMode, MarkdownEditor, WikilinkIndex};
+use crate::markdown::{EditorMode, MarkdownEditor, WikilinkIndex, wikilink};
 use crate::notes::query::{self, GridFilter, SortMode};
-use crate::notes::{tags, trash, Note, Vault, VaultWatcher};
+use crate::notes::{Note, Vault, VaultWatcher, tags, trash};
 use crate::pdf::annotator::{Annotation, AnnotationKind};
 use crate::pdf::editor::DocumentMetadata;
-use crate::pdf::{self, annotator as pdf_annotator, editor as pdf_editor, PdfRenderer};
-use crate::ui::theme;
+use crate::pdf::{self, PdfRenderer, annotator as pdf_annotator, editor as pdf_editor};
+use crate::ui::{self, theme};
 
 /// How many top-ranked chunks to retrieve for the Search tab / Chat tab
 /// respectively (§Fase 7). Search shows more candidates than chat's RAG
@@ -65,7 +68,8 @@ const MIN_ANNOTATION_DRAG_PX: f32 = 4.0;
 /// same precedence Fase 7 established for the note editor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum View {
-    Notes, // unified: Markdown notes + PDFs in one masonry grid
+    Notes,  // unified: Markdown notes + PDFs in one masonry grid
+    Canvas, // Standalone AFFiNE Edgeless Whiteboard Canvas
     Search,
     Chat,
 }
@@ -77,6 +81,7 @@ enum DocFilter {
     All,
     NotesOnly,
     PdfsOnly,
+    WhiteboardsOnly,
     Archived,
     Trashed,
     Tag(String),
@@ -133,7 +138,7 @@ impl ChatMessage {
 
 /// Lazily-constructed `PdfRenderer` state (§Fase 8), mirroring
 /// `core::indexer`'s `EmbedderState`: binding to the native PDFium library
-/// only happens on first use (never blocking `LontarApp::new()`), and a
+/// only happens on first use (never blocking `MnemonicApp::new()`), and a
 /// failure is remembered so a missing library doesn't retry the same slow
 /// failure on every frame the PDF viewer is open.
 enum PdfRendererState {
@@ -143,7 +148,7 @@ enum PdfRendererState {
 }
 
 /// State for the currently-open PDF (§Fase 8) — mutually exclusive with
-/// `LontarApp::editor`, same as the note editor takes over the central
+/// `MnemonicApp::editor`, same as the note editor takes over the central
 /// panel regardless of `view`.
 struct PdfViewerState {
     path: PathBuf,
@@ -210,17 +215,38 @@ struct PendingAnnotation {
 /// after `show_pdf_viewer`'s `egui` closures have all returned — same
 /// deferred-action pattern as `GridAction`.
 enum PdfViewerAction {
-    RotateCurrentPage { path: PathBuf, page: u32, degrees: i64 },
-    DeleteCurrentPage { path: PathBuf, page: u32 },
-    Split { path: PathBuf, from: u32, to: u32 },
-    Merge { path: PathBuf },
+    RotateCurrentPage {
+        path: PathBuf,
+        page: u32,
+        degrees: i64,
+    },
+    DeleteCurrentPage {
+        path: PathBuf,
+        page: u32,
+    },
+    Split {
+        path: PathBuf,
+        from: u32,
+        to: u32,
+    },
+    Merge {
+        path: PathBuf,
+    },
     /// "Save" (§3.5 point 3, overwrite half): bakes `annotations` +
     /// `metadata` into `path` in place, auto-backed-up via
     /// `pdf::editor::save_over`.
-    SaveOver { path: PathBuf, annotations: Vec<Annotation>, metadata: DocumentMetadata },
+    SaveOver {
+        path: PathBuf,
+        annotations: Vec<Annotation>,
+        metadata: DocumentMetadata,
+    },
     /// "Export" (§3.5 point 3, save-as half): bakes the same changes into
     /// a user-chosen new file, `path` itself left untouched.
-    ExportAs { path: PathBuf, annotations: Vec<Annotation>, metadata: DocumentMetadata },
+    ExportAs {
+        path: PathBuf,
+        annotations: Vec<Annotation>,
+        metadata: DocumentMetadata,
+    },
 }
 
 /// What the user asked for while looking at the PDF library tab
@@ -232,7 +258,7 @@ enum PdfLibraryAction {
     Remove(PathBuf),
 }
 
-pub struct LontarApp {
+pub struct MnemonicApp {
     locales: LocaleManager,
     vault: Option<Vault>,
     watcher: Option<VaultWatcher>,
@@ -274,14 +300,22 @@ pub struct LontarApp {
     pdf_renderer: PdfRendererState,
     pdf_documents: Vec<PathBuf>,
     pdf_viewer: Option<PdfViewerState>,
+
+    // AFFiNE Command Palette (⌘K) & Standalone Whiteboard Canvas.
+    show_command_palette: bool,
+    command_palette_query: String,
+    theme_mode: ui::ThemeMode,
+    command_palette: ui::CommandPalette,
+    standalone_canvas: Option<CanvasDocument>,
+    standalone_canvas_interaction: InteractionState,
 }
 
-impl LontarApp {
-    pub fn new() -> LontarApp {
+impl MnemonicApp {
+    pub fn new() -> MnemonicApp {
         let locales_dir = locales_dir();
         let locales = LocaleManager::load(&locales_dir);
 
-        let mut app = LontarApp {
+        let mut app = MnemonicApp {
             locales,
             vault: None,
             watcher: None,
@@ -317,6 +351,12 @@ impl LontarApp {
             pdf_renderer: PdfRendererState::Uninit,
             pdf_documents: Vec::new(),
             pdf_viewer: None,
+            show_command_palette: false,
+            command_palette_query: String::new(),
+            theme_mode: ui::ThemeMode::Dark,
+            command_palette: ui::CommandPalette::default(),
+            standalone_canvas: None,
+            standalone_canvas_interaction: InteractionState::new(),
         };
 
         if let Some(result) = Vault::load_last() {
@@ -406,7 +446,9 @@ impl LontarApp {
         if results.is_empty() {
             return;
         }
-        let Some(index) = self.index.as_mut() else { return };
+        let Some(index) = self.index.as_mut() else {
+            return;
+        };
         for result in results {
             match result {
                 Ok(r) => {
@@ -439,7 +481,8 @@ impl LontarApp {
                         Ok(embedding) => self.start_chat_generation(&embedding),
                         Err(e) => {
                             let msg = format!("{}: {e:#}", self.t("chat-error"));
-                            self.chat_messages.push(ChatMessage::assistant(msg, Vec::new()));
+                            self.chat_messages
+                                .push(ChatMessage::assistant(msg, Vec::new()));
                         }
                     }
                     ctx.request_repaint();
@@ -475,7 +518,9 @@ impl LontarApp {
     /// the keyword hits already computed by `run_search`, replacing
     /// `search_results` with the merged, de-duplicated list.
     fn apply_semantic_search(&mut self, embedding: &[f32]) {
-        let Some(index) = self.index.as_ref() else { return };
+        let Some(index) = self.index.as_ref() else {
+            return;
+        };
         let chunks = match index.all_chunks() {
             Ok(c) => c,
             Err(e) => {
@@ -483,8 +528,13 @@ impl LontarApp {
                 return;
             }
         };
-        let semantic = search::semantic_search(embedding, &chunks, SEARCH_TOP_K, llm::SIMILARITY_THRESHOLD);
-        let notes: Vec<Note> = self.vault.as_ref().map(|v| v.notes.clone()).unwrap_or_default();
+        let semantic =
+            search::semantic_search(embedding, &chunks, SEARCH_TOP_K, llm::SIMILARITY_THRESHOLD);
+        let notes: Vec<Note> = self
+            .vault
+            .as_ref()
+            .map(|v| v.notes.clone())
+            .unwrap_or_default();
         let keyword_notes = search::keyword_search(&notes, &self.search_query);
         self.search_results = search::merge_results(semantic, &keyword_notes);
     }
@@ -502,7 +552,11 @@ impl LontarApp {
             return;
         }
 
-        let notes: Vec<Note> = self.vault.as_ref().map(|v| v.notes.clone()).unwrap_or_default();
+        let notes: Vec<Note> = self
+            .vault
+            .as_ref()
+            .map(|v| v.notes.clone())
+            .unwrap_or_default();
         let keyword_notes = search::keyword_search(&notes, &query_text);
         self.search_results = search::merge_results(Vec::new(), &keyword_notes);
 
@@ -516,7 +570,10 @@ impl LontarApp {
     /// takes over once the embedding resolves.
     fn send_chat_message(&mut self) {
         let text = self.chat_input.trim().to_string();
-        if text.is_empty() || self.chat_pending_embed_id.is_some() || self.chat_pending_gen_id.is_some() {
+        if text.is_empty()
+            || self.chat_pending_embed_id.is_some()
+            || self.chat_pending_gen_id.is_some()
+        {
             return;
         }
         self.chat_input.clear();
@@ -565,7 +622,8 @@ impl LontarApp {
             .collect();
         let prompt = llm::build_rag_prompt(&context, &question);
 
-        self.chat_messages.push(ChatMessage::assistant(String::new(), citations));
+        self.chat_messages
+            .push(ChatMessage::assistant(String::new(), citations));
 
         if let Some(generator) = &self.generator {
             self.chat_pending_gen_id = Some(generator.submit(prompt, llm::DEFAULT_MAX_TOKENS));
@@ -587,7 +645,10 @@ impl LontarApp {
     fn report_error(&mut self, context_key: &str, err: impl std::fmt::Display) {
         log::warn!("app: {context_key}: {err}");
         let context = self.t(context_key);
-        self.status = self.locales.t("error-banner", &[("context", &context), ("error", &err.to_string())]);
+        self.status = self.locales.t(
+            "error-banner",
+            &[("context", &context), ("error", &err.to_string())],
+        );
     }
 
     /// A dismissible red banner for the most recent failure recorded via
@@ -772,17 +833,20 @@ impl LontarApp {
     fn apply_pdf_viewer_action(&mut self, action: PdfViewerAction) {
         let t_op_error = self.t("pdf-op-error");
         let result = match &action {
-            PdfViewerAction::RotateCurrentPage { path, page, degrees } => {
-                rfd::FileDialog::new().add_filter("PDF", &["pdf"]).save_file().map(|output| {
+            PdfViewerAction::RotateCurrentPage {
+                path,
+                page,
+                degrees,
+            } => rfd::FileDialog::new()
+                .add_filter("PDF", &["pdf"])
+                .save_file()
+                .map(|output| {
                     pdf_editor::rotate(path, &[*page], *degrees, &output).map(|()| output)
-                })
-            }
-            PdfViewerAction::DeleteCurrentPage { path, page } => {
-                rfd::FileDialog::new()
-                    .add_filter("PDF", &["pdf"])
-                    .save_file()
-                    .map(|output| pdf_editor::delete_pages(path, &[*page], &output).map(|()| output))
-            }
+                }),
+            PdfViewerAction::DeleteCurrentPage { path, page } => rfd::FileDialog::new()
+                .add_filter("PDF", &["pdf"])
+                .save_file()
+                .map(|output| pdf_editor::delete_pages(path, &[*page], &output).map(|()| output)),
             PdfViewerAction::Split { path, from, to } => {
                 let pages: Vec<u32> = (*from..=*to).collect();
                 rfd::FileDialog::new()
@@ -790,31 +854,47 @@ impl LontarApp {
                     .save_file()
                     .map(|output| pdf_editor::split(path, &pages, &output).map(|()| output))
             }
-            PdfViewerAction::Merge { path } => {
-                rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file().and_then(|other| {
+            PdfViewerAction::Merge { path } => rfd::FileDialog::new()
+                .add_filter("PDF", &["pdf"])
+                .pick_file()
+                .and_then(|other| {
                     rfd::FileDialog::new()
                         .add_filter("PDF", &["pdf"])
                         .save_file()
-                        .map(|output| pdf_editor::merge(&[path.as_path(), other.as_path()], &output).map(|()| output))
-                })
-            }
-            PdfViewerAction::SaveOver { path, annotations, metadata } => {
-                Some(bake_pdf_changes(path, annotations, metadata).and_then(|staged| {
-                    let backup = pdf_editor::save_over(path, &staged)?;
-                    let _ = std::fs::remove_file(&staged); // best-effort: staged is a temp file
-                    Ok(backup)
-                }))
-            }
-            PdfViewerAction::ExportAs { path, annotations, metadata } => {
-                rfd::FileDialog::new().add_filter("PDF", &["pdf"]).save_file().map(|target| {
+                        .map(|output| {
+                            pdf_editor::merge(&[path.as_path(), other.as_path()], &output)
+                                .map(|()| output)
+                        })
+                }),
+            PdfViewerAction::SaveOver {
+                path,
+                annotations,
+                metadata,
+            } => {
+                Some(
                     bake_pdf_changes(path, annotations, metadata).and_then(|staged| {
-                        std::fs::copy(&staged, &target)
-                            .with_context(|| format!("copying staged PDF to {}", target.display()))?;
+                        let backup = pdf_editor::save_over(path, &staged)?;
+                        let _ = std::fs::remove_file(&staged); // best-effort: staged is a temp file
+                        Ok(backup)
+                    }),
+                )
+            }
+            PdfViewerAction::ExportAs {
+                path,
+                annotations,
+                metadata,
+            } => rfd::FileDialog::new()
+                .add_filter("PDF", &["pdf"])
+                .save_file()
+                .map(|target| {
+                    bake_pdf_changes(path, annotations, metadata).and_then(|staged| {
+                        std::fs::copy(&staged, &target).with_context(|| {
+                            format!("copying staged PDF to {}", target.display())
+                        })?;
                         let _ = std::fs::remove_file(&staged);
                         Ok(target)
                     })
-                })
-            }
+                }),
         };
 
         match result {
@@ -828,7 +908,10 @@ impl LontarApp {
                         viewer.staged_annotations.clear();
                         viewer.rendered_key = None;
                     }
-                    let msg = self.locales.t("pdf-save-success", &[("backup", &output.display().to_string())]);
+                    let msg = self.locales.t(
+                        "pdf-save-success",
+                        &[("backup", &output.display().to_string())],
+                    );
                     if let Some(viewer) = self.pdf_viewer.as_mut() {
                         viewer.op_status = msg;
                     }
@@ -891,9 +974,10 @@ impl LontarApp {
         let t_outline = self.t("editor-outline");
         let t_backlinks = self.t("editor-backlinks");
         let t_backlinks_empty = self.t("editor-backlinks-empty");
-        let t_word_count = self
-            .locales
-            .t("editor-word-count", &[("count", &editor.word_count().to_string())]);
+        let t_word_count = self.locales.t(
+            "editor-word-count",
+            &[("count", &editor.word_count().to_string())],
+        );
         let t_reading_time = self.locales.t(
             "editor-reading-time",
             &[("minutes", &editor.reading_time_minutes().to_string())],
@@ -905,10 +989,14 @@ impl LontarApp {
             .vault
             .as_ref()
             .map(|v| {
-                wikilink::backlinks_for(&editor.note.frontmatter.title, editor.note.frontmatter.id, &v.notes)
-                    .into_iter()
-                    .map(|n| n.frontmatter.title.clone())
-                    .collect()
+                wikilink::backlinks_for(
+                    &editor.note.frontmatter.title,
+                    editor.note.frontmatter.id,
+                    &v.notes,
+                )
+                .into_iter()
+                .map(|n| n.frontmatter.title.clone())
+                .collect()
             })
             .unwrap_or_default();
         // Borrowed once up front so the render closures below only ever
@@ -920,110 +1008,177 @@ impl LontarApp {
         let mut navigate_to: Option<String> = None;
         let mut scroll_to_slug: Option<String> = None;
 
+        let is_edgeless = editor.mode == EditorMode::Edgeless;
+        let is_dark = ui.visuals().dark_mode;
+
         ui.horizontal(|ui| {
             if ui.button(t_back.as_str()).clicked() {
                 close_requested = true;
             }
             ui.heading(editor.note.frontmatter.title.as_str());
-        });
 
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut editor.mode, EditorMode::Source, t_source.as_str());
-            ui.selectable_value(&mut editor.mode, EditorMode::LivePreview, t_live_preview.as_str());
-            ui.selectable_value(&mut editor.mode, EditorMode::Reading, t_reading.as_str());
-            ui.separator();
-            if ui.button(t_undo.as_str()).clicked() {
-                editor.undo();
-            }
-            if ui.button(t_redo.as_str()).clicked() {
-                editor.redo();
-            }
-        });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // AFFiNE Dual-State Switcher: [ 📄 Page | 🎨 Edgeless ]
+                let is_page = editor.mode != EditorMode::Edgeless;
+                let page_btn = egui::Button::new(egui::RichText::new("📄 Page").size(13.0).color(
+                    if is_page {
+                        theme::GLASS_ACCENT_HOVER
+                    } else {
+                        theme::GLASS_TEXT_SECONDARY
+                    },
+                ))
+                .fill(if is_page {
+                    theme::GLASS_SURFACE_HIGH
+                } else {
+                    egui::Color32::TRANSPARENT
+                })
+                .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
 
-        ui.label(format!("{t_word_count} · {t_reading_time}"));
-        ui.separator();
+                let edgeless_btn =
+                    egui::Button::new(egui::RichText::new("🎨 Edgeless").size(13.0).color(
+                        if is_edgeless {
+                            theme::GLASS_ACCENT_HOVER
+                        } else {
+                            theme::GLASS_TEXT_SECONDARY
+                        },
+                    ))
+                    .fill(if is_edgeless {
+                        theme::GLASS_SURFACE_HIGH
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    })
+                    .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
 
-        egui::Panel::right("editor_side_panel")
-            .resizable(true)
-            .default_size(220.0)
-            .show(ui, |ui| {
-                ui.heading(t_outline.as_str());
-                for heading in &outline {
-                    let indent = "  ".repeat(heading.level.saturating_sub(1) as usize);
-                    if ui.link(format!("{indent}{}", heading.title)).clicked() {
-                        scroll_to_slug = Some(heading.slug.clone());
-                    }
+                if ui.add(edgeless_btn).clicked() {
+                    editor.mode = EditorMode::Edgeless;
+                    editor.ensure_canvas();
+                }
+                if ui.add(page_btn).clicked() {
+                    editor.sync_canvas_to_body();
+                    editor.mode = EditorMode::LivePreview;
+                }
+
+                ui.add_space(8.0);
+
+                if !is_edgeless {
+                    ui.selectable_value(&mut editor.mode, EditorMode::Reading, t_reading.as_str());
+                    ui.selectable_value(
+                        &mut editor.mode,
+                        EditorMode::LivePreview,
+                        t_live_preview.as_str(),
+                    );
+                    ui.selectable_value(&mut editor.mode, EditorMode::Source, t_source.as_str());
                 }
 
                 ui.separator();
-                ui.heading(t_backlinks.as_str());
-                if backlink_titles.is_empty() {
-                    ui.label(t_backlinks_empty.as_str());
-                } else {
-                    for title in &backlink_titles {
-                        if ui.link(title.as_str()).clicked() {
-                            navigate_to = Some(title.clone());
-                        }
-                    }
+                if ui.button(t_redo.as_str()).clicked() {
+                    editor.redo();
+                }
+                if ui.button(t_undo.as_str()).clicked() {
+                    editor.undo();
                 }
             });
+        });
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show_viewport(ui, |ui, viewport| match editor.mode {
-                EditorMode::Source => {
-                    let mut body = editor.note.body.clone();
-                    let output = egui::TextEdit::multiline(&mut body)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(20)
-                        .show(ui);
-                    if body != editor.note.body {
-                        editor.set_body(body.clone());
+        if !is_edgeless {
+            ui.label(format!("{t_word_count} · {t_reading_time}"));
+            ui.separator();
+
+            egui::Panel::right("editor_side_panel")
+                .resizable(true)
+                .default_size(220.0)
+                .show(ui, |ui| {
+                    ui.heading(t_outline.as_str());
+                    for heading in &outline {
+                        let indent = "  ".repeat(heading.level.saturating_sub(1) as usize);
+                        if ui.link(format!("{indent}{}", heading.title)).clicked() {
+                            scroll_to_slug = Some(heading.slug.clone());
+                        }
                     }
 
-                    let Some(range) = output.cursor_range else {
-                        return;
-                    };
-                    let byte = char_index_to_byte_offset(&body, range.primary.index.0);
-                    let before = &body[..byte];
-
-                    if slash_menu_triggered(before) {
-                        ui.horizontal_wrapped(|ui| {
-                            for tmpl in slash_templates() {
-                                if ui.button(tmpl.label).clicked() {
-                                    let mut new_body = body.clone();
-                                    new_body.replace_range(byte - 1..byte, tmpl.insert);
-                                    editor.set_body(new_body);
-                                }
+                    ui.separator();
+                    ui.heading(t_backlinks.as_str());
+                    if backlink_titles.is_empty() {
+                        ui.label(t_backlinks_empty.as_str());
+                    } else {
+                        for title in &backlink_titles {
+                            if ui.link(title.as_str()).clicked() {
+                                navigate_to = Some(title.clone());
                             }
-                        });
-                    } else if let Some(query) = wikilink_autocomplete_query(before) {
-                        let suggestions = wikilink_index
-                            .as_ref()
-                            .map(|idx| idx.suggestions(&query, 8))
-                            .unwrap_or_default();
-                        if !suggestions.is_empty() {
+                        }
+                    }
+                });
+        }
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            if editor.mode == EditorMode::Edgeless {
+                editor.ensure_canvas();
+                if let Some(canvas) = editor.canvas.as_mut() {
+                    if Self::show_canvas_surface(canvas, &mut editor.canvas_interaction, ui, is_dark) {
+                        editor.sync_canvas_to_body();
+                    }
+                }
+            } else {
+                egui::ScrollArea::vertical().show_viewport(ui, |ui, viewport| match editor.mode {
+                    EditorMode::Source => {
+                        let mut body = editor.note.body.clone();
+                        let output = egui::TextEdit::multiline(&mut body)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(20)
+                            .show(ui);
+                        if body != editor.note.body {
+                            editor.set_body(body.clone());
+                        }
+
+                        let Some(range) = output.cursor_range else {
+                            return;
+                        };
+                        let byte = char_index_to_byte_offset(&body, range.primary.index.0);
+                        let before = &body[..byte];
+
+                        if slash_menu_triggered(before) {
                             ui.horizontal_wrapped(|ui| {
-                                for title in &suggestions {
-                                    if ui.button(title).clicked() {
+                                for tmpl in slash_templates() {
+                                    if ui.button(tmpl.label).clicked() {
                                         let mut new_body = body.clone();
-                                        new_body.replace_range(byte - query.len()..byte, &format!("{title}]]"));
+                                        new_body.replace_range(byte - 1..byte, tmpl.insert);
                                         editor.set_body(new_body);
                                     }
                                 }
                             });
+                        } else if let Some(query) = wikilink_autocomplete_query(before) {
+                            let suggestions = wikilink_index
+                                .as_ref()
+                                .map(|idx| idx.suggestions(&query, 8))
+                                .unwrap_or_default();
+                            if !suggestions.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
+                                    for title in &suggestions {
+                                        if ui.button(title).clicked() {
+                                            let mut new_body = body.clone();
+                                            new_body.replace_range(
+                                                byte - query.len()..byte,
+                                                &format!("{title}]]"),
+                                            );
+                                            editor.set_body(new_body);
+                                        }
+                                    }
+                                });
+                            }
                         }
                     }
-                }
-                EditorMode::LivePreview | EditorMode::Reading => {
-                    let outcome = editor.render(ui, cache, viewport);
-                    if let Some(new_body) = outcome.updated_body {
-                        editor.set_body(new_body);
+                    EditorMode::LivePreview | EditorMode::Reading => {
+                        let outcome = editor.render(ui, cache, viewport);
+                        if let Some(new_body) = outcome.updated_body {
+                            editor.set_body(new_body);
+                        }
+                        if let Some(title) = outcome.clicked_wikilink {
+                            navigate_to = Some(title);
+                        }
                     }
-                    if let Some(title) = outcome.clicked_wikilink {
-                        navigate_to = Some(title);
-                    }
-                }
-            });
+                    EditorMode::Edgeless => {}
+                });
+            }
         });
 
         if let Some(slug) = scroll_to_slug {
@@ -1052,6 +1207,548 @@ impl LontarApp {
         }
     }
 
+    /// Renders an interactive 2D infinite spatial canvas surface for Whiteboard / Edgeless mode.
+    /// Returns `true` if any element or viewport modification occurred.
+    fn show_canvas_surface(
+        canvas: &mut CanvasDocument,
+        interaction: &mut InteractionState,
+        ui: &mut egui::Ui,
+        is_dark: bool,
+    ) -> bool {
+        let (response, painter) = ui.allocate_painter(
+            ui.available_size_before_wrap(),
+            egui::Sense::click_and_drag(),
+        );
+        let screen_rect = response.rect;
+        let origin = screen_rect.min;
+        let mut modified = false;
+
+        // 1. Zoom & Pan input handling
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
+        let zoom_delta = ui.input(|i| i.zoom_delta());
+        let ctrl_pressed = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
+
+        if (zoom_delta - 1.0).abs() > 1e-4 {
+            if let Some(hover_pos) = response.hover_pos() {
+                canvas.viewport.zoom_at(zoom_delta, hover_pos, origin);
+                modified = true;
+            }
+        } else if ctrl_pressed && scroll_delta.y != 0.0 {
+            let zoom_factor = if scroll_delta.y > 0.0 { 1.1 } else { 0.9 };
+            if let Some(hover_pos) = response.hover_pos() {
+                canvas.viewport.zoom_at(zoom_factor, hover_pos, origin);
+                modified = true;
+            }
+        } else if scroll_delta != egui::Vec2::ZERO {
+            canvas
+                .viewport
+                .add_pan_vec(scroll_delta / canvas.viewport.zoom);
+            modified = true;
+        }
+
+        // 2. Draw Infinite Dot Grid
+        canvas.viewport.draw_grid(&painter, screen_rect, is_dark);
+
+        // 3. Pointer drag & click events for tools
+        if response.drag_started() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let world_pos = canvas.viewport.screen_to_world(pos, origin);
+                interaction.is_dragging = true;
+                interaction.drag_start_world = Some([world_pos.x, world_pos.y]);
+                interaction.drag_current_world = Some([world_pos.x, world_pos.y]);
+
+                if interaction.active_tool == CanvasTool::Pen {
+                    interaction.current_freehand_points = vec![[world_pos.x, world_pos.y]];
+                }
+            }
+        } else if response.dragged() {
+            let drag_delta = response.drag_delta();
+            if let Some(pos) = response.interact_pointer_pos() {
+                let world_pos = canvas.viewport.screen_to_world(pos, origin);
+                interaction.drag_current_world = Some([world_pos.x, world_pos.y]);
+
+                match interaction.active_tool {
+                    CanvasTool::Pan => {
+                        canvas
+                            .viewport
+                            .add_pan_vec(drag_delta / canvas.viewport.zoom);
+                        modified = true;
+                    }
+                    CanvasTool::Pen => {
+                        interaction
+                            .current_freehand_points
+                            .push([world_pos.x, world_pos.y]);
+                    }
+                    CanvasTool::Select => {
+                        if let Some(start) = interaction.drag_start_world {
+                            let start_world = egui::Pos2::new(start[0], start[1]);
+                            let zoom = canvas.viewport.zoom;
+                            if let Some(elem) = canvas.element_at(start_world) {
+                                let elem_id = elem.id();
+                                if let Some(target) = canvas.get_element_mut(elem_id) {
+                                    target.translate(drag_delta / zoom);
+                                    modified = true;
+                                }
+                            } else {
+                                canvas.viewport.add_pan_vec(drag_delta / zoom);
+                                modified = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        } else if response.drag_stopped() {
+            if let (Some(start), Some(curr)) =
+                (interaction.drag_start_world, interaction.drag_current_world)
+            {
+                let min_x = start[0].min(curr[0]);
+                let min_y = start[1].min(curr[1]);
+                let max_x = start[0].max(curr[0]);
+                let max_y = start[1].max(curr[1]);
+                let w = (max_x - min_x).max(80.0);
+                let h = (max_y - min_y).max(50.0);
+
+                match interaction.active_tool {
+                    CanvasTool::StickyNote => {
+                        canvas.add_element(CanvasElement::StickyNote {
+                            id: CanvasElementId::new(),
+                            pos: [start[0], start[1]],
+                            size: [w.max(180.0), h.max(120.0)],
+                            text: "Catatan Baru".to_string(),
+                            color: interaction.primary_color,
+                        });
+                        interaction.active_tool = CanvasTool::Select;
+                        modified = true;
+                    }
+                    CanvasTool::Shape(kind) => {
+                        canvas.add_element(CanvasElement::Shape {
+                            id: CanvasElementId::new(),
+                            kind,
+                            rect: [min_x, min_y, min_x + w.max(140.0), min_y + h.max(80.0)],
+                            stroke_color: interaction.primary_color,
+                            stroke_width: interaction.stroke_width,
+                            fill_color: None,
+                            text: String::new(),
+                        });
+                        interaction.active_tool = CanvasTool::Select;
+                        modified = true;
+                    }
+                    CanvasTool::Connector => {
+                        canvas.add_element(CanvasElement::Connector {
+                            id: CanvasElementId::new(),
+                            from_elem: None,
+                            to_elem: None,
+                            from_pos: start,
+                            to_pos: curr,
+                            routing: crate::canvas::ConnectorRouting::Straight,
+                            stroke_color: interaction.primary_color,
+                            stroke_width: interaction.stroke_width,
+                            label: String::new(),
+                            arrow_end: true,
+                        });
+                        interaction.active_tool = CanvasTool::Select;
+                        modified = true;
+                    }
+                    CanvasTool::Pen => {
+                        if interaction.current_freehand_points.len() >= 2 {
+                            canvas.add_element(CanvasElement::FreehandStroke {
+                                id: CanvasElementId::new(),
+                                points: std::mem::take(&mut interaction.current_freehand_points),
+                                color: interaction.primary_color,
+                                width: interaction.stroke_width,
+                            });
+                            modified = true;
+                        }
+                    }
+                    CanvasTool::Eraser => {
+                        let click_pos = egui::Pos2::new(start[0], start[1]);
+                        if let Some(elem) = canvas.element_at(click_pos) {
+                            let id = elem.id();
+                            canvas.remove_element(id);
+                            modified = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            interaction.is_dragging = false;
+            interaction.drag_start_world = None;
+            interaction.drag_current_world = None;
+        }
+
+        // 4. Draw all canvas elements
+        let hovered_id = response.hover_pos().and_then(|p| {
+            let wp = canvas.viewport.screen_to_world(p, origin);
+            canvas.element_at(wp).map(|e| e.id())
+        });
+
+        for elem in &canvas.elements {
+            let is_sel = hovered_id == Some(elem.id());
+            canvas::draw_element(&painter, &canvas.viewport, origin, elem, is_sel, is_dark);
+        }
+
+        // Draw live pen stroke in progress
+        if interaction.active_tool == CanvasTool::Pen
+            && interaction.current_freehand_points.len() >= 2
+        {
+            let screen_pts: Vec<egui::Pos2> = interaction
+                .current_freehand_points
+                .iter()
+                .map(|p| {
+                    canvas
+                        .viewport
+                        .world_to_screen(egui::Pos2::new(p[0], p[1]), origin)
+                })
+                .collect();
+            let stroke_c = egui::Color32::from_rgb(
+                (interaction.primary_color[0] * 255.0) as u8,
+                (interaction.primary_color[1] * 255.0) as u8,
+                (interaction.primary_color[2] * 255.0) as u8,
+            );
+            for w in screen_pts.windows(2) {
+                painter.line_segment(
+                    [w[0], w[1]],
+                    (interaction.stroke_width * canvas.viewport.zoom, stroke_c),
+                );
+            }
+        }
+
+        // 5. Double click to edit sticky note / shape text
+        if response.double_clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let world_pos = canvas.viewport.screen_to_world(pos, origin);
+                if let Some(elem) = canvas.element_at(world_pos) {
+                    interaction.editing_text_elem = Some(elem.id());
+                }
+            }
+        }
+
+        // Inline text editor overlay
+        if let Some(editing_id) = interaction.editing_text_elem {
+            let elem_info = canvas.get_element(editing_id).map(|e| {
+                let b_rect = e.bounding_rect();
+                let text = match e {
+                    CanvasElement::StickyNote { text, .. } => text.clone(),
+                    CanvasElement::Shape { text, .. } => text.clone(),
+                    CanvasElement::Connector { label, .. } => label.clone(),
+                    _ => String::new(),
+                };
+                (b_rect, text)
+            });
+
+            if let Some((b_rect, mut text_buf)) = elem_info {
+                let s_rect = canvas.viewport.world_rect_to_screen(b_rect, origin);
+                let mut close_edit = false;
+                let mut changed = false;
+
+                egui::Area::new(egui::Id::new("canvas_inline_text_edit_area"))
+                    .fixed_pos(s_rect.min)
+                    .order(egui::Order::Foreground)
+                    .show(ui.ctx(), |ui| {
+                        ui.set_max_width(s_rect.width().max(180.0));
+                        let frame = egui::Frame {
+                            inner_margin: egui::Margin::same(8),
+                            outer_margin: egui::Margin::ZERO,
+                            corner_radius: egui::CornerRadius::same(theme::ROUNDING_SM),
+                            fill: if is_dark {
+                                theme::BG_CARD_DARK
+                            } else {
+                                egui::Color32::WHITE
+                            },
+                            stroke: egui::Stroke::new(1.5, theme::ACCENT_BLUE),
+                            shadow: egui::Shadow::NONE,
+                        };
+                        frame.show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("✏ Edit Teks")
+                                        .size(11.0)
+                                        .color(theme::ACCENT_BLUE),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("Selesai ✓").clicked() {
+                                            close_edit = true;
+                                        }
+                                    },
+                                );
+                            });
+                            let edit = egui::TextEdit::multiline(&mut text_buf)
+                                .desired_width(s_rect.width().max(160.0))
+                                .desired_rows(3);
+                            let resp = ui.add(edit);
+                            if resp.changed() {
+                                changed = true;
+                                modified = true;
+                            }
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                close_edit = true;
+                            }
+                        });
+                    });
+
+                if changed {
+                    if let Some(elem) = canvas.get_element_mut(editing_id) {
+                        match elem {
+                            CanvasElement::StickyNote { text, .. } => *text = text_buf,
+                            CanvasElement::Shape { text, .. } => *text = text_buf,
+                            CanvasElement::Connector { label, .. } => *label = text_buf,
+                            _ => {}
+                        }
+                    }
+                }
+
+                if close_edit {
+                    interaction.editing_text_elem = None;
+                }
+            } else {
+                interaction.editing_text_elem = None;
+            }
+        }
+
+        let screen_rect_ctx = ui.ctx().viewport_rect();
+
+        // 6. Floating Left Tool Dock (Whiteboard Tools)
+        let toolbar_pos = egui::pos2(14.0, (screen_rect_ctx.center().y - 140.0).max(60.0));
+        egui::Area::new(egui::Id::new("mnemonic_canvas_left_toolbar_area"))
+            .fixed_pos(toolbar_pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                if let Some(event) = ui::LeftToolbar::show_canvas(
+                    ui,
+                    interaction.active_tool,
+                    false,
+                    false,
+                ) {
+                    match event {
+                        ui::LeftToolbarEvent::SelectCanvasTool(tool) => {
+                            interaction.active_tool = tool;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+
+        // 7. Floating Zoom HUD pill (Kanan Bawah)
+        let zoom_hud_pos = egui::pos2(
+            (screen_rect_ctx.max.x - 125.0).max(10.0),
+            (screen_rect_ctx.max.y - 48.0).max(10.0),
+        );
+        egui::Area::new(egui::Id::new("mnemonic_canvas_zoom_hud_area"))
+            .fixed_pos(zoom_hud_pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                if let Some(event) = ui::CanvasHud::show_zoom_hud(ui, canvas.viewport.zoom) {
+                    match event {
+                        ui::CanvasHudEvent::ZoomIn => {
+                            canvas.viewport.zoom = (canvas.viewport.zoom * 1.15).min(5.0);
+                            modified = true;
+                        }
+                        ui::CanvasHudEvent::ZoomOut => {
+                            canvas.viewport.zoom = (canvas.viewport.zoom / 1.15).max(0.2);
+                            modified = true;
+                        }
+                        ui::CanvasHudEvent::ResetZoom => {
+                            canvas.viewport.zoom = 1.0;
+                            modified = true;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+
+        // 8. Floating Style HUD pill (Tengah Bawah)
+        let style_hud_pos = egui::pos2(
+            (screen_rect_ctx.center().x - 145.0).max(10.0),
+            (screen_rect_ctx.max.y - 48.0).max(10.0),
+        );
+        egui::Area::new(egui::Id::new("mnemonic_canvas_style_hud_area"))
+            .fixed_pos(style_hud_pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                if let Some(event) = ui::CanvasHud::show_style_hud(
+                    ui,
+                    interaction.primary_color,
+                    interaction.stroke_width,
+                ) {
+                    match event {
+                        ui::CanvasHudEvent::SetStrokeColor(col) => {
+                            interaction.primary_color = col;
+                        }
+                        ui::CanvasHudEvent::SetStrokeWidth(w) => {
+                            interaction.stroke_width = w;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+
+        modified
+    }
+
+    /// Renders the standalone Whiteboard Canvas workspace (§AFFiNE Edgeless Workspace).
+    fn show_standalone_canvas(&mut self, ui: &mut egui::Ui) {
+        if self.standalone_canvas.is_none() {
+            let mut canvas = CanvasDocument::new("Whiteboard");
+            canvas.add_element(CanvasElement::StickyNote {
+                id: CanvasElementId::new(),
+                pos: [100.0, 100.0],
+                size: [240.0, 130.0],
+                text: "🎨 Selamat datang di Whiteboard Canvas!\n\nGunakan Tool Dock di sebelah kiri dan bawah untuk membuat Sticky Notes, Shapes, Connectors, atau Coretan Pena.".to_string(),
+                color: crate::canvas::tools::PALETTE_STICKY_YELLOW,
+            });
+            self.standalone_canvas = Some(canvas);
+        }
+
+        let is_dark = ui.visuals().dark_mode;
+        if let Some(canvas) = self.standalone_canvas.as_mut() {
+            Self::show_canvas_surface(canvas, &mut self.standalone_canvas_interaction, ui, is_dark);
+        }
+    }
+
+    /// Renders the AFFiNE-style Omnibox Command Palette (`Cmd+K` / `Ctrl+K`).
+    fn show_command_palette_modal(&mut self, ctx: &egui::Context) {
+        if !self.command_palette.is_open() {
+            return;
+        }
+
+        let mut commands = Vec::new();
+        if self.vault.is_some() {
+            commands.push(ui::PaletteCommand {
+                id: "new_note",
+                category: "Catatan",
+                icon: egui_icons::icons::ICON_NOTE_ADD.codepoint,
+                label: "Catatan Baru",
+                hint: "⌘N",
+            });
+            commands.push(ui::PaletteCommand {
+                id: "new_canvas",
+                category: "Kanvas",
+                icon: egui_icons::icons::ICON_DRAW.codepoint,
+                label: "Whiteboard Kanvas Baru",
+                hint: "",
+            });
+            commands.push(ui::PaletteCommand {
+                id: "nav_notes",
+                category: "Navigasi",
+                icon: egui_icons::icons::ICON_DESCRIPTION.codepoint,
+                label: "Buka Grid Catatan",
+                hint: "",
+            });
+            commands.push(ui::PaletteCommand {
+                id: "nav_canvas",
+                category: "Navigasi",
+                icon: egui_icons::icons::ICON_DRAW.codepoint,
+                label: "Buka Whiteboard Kanvas",
+                hint: "",
+            });
+            commands.push(ui::PaletteCommand {
+                id: "nav_search",
+                category: "Navigasi",
+                icon: egui_icons::icons::ICON_SEARCH.codepoint,
+                label: "Pencarian Semantik RAG",
+                hint: "",
+            });
+            commands.push(ui::PaletteCommand {
+                id: "nav_chat",
+                category: "Navigasi",
+                icon: egui_icons::icons::ICON_AUTO_AWESOME.codepoint,
+                label: "Tanya Asisten AI (Qwen)",
+                hint: "",
+            });
+            commands.push(ui::PaletteCommand {
+                id: "import_pdf",
+                category: "PDF",
+                icon: egui_icons::icons::ICON_UPLOAD.codepoint,
+                label: "Impor Dokumen PDF",
+                hint: "",
+            });
+            commands.push(ui::PaletteCommand {
+                id: "manage_tags",
+                category: "Label",
+                icon: egui_icons::icons::ICON_PALETTE.codepoint,
+                label: "Kelola Label & Tag",
+                hint: "",
+            });
+        }
+        commands.push(ui::PaletteCommand {
+            id: "switch_vault",
+            category: "Vault",
+            icon: egui_icons::icons::ICON_FOLDER_OPEN.codepoint,
+            label: "Pilih / Buka Folder Vault...",
+            hint: "",
+        });
+        commands.push(ui::PaletteCommand {
+            id: "toggle_theme",
+            category: "Tampilan",
+            icon: egui_icons::icons::ICON_DARK_MODE.codepoint,
+            label: "Ganti Tema (Gelap / Terang)",
+            hint: "",
+        });
+
+        if let Some(cmd_id) = self.command_palette.show(ctx, &commands) {
+            match cmd_id {
+                "new_note" => {
+                    if let Some(vault) = self.vault.as_mut() {
+                        if let Ok(note) = Note::create(&vault.root, "Catatan Baru", "") {
+                            self.rescan_and_reindex();
+                            self.open_note(note);
+                        }
+                    }
+                }
+                "new_canvas" => {
+                    if let Some(vault) = self.vault.as_mut() {
+                        if let Ok(note) = Note::create_canvas(&vault.root, "Kanvas Baru") {
+                            self.rescan_and_reindex();
+                            self.open_note(note);
+                        }
+                    }
+                }
+                "nav_notes" => {
+                    self.view = View::Notes;
+                    self.doc_filter = DocFilter::All;
+                    self.editor = None;
+                    self.pdf_viewer = None;
+                }
+                "nav_canvas" => {
+                    self.view = View::Notes;
+                    self.doc_filter = DocFilter::WhiteboardsOnly;
+                    self.editor = None;
+                    self.pdf_viewer = None;
+                }
+                "nav_search" => {
+                    self.view = View::Search;
+                    self.editor = None;
+                    self.pdf_viewer = None;
+                }
+                "nav_chat" => {
+                    self.view = View::Chat;
+                    self.editor = None;
+                    self.pdf_viewer = None;
+                }
+                "import_pdf" => {
+                    if let Some(file) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() {
+                        self.import_pdf(file);
+                    }
+                }
+                "manage_tags" => self.show_label_manager = true,
+                "switch_vault" => {
+                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                        match Vault::open(folder) {
+                            Ok(v) => self.activate_vault(v),
+                            Err(e) => self.report_error("error-context-open-vault", e),
+                        }
+                    }
+                }
+                "toggle_theme" => self.theme_mode = self.theme_mode.toggled(),
+                _ => {}
+            }
+        }
+    }
+
     /// Applies one grid action against the vault/disk, then re-syncs the
     /// in-memory index. Called once per accumulated `GridAction` after
     /// `show_grid`'s `egui` closures have all returned.
@@ -1066,16 +1763,23 @@ impl LontarApp {
                     self.open_note(note);
                 }
             }
-            GridAction::TogglePin(id) => self.mutate_note(id, |n| n.frontmatter.pinned = !n.frontmatter.pinned),
-            GridAction::SetColor(id, color) => self.mutate_note(id, |n| n.frontmatter.color = color),
+            GridAction::TogglePin(id) => {
+                self.mutate_note(id, |n| n.frontmatter.pinned = !n.frontmatter.pinned)
+            }
+            GridAction::SetColor(id, color) => {
+                self.mutate_note(id, |n| n.frontmatter.color = color)
+            }
             GridAction::ToggleArchived(id) => {
                 self.mutate_note(id, |n| n.frontmatter.archived = !n.frontmatter.archived)
             }
             GridAction::Trash(id) => self.move_note(id, |n, root| n.move_to_trash(root)),
             GridAction::Restore(id) => self.move_note(id, |n, root| n.restore_from_trash(root)),
             GridAction::DeletePermanently(id) => {
-                let Some(vault) = self.vault.as_ref() else { return };
-                let Some(note) = vault.notes.iter().find(|n| n.frontmatter.id == id).cloned() else {
+                let Some(vault) = self.vault.as_ref() else {
+                    return;
+                };
+                let Some(note) = vault.notes.iter().find(|n| n.frontmatter.id == id).cloned()
+                else {
                     return;
                 };
                 if let Err(e) = note.delete_permanently() {
@@ -1101,7 +1805,9 @@ impl LontarApp {
                 }
             }
             GridAction::RenameTag(old, new) => {
-                let Some(vault) = self.vault.as_mut() else { return };
+                let Some(vault) = self.vault.as_mut() else {
+                    return;
+                };
                 // Collected rather than reported inline: `vault` (borrowed
                 // from `self.vault`) stays alive for the whole loop, and
                 // `report_error` needs `&mut self` as a whole — so the
@@ -1121,7 +1827,9 @@ impl LontarApp {
                 self.rescan_and_reindex();
             }
             GridAction::DeleteTag(tag) => {
-                let Some(vault) = self.vault.as_mut() else { return };
+                let Some(vault) = self.vault.as_mut() else {
+                    return;
+                };
                 let mut save_error = None; // see RenameTag's comment above
                 for i in tags::remove_tag(&mut vault.notes, &tag) {
                     if let Err(e) = vault.notes[i].save() {
@@ -1141,7 +1849,9 @@ impl LontarApp {
     /// re-syncs the index. Used for the simple single-field toggles (pin,
     /// color, archive).
     fn mutate_note(&mut self, id: Uuid, f: impl FnOnce(&mut Note)) {
-        let Some(vault) = self.vault.as_ref() else { return };
+        let Some(vault) = self.vault.as_ref() else {
+            return;
+        };
         let Some(mut note) = vault.notes.iter().find(|n| n.frontmatter.id == id).cloned() else {
             return;
         };
@@ -1156,8 +1866,14 @@ impl LontarApp {
 
     /// Loads the note `id` and applies a move operation (trash/restore)
     /// that needs the vault root, then re-syncs the index.
-    fn move_note(&mut self, id: Uuid, f: impl FnOnce(Note, &std::path::Path) -> anyhow::Result<Note>) {
-        let Some(vault) = self.vault.as_ref() else { return };
+    fn move_note(
+        &mut self,
+        id: Uuid,
+        f: impl FnOnce(Note, &std::path::Path) -> anyhow::Result<Note>,
+    ) {
+        let Some(vault) = self.vault.as_ref() else {
+            return;
+        };
         let Some(note) = vault.notes.iter().find(|n| n.frontmatter.id == id).cloned() else {
             return;
         };
@@ -1187,10 +1903,6 @@ impl LontarApp {
         let t_confirm_title = self.t("confirm-delete-title");
         let t_confirm_body = self.t("confirm-delete-body");
         let t_confirm_yes = self.t("confirm-yes");
-        let t_confirm_cancel = self.t("confirm-cancel");
-        let t_tag_manager_title = self.t("tag-manager-title");
-        let t_tag_rename = self.t("tag-rename");
-        let t_tag_delete = self.t("tag-delete");
         let card = CardStrings {
             pin: self.t("notes-pin"),
             unpin: self.t("notes-unpin"),
@@ -1201,7 +1913,11 @@ impl LontarApp {
             delete_permanent: self.t("card-delete-permanent"),
         };
 
-        let notes: Vec<Note> = self.vault.as_ref().map(|v| v.notes.clone()).unwrap_or_default();
+        let notes: Vec<Note> = self
+            .vault
+            .as_ref()
+            .map(|v| v.notes.clone())
+            .unwrap_or_default();
         let all_tags = tags::all_tags(&notes);
         let pdf_docs = self.pdf_documents.clone();
         let doc_filter = self.doc_filter.clone();
@@ -1214,6 +1930,9 @@ impl LontarApp {
         let mut confirm_delete = self.confirm_delete;
         let mut actions: Vec<GridAction> = Vec::new();
         let mut open_pdf: Option<std::path::PathBuf> = None;
+
+        // Spacing so content starts below floating top bar
+        ui.add_space(theme::TOPBAR_HEIGHT + 14.0);
 
         // ── Floating sort / selection toolbar ──────────────────────────────
         egui::Frame::NONE
@@ -1238,7 +1957,11 @@ impl LontarApp {
                             .size(12.5),
                         )
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut sort_mode, SortMode::Modified, &t_sort_modified);
+                            ui.selectable_value(
+                                &mut sort_mode,
+                                SortMode::Modified,
+                                &t_sort_modified,
+                            );
                             ui.selectable_value(&mut sort_mode, SortMode::Created, &t_sort_created);
                             ui.selectable_value(&mut sort_mode, SortMode::Title, &t_sort_title);
                             ui.selectable_value(&mut sort_mode, SortMode::Color, &t_sort_color);
@@ -1247,7 +1970,11 @@ impl LontarApp {
                     ui.add_space(8.0);
 
                     // Multi-select toggle
-                    let sel_label = if selection_mode { &t_selection_off } else { &t_selection_on };
+                    let sel_label = if selection_mode {
+                        &t_selection_off
+                    } else {
+                        &t_selection_on
+                    };
                     let sel_btn = egui::Button::new(
                         egui::RichText::new(sel_label)
                             .color(theme::GLASS_TEXT_SECONDARY)
@@ -1270,7 +1997,8 @@ impl LontarApp {
                         )
                         .fill(egui::Color32::TRANSPARENT);
                         if ui.add(archive_btn).clicked() {
-                            actions.push(GridAction::BatchArchive(selected.iter().copied().collect()));
+                            actions
+                                .push(GridAction::BatchArchive(selected.iter().copied().collect()));
                             selected.clear();
                         }
                         let trash_btn = egui::Button::new(
@@ -1280,7 +2008,8 @@ impl LontarApp {
                         )
                         .fill(egui::Color32::TRANSPARENT);
                         if ui.add(trash_btn).clicked() {
-                            actions.push(GridAction::BatchTrash(selected.iter().copied().collect()));
+                            actions
+                                .push(GridAction::BatchTrash(selected.iter().copied().collect()));
                             selected.clear();
                         }
                     }
@@ -1292,7 +2021,7 @@ impl LontarApp {
         // ── Compute which notes/PDFs to show ───────────────────────────────
         // Apply grid_filter (legacy) mapped from doc_filter for backward compat.
         let grid_filter_mapped = match &doc_filter {
-            DocFilter::All | DocFilter::NotesOnly => GridFilter::All,
+            DocFilter::All | DocFilter::NotesOnly | DocFilter::WhiteboardsOnly => GridFilter::All,
             DocFilter::PdfsOnly => GridFilter::All, // PDFs handled separately below
             DocFilter::Archived => GridFilter::Archived,
             DocFilter::Trashed => GridFilter::Trashed,
@@ -1327,9 +2056,11 @@ impl LontarApp {
             Vec::new()
         };
 
-        // Hide notes when PdfsOnly filter is active
+        // Hide notes when PdfsOnly filter is active; or filter to canvas notes if WhiteboardsOnly
         let visible_notes: Vec<&Note> = if matches!(&doc_filter, DocFilter::PdfsOnly) {
             Vec::new()
+        } else if matches!(&doc_filter, DocFilter::WhiteboardsOnly) {
+            visible.into_iter().filter(|n| n.is_canvas()).collect()
         } else {
             visible
         };
@@ -1434,78 +2165,49 @@ impl LontarApp {
 
         // ── Dialogs ────────────────────────────────────────────────────────
         if let Some(id) = confirm_delete {
-            egui::Window::new(&t_confirm_title)
-                .collapsible(false)
-                .resizable(false)
-                .frame(theme::glass_card_frame())
-                .show(ui.ctx(), |ui| {
-                    ui.label(
-                        egui::RichText::new(&t_confirm_body).color(theme::GLASS_TEXT_SECONDARY),
-                    );
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        let yes_btn = egui::Button::new(
-                            egui::RichText::new(&t_confirm_yes).color(egui::Color32::WHITE),
-                        )
-                        .fill(theme::GLASS_ERROR)
-                        .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
-                        if ui.add(yes_btn).clicked() {
-                            actions.push(GridAction::DeletePermanently(id));
-                            confirm_delete = None;
-                        }
-                        let cancel_btn = egui::Button::new(
-                            egui::RichText::new(&t_confirm_cancel)
-                                .color(theme::GLASS_TEXT_SECONDARY),
-                        )
-                        .fill(egui::Color32::TRANSPARENT);
-                        if ui.add(cancel_btn).clicked() {
-                            confirm_delete = None;
-                        }
-                    });
-                });
+            if let Some(confirmed) = ui::ConfirmModal::show(
+                ui.ctx(),
+                &t_confirm_title,
+                &t_confirm_body,
+                &t_confirm_yes,
+                true,
+            ) {
+                if confirmed {
+                    actions.push(GridAction::DeletePermanently(id));
+                }
+                confirm_delete = None;
+            }
         }
 
         if show_label_manager {
-            egui::Window::new(&t_tag_manager_title)
-                .collapsible(false)
-                .frame(theme::glass_card_frame())
-                .show(ui.ctx(), |ui| {
-                    for (tag, count) in &all_tags {
-                        ui.horizontal(|ui| {
-                            match &mut tag_rename {
-                                Some((target, draft)) if target == tag => {
-                                    ui.text_edit_singleline(draft);
-                                    if ui.button(&t_tag_rename).clicked() {
-                                        actions.push(GridAction::RenameTag(
-                                            target.clone(),
-                                            draft.clone(),
-                                        ));
-                                        tag_rename = None;
-                                    }
-                                    if ui.button(&t_confirm_cancel).clicked() {
-                                        tag_rename = None;
-                                    }
-                                }
-                                _ => {
-                                    ui.colored_label(
-                                        theme::tag_color(tag),
-                                        format!("#{tag} ({count})"),
-                                    );
-                                    if ui.button(&t_tag_rename).clicked() {
-                                        tag_rename = Some((tag.clone(), tag.clone()));
-                                    }
-                                    if ui.button(&t_tag_delete).clicked() {
-                                        actions.push(GridAction::DeleteTag(tag.clone()));
-                                    }
-                                }
-                            }
-                        });
+            let mut rename_draft = tag_rename
+                .as_ref()
+                .map(|(_, d)| d.clone())
+                .unwrap_or_default();
+            let mut target_tag = tag_rename.as_ref().map(|(t, _)| t.clone());
+            if let Some(evt) = ui::LabelManagerModal::show(
+                ui.ctx(),
+                &all_tags,
+                &mut rename_draft,
+                &mut target_tag,
+            ) {
+                match evt {
+                    ui::LabelManagerEvent::Rename { old_tag, new_tag } => {
+                        actions.push(GridAction::RenameTag(old_tag, new_tag));
+                        tag_rename = None;
                     }
-                    ui.separator();
-                    if ui.button(&t_confirm_cancel).clicked() {
+                    ui::LabelManagerEvent::Delete(tag) => {
+                        actions.push(GridAction::DeleteTag(tag));
+                        tag_rename = None;
+                    }
+                    ui::LabelManagerEvent::Close => {
                         show_label_manager = false;
+                        tag_rename = None;
                     }
-                });
+                }
+            } else if let Some(target) = target_tag {
+                tag_rename = Some((target, rename_draft));
+            }
         }
 
         // ── Write back ─────────────────────────────────────────────────────
@@ -1542,13 +2244,15 @@ impl LontarApp {
         let mut open_pdf_hit: Option<(PathBuf, usize)> = None;
 
         egui::CentralPanel::default().show(ui, |ui| {
+            ui.add_space(theme::TOPBAR_HEIGHT + 14.0);
             ui.horizontal(|ui| {
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut self.search_query)
                         .hint_text(t_placeholder.as_str())
                         .desired_width(320.0),
                 );
-                let enter_pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let enter_pressed =
+                    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if ui.button(&t_button).clicked() || enter_pressed {
                     self.run_search();
                 }
@@ -1578,7 +2282,10 @@ impl LontarApp {
                                 if ui.link(egui::RichText::new(title).strong()).clicked() {
                                     match hit.chunk.page_num {
                                         Some(page) => {
-                                            open_pdf_hit = Some((hit.chunk.file_path.clone(), page.saturating_sub(1)))
+                                            open_pdf_hit = Some((
+                                                hit.chunk.file_path.clone(),
+                                                page.saturating_sub(1),
+                                            ))
                                         }
                                         None => open_note = Some(hit.chunk.doc_id),
                                     }
@@ -1634,7 +2341,9 @@ impl LontarApp {
                     let enter_pressed =
                         response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     let can_send = !busy && !self.chat_input.trim().is_empty();
-                    let clicked = ui.add_enabled(can_send, egui::Button::new(&t_send)).clicked();
+                    let clicked = ui
+                        .add_enabled(can_send, egui::Button::new(&t_send))
+                        .clicked();
                     if can_send && (clicked || enter_pressed) {
                         self.send_chat_message();
                     }
@@ -1642,6 +2351,7 @@ impl LontarApp {
             });
 
             egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.add_space(theme::TOPBAR_HEIGHT + 14.0);
                 if messages.is_empty() {
                     ui.label(&t_empty);
                 }
@@ -1662,7 +2372,10 @@ impl LontarApp {
                                 for citation in &msg.citations {
                                     // Clickable — §3.4 point 4's "jump straight to the source",
                                     // finally reachable now that Fase 8 has a PDF viewer to jump to.
-                                    if ui.link(egui::RichText::new(&citation.label).small()).clicked() {
+                                    if ui
+                                        .link(egui::RichText::new(&citation.label).small())
+                                        .clicked()
+                                    {
                                         clicked_citation = Some(citation.clone());
                                     }
                                 }
@@ -1680,10 +2393,12 @@ impl LontarApp {
             match citation.page_index {
                 Some(page_index) => self.open_pdf_at_page(citation.file_path, page_index),
                 None => {
-                    let found = self
-                        .vault
-                        .as_ref()
-                        .and_then(|v| v.notes.iter().find(|n| n.path == citation.file_path).cloned());
+                    let found = self.vault.as_ref().and_then(|v| {
+                        v.notes
+                            .iter()
+                            .find(|n| n.path == citation.file_path)
+                            .cloned()
+                    });
                     if let Some(note) = found {
                         self.open_note(note);
                     }
@@ -1708,7 +2423,9 @@ impl LontarApp {
 
         egui::CentralPanel::default().show(ui, |ui| {
             if ui.button(&t_import).clicked()
-                && let Some(file) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file()
+                && let Some(file) = rfd::FileDialog::new()
+                    .add_filter("PDF", &["pdf"])
+                    .pick_file()
             {
                 actions.push(PdfLibraryAction::Import(file));
             }
@@ -1769,11 +2486,20 @@ impl LontarApp {
                     // recomputing on every zoom change too is harmless —
                     // this still only reopens the doc when `key` changes,
                     // not every frame.
-                    viewer.page_size_points = renderer.page_size_points(&viewer.path, viewer.page_index).ok();
+                    viewer.page_size_points = renderer
+                        .page_size_points(&viewer.path, viewer.page_index)
+                        .ok();
                     match renderer.render_page(&viewer.path, viewer.page_index, viewer.zoom_width) {
                         Ok(page) => {
-                            let image = egui::ColorImage::from_rgba_unmultiplied([page.width, page.height], &page.rgba);
-                            viewer.texture = Some(ui.ctx().load_texture("pdf-page", image, egui::TextureOptions::LINEAR));
+                            let image = egui::ColorImage::from_rgba_unmultiplied(
+                                [page.width, page.height],
+                                &page.rgba,
+                            );
+                            viewer.texture = Some(ui.ctx().load_texture(
+                                "pdf-page",
+                                image,
+                                egui::TextureOptions::LINEAR,
+                            ));
                             viewer.render_error = None;
                         }
                         Err(e) => {
@@ -1794,7 +2520,10 @@ impl LontarApp {
         let t_back = self.t("pdf-back");
         let t_page_of = self.locales.t(
             "pdf-page-of",
-            &[("current", &(viewer.page_index + 1).to_string()), ("total", &viewer.page_count.to_string())],
+            &[
+                ("current", &(viewer.page_index + 1).to_string()),
+                ("total", &viewer.page_count.to_string()),
+            ],
         );
         let t_zoom = self.t("pdf-zoom");
         let t_rotate_left = self.t("pdf-rotate-left");
@@ -1862,34 +2591,71 @@ impl LontarApp {
                     back_requested = true;
                 }
                 ui.separator();
-                if ui.add_enabled(page_index > 0, egui::Button::new("⏴")).clicked() {
+                if ui
+                    .add_enabled(page_index > 0, egui::Button::new("⏴"))
+                    .clicked()
+                {
                     page_index -= 1;
                 }
                 ui.label(&t_page_of);
-                if ui.add_enabled(page_index + 1 < page_count, egui::Button::new("⏵")).clicked() {
+                if ui
+                    .add_enabled(page_index + 1 < page_count, egui::Button::new("⏵"))
+                    .clicked()
+                {
                     page_index += 1;
                 }
                 ui.separator();
                 ui.label(&t_zoom);
-                ui.add(egui::DragValue::new(&mut zoom_width).range(200..=3000).speed(10));
+                ui.add(
+                    egui::DragValue::new(&mut zoom_width)
+                        .range(200..=3000)
+                        .speed(10),
+                );
             });
         });
 
         egui::Panel::top("pdf_annotate_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.selectable_label(annotate_tool.is_none(), &t_annotate_none).clicked() {
+                if ui
+                    .selectable_label(annotate_tool.is_none(), &t_annotate_none)
+                    .clicked()
+                {
                     annotate_tool = None;
                 }
-                if ui.selectable_label(annotate_tool == Some(AnnotationKind::Highlight), &t_annotate_highlight).clicked() {
+                if ui
+                    .selectable_label(
+                        annotate_tool == Some(AnnotationKind::Highlight),
+                        &t_annotate_highlight,
+                    )
+                    .clicked()
+                {
                     annotate_tool = Some(AnnotationKind::Highlight);
                 }
-                if ui.selectable_label(annotate_tool == Some(AnnotationKind::Underline), &t_annotate_underline).clicked() {
+                if ui
+                    .selectable_label(
+                        annotate_tool == Some(AnnotationKind::Underline),
+                        &t_annotate_underline,
+                    )
+                    .clicked()
+                {
                     annotate_tool = Some(AnnotationKind::Underline);
                 }
-                if ui.selectable_label(annotate_tool == Some(AnnotationKind::StickyNote), &t_annotate_sticky).clicked() {
+                if ui
+                    .selectable_label(
+                        annotate_tool == Some(AnnotationKind::StickyNote),
+                        &t_annotate_sticky,
+                    )
+                    .clicked()
+                {
                     annotate_tool = Some(AnnotationKind::StickyNote);
                 }
-                if ui.selectable_label(annotate_tool == Some(AnnotationKind::TextInjection), &t_annotate_text).clicked() {
+                if ui
+                    .selectable_label(
+                        annotate_tool == Some(AnnotationKind::TextInjection),
+                        &t_annotate_text,
+                    )
+                    .clicked()
+                {
                     annotate_tool = Some(AnnotationKind::TextInjection);
                 }
                 ui.separator();
@@ -1934,7 +2700,11 @@ impl LontarApp {
                 ui.label(&t_split_to);
                 ui.add(egui::DragValue::new(&mut split_to).range(1..=page_count as u32));
                 if ui.button(&t_split_go).clicked() {
-                    actions.push(PdfViewerAction::Split { path: path.clone(), from: split_from, to: split_to });
+                    actions.push(PdfViewerAction::Split {
+                        path: path.clone(),
+                        from: split_from,
+                        to: split_to,
+                    });
                 }
                 ui.separator();
                 if ui.button(&t_merge).clicked() {
@@ -1955,8 +2725,13 @@ impl LontarApp {
                     // annotation); otherwise just hover, so the image
                     // doesn't eat scroll/pan interactions when the user
                     // is only reading (§Fase 9).
-                    let sense = if annotate_tool.is_some() { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
-                    let img_response = ui.add(egui::Image::new((tex.id(), tex.size_vec2())).sense(sense));
+                    let sense = if annotate_tool.is_some() {
+                        egui::Sense::click_and_drag()
+                    } else {
+                        egui::Sense::hover()
+                    };
+                    let img_response =
+                        ui.add(egui::Image::new((tex.id(), tex.size_vec2())).sense(sense));
                     let img_rect = img_response.rect;
                     let current_page = (page_index + 1) as u32;
 
@@ -1965,9 +2740,18 @@ impl LontarApp {
                         && page_h > 0.0
                     {
                         let painter = ui.painter();
-                        for annotation in staged_annotations.iter().filter(|a| a.page == current_page) {
-                            let screen_rect = annotation_screen_rect(annotation.rect, img_rect, page_w, page_h);
-                            draw_annotation_overlay(painter, screen_rect, annotation.kind, annotation.color, &annotation.contents);
+                        for annotation in
+                            staged_annotations.iter().filter(|a| a.page == current_page)
+                        {
+                            let screen_rect =
+                                annotation_screen_rect(annotation.rect, img_rect, page_w, page_h);
+                            draw_annotation_overlay(
+                                painter,
+                                screen_rect,
+                                annotation.kind,
+                                annotation.color,
+                                &annotation.contents,
+                            );
                         }
 
                         if let Some(tool) = annotate_tool {
@@ -1975,24 +2759,38 @@ impl LontarApp {
                                 drag_start = img_response.interact_pointer_pos();
                             }
                             if img_response.dragged()
-                                && let (Some(start), Some(current)) = (drag_start, img_response.interact_pointer_pos())
+                                && let (Some(start), Some(current)) =
+                                    (drag_start, img_response.interact_pointer_pos())
                             {
-                                let live_rect = egui::Rect::from_two_pos(start, current).intersect(img_rect);
+                                let live_rect =
+                                    egui::Rect::from_two_pos(start, current).intersect(img_rect);
                                 let stroke_color = egui::Color32::from_rgb(
                                     (annotate_color[0] * 255.0) as u8,
                                     (annotate_color[1] * 255.0) as u8,
                                     (annotate_color[2] * 255.0) as u8,
                                 );
-                                painter.rect_stroke(live_rect, egui::CornerRadius::ZERO, (2.0, stroke_color), egui::StrokeKind::Middle);
+                                painter.rect_stroke(
+                                    live_rect,
+                                    egui::CornerRadius::ZERO,
+                                    (2.0, stroke_color),
+                                    egui::StrokeKind::Middle,
+                                );
                             }
                             if img_response.drag_stopped()
                                 && let Some(start) = drag_start
                             {
                                 let end = img_response.interact_pointer_pos().unwrap_or(start);
-                                let mut screen_rect = egui::Rect::from_two_pos(start, end).intersect(img_rect);
-                                if screen_rect.width() < MIN_ANNOTATION_DRAG_PX && screen_rect.height() < MIN_ANNOTATION_DRAG_PX {
+                                let mut screen_rect =
+                                    egui::Rect::from_two_pos(start, end).intersect(img_rect);
+                                if screen_rect.width() < MIN_ANNOTATION_DRAG_PX
+                                    && screen_rect.height() < MIN_ANNOTATION_DRAG_PX
+                                {
                                     // Treat as a click: place a default-sized box anchored at the click point.
-                                    screen_rect = egui::Rect::from_min_size(start, default_annotation_size_px(tool)).intersect(img_rect);
+                                    screen_rect = egui::Rect::from_min_size(
+                                        start,
+                                        default_annotation_size_px(tool),
+                                    )
+                                    .intersect(img_rect);
                                 }
 
                                 if screen_rect.width() > 0.5 && screen_rect.height() > 0.5 {
@@ -2003,8 +2801,12 @@ impl LontarApp {
                                     let local_top = screen_rect.top() - img_rect.top();
                                     let local_bottom = screen_rect.bottom() - img_rect.top();
                                     // PDF y grows upward from the bottom; screen y grows downward from the top.
-                                    let pdf_rect =
-                                        (local_left * sx, page_h - local_bottom * sy, local_right * sx, page_h - local_top * sy);
+                                    let pdf_rect = (
+                                        local_left * sx,
+                                        page_h - local_bottom * sy,
+                                        local_right * sx,
+                                        page_h - local_top * sy,
+                                    );
 
                                     match tool {
                                         AnnotationKind::Highlight | AnnotationKind::Underline => {
@@ -2012,13 +2814,21 @@ impl LontarApp {
                                                 kind: tool,
                                                 page: current_page,
                                                 rect: pdf_rect,
-                                                color: (annotate_color[0], annotate_color[1], annotate_color[2]),
+                                                color: (
+                                                    annotate_color[0],
+                                                    annotate_color[1],
+                                                    annotate_color[2],
+                                                ),
                                                 contents: String::new(),
                                             });
                                         }
-                                        AnnotationKind::StickyNote | AnnotationKind::TextInjection => {
-                                            pending_annotation =
-                                                Some(PendingAnnotation { kind: tool, page: current_page, rect: pdf_rect });
+                                        AnnotationKind::StickyNote
+                                        | AnnotationKind::TextInjection => {
+                                            pending_annotation = Some(PendingAnnotation {
+                                                kind: tool,
+                                                page: current_page,
+                                                rect: pdf_rect,
+                                            });
                                             pending_annotation_text.clear();
                                         }
                                     }
@@ -2032,21 +2842,24 @@ impl LontarApp {
         });
 
         if delete_confirm {
-            egui::Window::new(&t_delete_page).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
-                ui.label(&t_delete_confirm);
-                ui.horizontal(|ui| {
-                    if ui.button(&t_confirm_yes).clicked() {
-                        actions.push(PdfViewerAction::DeleteCurrentPage {
-                            path: path.clone(),
-                            page: (page_index + 1) as u32,
-                        });
-                        delete_confirm = false;
-                    }
-                    if ui.button(&t_confirm_cancel).clicked() {
-                        delete_confirm = false;
-                    }
+            egui::Window::new(&t_delete_page)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label(&t_delete_confirm);
+                    ui.horizontal(|ui| {
+                        if ui.button(&t_confirm_yes).clicked() {
+                            actions.push(PdfViewerAction::DeleteCurrentPage {
+                                path: path.clone(),
+                                page: (page_index + 1) as u32,
+                            });
+                            delete_confirm = false;
+                        }
+                        if ui.button(&t_confirm_cancel).clicked() {
+                            delete_confirm = false;
+                        }
+                    });
                 });
-            });
         }
 
         // Text prompt for a placed-but-unconfirmed sticky note / text
@@ -2059,21 +2872,22 @@ impl LontarApp {
                 AnnotationKind::TextInjection => &t_annotate_text_prompt,
                 _ => &t_annotate_sticky_prompt,
             };
-            egui::Window::new(title.as_str()).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
-                ui.text_edit_multiline(&mut pending_annotation_text);
-                ui.horizontal(|ui| {
-                    if ui.button(&t_annotate_add).clicked() {
-                        confirm_pending = true;
-                    }
-                    if ui.button(&t_annotate_cancel).clicked() {
-                        cancel_pending = true;
-                    }
+            egui::Window::new(title.as_str())
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.text_edit_multiline(&mut pending_annotation_text);
+                    ui.horizontal(|ui| {
+                        if ui.button(&t_annotate_add).clicked() {
+                            confirm_pending = true;
+                        }
+                        if ui.button(&t_annotate_cancel).clicked() {
+                            cancel_pending = true;
+                        }
+                    });
                 });
-            });
         }
-        if confirm_pending
-            && let Some(pending) = pending_annotation.take()
-        {
+        if confirm_pending && let Some(pending) = pending_annotation.take() {
             staged_annotations.push(Annotation {
                 kind: pending.kind,
                 page: pending.page,
@@ -2089,31 +2903,37 @@ impl LontarApp {
         }
 
         if show_metadata_editor {
-            egui::Window::new(&t_metadata_window_title).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(&t_metadata_field_title);
-                    ui.text_edit_singleline(&mut metadata_title);
+            egui::Window::new(&t_metadata_window_title)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(&t_metadata_field_title);
+                        ui.text_edit_singleline(&mut metadata_title);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(&t_metadata_field_author);
+                        ui.text_edit_singleline(&mut metadata_author);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(&t_metadata_field_keywords);
+                        ui.text_edit_singleline(&mut metadata_keywords);
+                    });
+                    if ui.button(&t_metadata_close).clicked() {
+                        show_metadata_editor = false;
+                    }
                 });
-                ui.horizontal(|ui| {
-                    ui.label(&t_metadata_field_author);
-                    ui.text_edit_singleline(&mut metadata_author);
-                });
-                ui.horizontal(|ui| {
-                    ui.label(&t_metadata_field_keywords);
-                    ui.text_edit_singleline(&mut metadata_keywords);
-                });
-                if ui.button(&t_metadata_close).clicked() {
-                    show_metadata_editor = false;
-                }
-            });
         }
 
         // Carried into both Save and Export unconditionally (§Fase 9) —
         // rewriting the same values back when nothing was edited is a
         // harmless no-op, and this way the metadata editor never needs
         // its own separate "apply" plumbing.
-        let current_metadata =
-            DocumentMetadata { title: metadata_title.clone(), author: metadata_author.clone(), keywords: metadata_keywords.clone() };
+        let current_metadata = DocumentMetadata {
+            title: metadata_title.clone(),
+            author: metadata_author.clone(),
+            keywords: metadata_keywords.clone(),
+        };
 
         if export_requested {
             actions.push(PdfViewerAction::ExportAs {
@@ -2124,22 +2944,25 @@ impl LontarApp {
         }
 
         if show_save_confirm {
-            egui::Window::new(&t_save).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
-                ui.label(&t_save_confirm);
-                ui.horizontal(|ui| {
-                    if ui.button(&t_confirm_yes).clicked() {
-                        actions.push(PdfViewerAction::SaveOver {
-                            path: path.clone(),
-                            annotations: staged_annotations.clone(),
-                            metadata: current_metadata.clone(),
-                        });
-                        show_save_confirm = false;
-                    }
-                    if ui.button(&t_confirm_cancel).clicked() {
-                        show_save_confirm = false;
-                    }
+            egui::Window::new(&t_save)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label(&t_save_confirm);
+                    ui.horizontal(|ui| {
+                        if ui.button(&t_confirm_yes).clicked() {
+                            actions.push(PdfViewerAction::SaveOver {
+                                path: path.clone(),
+                                annotations: staged_annotations.clone(),
+                                metadata: current_metadata.clone(),
+                            });
+                            show_save_confirm = false;
+                        }
+                        if ui.button(&t_confirm_cancel).clicked() {
+                            show_save_confirm = false;
+                        }
+                    });
                 });
-            });
         }
 
         viewer.page_index = page_index;
@@ -2179,8 +3002,14 @@ impl LontarApp {
 /// unedited, since it's a harmless idempotent rewrite of the same values
 /// `open_pdf` loaded; annotating is skipped entirely when `annotations`
 /// is empty (`pdf::annotator::add_annotations` rejects an empty batch).
-fn bake_pdf_changes(source: &std::path::Path, annotations: &[Annotation], metadata: &DocumentMetadata) -> Result<PathBuf> {
-    let stage = |suffix: &str| std::env::temp_dir().join(format!("lontar-pdf-{}-{suffix}.pdf", Uuid::new_v4()));
+fn bake_pdf_changes(
+    source: &std::path::Path,
+    annotations: &[Annotation],
+    metadata: &DocumentMetadata,
+) -> Result<PathBuf> {
+    let stage = |suffix: &str| {
+        std::env::temp_dir().join(format!("mnemonic-pdf-{}-{suffix}.pdf", Uuid::new_v4()))
+    };
 
     let annotated_path = stage("annotated");
     let with_annotations: PathBuf = if annotations.is_empty() {
@@ -2203,7 +3032,12 @@ fn bake_pdf_changes(source: &std::path::Path, annotations: &[Annotation], metada
 /// bottom-left) to the on-screen rect it occupies over the rendered page
 /// image at `img_rect` (§Fase 9) — the inverse of the drag-to-page-points
 /// conversion `show_pdf_viewer` does when a new annotation is placed.
-fn annotation_screen_rect(rect: (f32, f32, f32, f32), img_rect: egui::Rect, page_w: f32, page_h: f32) -> egui::Rect {
+fn annotation_screen_rect(
+    rect: (f32, f32, f32, f32),
+    img_rect: egui::Rect,
+    page_w: f32,
+    page_h: f32,
+) -> egui::Rect {
     let (x0, y0, x1, y1) = rect;
     let sx = img_rect.width() / page_w;
     let sy = img_rect.height() / page_h;
@@ -2240,21 +3074,45 @@ fn draw_annotation_overlay(
     color: (f32, f32, f32),
     contents: &str,
 ) {
-    let color32 = egui::Color32::from_rgb((color.0 * 255.0) as u8, (color.1 * 255.0) as u8, (color.2 * 255.0) as u8);
+    let color32 = egui::Color32::from_rgb(
+        (color.0 * 255.0) as u8,
+        (color.1 * 255.0) as u8,
+        (color.2 * 255.0) as u8,
+    );
     match kind {
         AnnotationKind::Highlight => {
-            painter.rect_filled(screen_rect, egui::CornerRadius::ZERO, color32.gamma_multiply(0.35));
+            painter.rect_filled(
+                screen_rect,
+                egui::CornerRadius::ZERO,
+                color32.gamma_multiply(0.35),
+            );
         }
         AnnotationKind::Underline => {
             let y = screen_rect.bottom();
-            painter.line_segment([egui::pos2(screen_rect.left(), y), egui::pos2(screen_rect.right(), y)], (2.0, color32));
+            painter.line_segment(
+                [
+                    egui::pos2(screen_rect.left(), y),
+                    egui::pos2(screen_rect.right(), y),
+                ],
+                (2.0, color32),
+            );
         }
         AnnotationKind::StickyNote => {
             painter.rect_filled(screen_rect, 2u8, color32);
-            painter.rect_stroke(screen_rect, 2u8, (1.0, egui::Color32::BLACK), egui::StrokeKind::Middle);
+            painter.rect_stroke(
+                screen_rect,
+                2u8,
+                (1.0, egui::Color32::BLACK),
+                egui::StrokeKind::Middle,
+            );
         }
         AnnotationKind::TextInjection => {
-            painter.rect_stroke(screen_rect, egui::CornerRadius::ZERO, (1.0, color32), egui::StrokeKind::Middle);
+            painter.rect_stroke(
+                screen_rect,
+                egui::CornerRadius::ZERO,
+                (1.0, color32),
+                egui::StrokeKind::Middle,
+            );
             if !contents.is_empty() {
                 painter.text(
                     screen_rect.left_top(),
@@ -2368,7 +3226,11 @@ fn render_note_card(
                         *confirm_delete = Some(id);
                     }
                 } else {
-                    let pin_label = if note.frontmatter.pinned { &card.unpin } else { &card.pin };
+                    let pin_label = if note.frontmatter.pinned {
+                        &card.unpin
+                    } else {
+                        &card.pin
+                    };
                     if ui.button(pin_label).clicked() {
                         actions.push(GridAction::TogglePin(id));
                     }
@@ -2384,7 +3246,11 @@ fn render_note_card(
                         }
                     });
 
-                    let archive_label = if note.frontmatter.archived { &card.unarchive } else { &card.archive };
+                    let archive_label = if note.frontmatter.archived {
+                        &card.unarchive
+                    } else {
+                        &card.archive
+                    };
                     if ui.button(archive_label).clicked() {
                         actions.push(GridAction::ToggleArchived(id));
                     }
@@ -2417,21 +3283,22 @@ fn render_note_card_glass(
     confirm_delete: &mut Option<Uuid>,
 ) {
     let id = note.frontmatter.id;
+    let is_canvas = note.is_canvas();
 
-    // Build the card frame: use note colour if set, else default glass surface.
-    let card_fill = theme::color_for(note.frontmatter.color.as_deref())
-        .unwrap_or(theme::GLASS_SURFACE);
+    // Build the card frame: use note colour if set, else default card frame.
+    let card_fill =
+        theme::color_for(note.frontmatter.color.as_deref()).unwrap_or(theme::BG_CARD_DARK);
     let border_color = theme::color_solid_for(note.frontmatter.color.as_deref())
-        .map(|c| egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), 80))
-        .unwrap_or(theme::GLASS_BORDER);
+        .map(|c| egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), 100))
+        .unwrap_or(theme::BORDER_SUBTLE);
 
     let frame = egui::Frame {
         inner_margin: egui::Margin::same(12),
         outer_margin: egui::Margin::ZERO,
-        corner_radius: egui::CornerRadius::same(theme::ROUNDING_LG),
+        corner_radius: egui::CornerRadius::same(theme::ROUNDING_MD),
         shadow: egui::Shadow {
             offset: [0, 4],
-            blur: 12,
+            blur: 10,
             spread: 0,
             color: egui::Color32::from_black_alpha(60),
         },
@@ -2447,24 +3314,47 @@ fn render_note_card_glass(
                 if selection_mode {
                     let mut checked = is_selected;
                     if ui.checkbox(&mut checked, "").changed() {
-                        if checked { selected.insert(id); } else { selected.remove(&id); }
+                        if checked {
+                            selected.insert(id);
+                        } else {
+                            selected.remove(&id);
+                        }
                     }
                 }
                 if note.frontmatter.pinned {
-                    ui.label(egui::RichText::new("📌").size(11.0));
+                    ui.label(
+                        egui::RichText::new(egui_icons::icons::ICON_KEEP.codepoint)
+                            .size(13.0)
+                            .color(theme::ACCENT_ORANGE),
+                    );
                 }
                 // Note type badge
-                ui.label(
-                    egui::RichText::new("📝")
-                        .size(11.0)
-                        .color(theme::GLASS_TEXT_FAINT),
-                );
+                if is_canvas {
+                    ui.label(
+                        egui::RichText::new(egui_icons::icons::ICON_DRAW.codepoint)
+                            .size(13.0)
+                            .color(theme::ACCENT_BLUE),
+                    );
+                    ui.label(
+                        egui::RichText::new("Kanvas")
+                            .size(11.0)
+                            .color(theme::ACCENT_BLUE),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(egui_icons::icons::ICON_DESCRIPTION.codepoint)
+                            .size(13.0)
+                            .color(theme::TEXT_MUTED),
+                    );
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Quick open button
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new("↗").color(theme::GLASS_TEXT_FAINT).size(12.0),
+                                egui::RichText::new(egui_icons::icons::ICON_OPEN_IN_NEW.codepoint)
+                                    .color(theme::TEXT_SECONDARY)
+                                    .size(13.0),
                             )
                             .frame(false),
                         )
@@ -2479,32 +3369,64 @@ fn render_note_card_glass(
             ui.add_space(4.0);
 
             // ── Title ──
-            let title_color = theme::GLASS_TEXT_PRIMARY;
-            ui.label(
-                egui::RichText::new(note.frontmatter.title.as_str())
-                    .size(14.0)
-                    .strong()
-                    .color(title_color),
+            let title_color = theme::TEXT_PRIMARY;
+            let title_resp = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(note.frontmatter.title.as_str())
+                        .size(14.0)
+                        .strong()
+                        .color(title_color),
+                )
+                .sense(egui::Sense::click()),
             );
+            if title_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                actions.push(GridAction::Open(note.path.clone()));
+            }
 
             // ── Body snippet ──
-            let snippet = query::snippet(&note.body, 120);
-            if !snippet.is_empty() {
-                ui.add_space(4.0);
+            if is_canvas {
+                let canvas_doc = CanvasDocument::from_markdown_body(&note.frontmatter.title, &note.body);
+                let summary = canvas_doc.summary_text();
+                let text_content = canvas_doc.extract_searchable_text();
+                let snippet = query::snippet(&text_content, 120);
+
+                ui.add_space(3.0);
                 ui.label(
-                    egui::RichText::new(&snippet)
-                        .size(12.0)
-                        .color(theme::GLASS_TEXT_SECONDARY),
+                    egui::RichText::new(format!("🎨 {summary}"))
+                        .size(11.5)
+                        .color(theme::ACCENT_BLUE),
                 );
+
+                if !snippet.is_empty() {
+                    ui.add_space(3.0);
+                    ui.label(
+                        egui::RichText::new(&snippet)
+                            .size(12.0)
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                }
+            } else {
+                let snippet = query::snippet(&note.body, 120);
+                if !snippet.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(&snippet)
+                            .size(12.0)
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                }
             }
 
             // ── Checklist progress ──
             if let Some((done, total)) = note.checklist_progress() {
                 ui.add_space(4.0);
                 ui.label(
-                    egui::RichText::new(format!("✅ {done}/{total}"))
-                        .size(11.0)
-                        .color(theme::GLASS_TEXT_FAINT),
+                    egui::RichText::new(format!(
+                        "{} {done}/{total}",
+                        egui_icons::icons::ICON_CHECK_CIRCLE.codepoint
+                    ))
+                    .size(11.0)
+                    .color(theme::ACCENT_GREEN),
                 );
             }
 
@@ -2515,26 +3437,7 @@ fn render_note_card_glass(
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
                     for tag in &note.frontmatter.tags {
                         let color = theme::tag_color(tag);
-                        let chip_fill = egui::Color32::from_rgba_premultiplied(
-                            (color.r() as u16 * 25 / 255) as u8,
-                            (color.g() as u16 * 25 / 255) as u8,
-                            (color.b() as u16 * 25 / 255) as u8,
-                            55,
-                        );
-                        egui::Frame {
-                            inner_margin: egui::Margin::symmetric(6, 2),
-                            outer_margin: egui::Margin::ZERO,
-                            corner_radius: egui::CornerRadius::same(20),
-                            shadow: egui::Shadow::NONE,
-                            fill: chip_fill,
-                            stroke: egui::Stroke::new(
-                                1.0,
-                                egui::Color32::from_rgba_premultiplied(
-                                    color.r(), color.g(), color.b(), 70,
-                                ),
-                            ),
-                        }
-                        .show(ui, |ui| {
+                        ui::tag_chip_frame(color).show(ui, |ui| {
                             ui.label(
                                 egui::RichText::new(format!("#{tag}"))
                                     .size(10.5)
@@ -2556,7 +3459,7 @@ fn render_note_card_glass(
                     let restore_btn = egui::Button::new(
                         egui::RichText::new(&card.restore)
                             .size(11.0)
-                            .color(theme::GLASS_ACCENT_HOVER),
+                            .color(theme::ACCENT_BLUE),
                     )
                     .frame(false);
                     if ui.add(restore_btn).clicked() {
@@ -2573,12 +3476,28 @@ fn render_note_card_glass(
                     }
                 } else {
                     // Pin toggle
-                    let pin_icon = if note.frontmatter.pinned { "📌" } else { "○" };
-                    let pin_tip = if note.frontmatter.pinned { &card.unpin } else { &card.pin };
+                    let pin_icon = if note.frontmatter.pinned {
+                        egui_icons::icons::ICON_KEEP.codepoint
+                    } else {
+                        egui_icons::icons::ICON_PUSH_PIN.codepoint
+                    };
+                    let pin_tip = if note.frontmatter.pinned {
+                        &card.unpin
+                    } else {
+                        &card.pin
+                    };
                     if ui
                         .add(
-                            egui::Button::new(egui::RichText::new(pin_icon).size(12.0))
-                                .frame(false),
+                            egui::Button::new(
+                                egui::RichText::new(pin_icon)
+                                    .size(12.0)
+                                    .color(if note.frontmatter.pinned {
+                                        theme::ACCENT_ORANGE
+                                    } else {
+                                        theme::TEXT_MUTED
+                                    }),
+                            )
+                            .frame(false),
                         )
                         .on_hover_text(pin_tip.as_str())
                         .clicked()
@@ -2588,7 +3507,9 @@ fn render_note_card_glass(
 
                     // Colour picker menu
                     ui.menu_button(
-                        egui::RichText::new("🎨").size(12.0),
+                        egui::RichText::new(egui_icons::icons::ICON_PALETTE.codepoint)
+                            .size(12.0)
+                            .color(theme::TEXT_SECONDARY),
                         |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 for (name, _) in theme::PALETTE_SOLID {
@@ -2625,7 +3546,7 @@ fn render_note_card_glass(
                             egui::Button::new(
                                 egui::RichText::new(arch_label)
                                     .size(11.0)
-                                    .color(theme::GLASS_TEXT_FAINT),
+                                    .color(theme::TEXT_MUTED),
                             )
                             .frame(false),
                         )
@@ -2640,7 +3561,7 @@ fn render_note_card_glass(
                             egui::Button::new(
                                 egui::RichText::new(&card.trash)
                                     .size(11.0)
-                                    .color(theme::GLASS_TEXT_FAINT),
+                                    .color(theme::TEXT_MUTED),
                             )
                             .frame(false),
                         )
@@ -2678,16 +3599,16 @@ fn render_pdf_card_glass(
         .unwrap_or_default();
 
     let pdf_accent = egui::Color32::from_rgb(239, 68, 68); // red accent for PDF
-    let card_fill = egui::Color32::from_rgba_premultiplied(55, 12, 12, 50);
-    let border_color = egui::Color32::from_rgba_premultiplied(239, 68, 68, 60);
+    let card_fill = egui::Color32::from_rgba_premultiplied(45, 15, 15, 120);
+    let border_color = egui::Color32::from_rgba_premultiplied(239, 68, 68, 80);
 
     let frame = egui::Frame {
         inner_margin: egui::Margin::same(12),
         outer_margin: egui::Margin::ZERO,
-        corner_radius: egui::CornerRadius::same(theme::ROUNDING_LG),
+        corner_radius: egui::CornerRadius::same(theme::ROUNDING_MD),
         shadow: egui::Shadow {
             offset: [0, 4],
-            blur: 12,
+            blur: 10,
             spread: 0,
             color: egui::Color32::from_black_alpha(60),
         },
@@ -2700,7 +3621,11 @@ fn render_pdf_card_glass(
         ui.vertical(|ui| {
             // PDF icon + badge row
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("📄").size(22.0));
+                ui.label(
+                    egui::RichText::new(egui_icons::icons::ICON_PICTURE_AS_PDF.codepoint)
+                        .size(20.0)
+                        .color(pdf_accent),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // PDF badge
                     egui::Frame {
@@ -2709,7 +3634,10 @@ fn render_pdf_card_glass(
                         corner_radius: egui::CornerRadius::same(4),
                         shadow: egui::Shadow::NONE,
                         fill: egui::Color32::from_rgba_premultiplied(239, 68, 68, 40),
-                        stroke: egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(239, 68, 68, 100)),
+                        stroke: egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgba_premultiplied(239, 68, 68, 100),
+                        ),
                     }
                     .show(ui, |ui| {
                         ui.label(
@@ -2734,7 +3662,7 @@ fn render_pdf_card_glass(
                 egui::RichText::new(&display_name)
                     .size(13.0)
                     .strong()
-                    .color(theme::GLASS_TEXT_PRIMARY),
+                    .color(theme::TEXT_PRIMARY),
             );
 
             // File size
@@ -2742,7 +3670,7 @@ fn render_pdf_card_glass(
                 ui.label(
                     egui::RichText::new(&size_str)
                         .size(11.0)
-                        .color(theme::GLASS_TEXT_FAINT),
+                        .color(theme::TEXT_MUTED),
                 );
             }
 
@@ -2754,7 +3682,7 @@ fn render_pdf_card_glass(
                 let open_btn = egui::Button::new(
                     egui::RichText::new("Buka")
                         .size(11.5)
-                        .color(theme::GLASS_ACCENT_HOVER),
+                        .color(theme::ACCENT_BLUE),
                 )
                 .frame(false);
                 if ui.add(open_btn).clicked() {
@@ -2765,8 +3693,7 @@ fn render_pdf_card_glass(
     });
 }
 
-
-impl eframe::App for LontarApp {
+impl eframe::App for MnemonicApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Poll the file watcher once per frame; debouncing happens inside
         // VaultWatcher itself (§6 mitigation for watcher event storms).
@@ -2781,400 +3708,243 @@ impl eframe::App for LontarApp {
         }
 
         // Autosave poll (§3.2.4: idle debounce 500ms-1s). Scoped so the
-        // `self.editor` borrow ends before `rescan_and_reindex`/
-        // `report_error` need `&mut self` again.
-        let mut needs_reindex: Option<Note> = None;
-        let mut autosave_error: Option<anyhow::Error> = None;
-        if let Some(editor) = self.editor.as_mut() {
-            if editor.should_autosave() {
-                match editor.autosave() {
-                    Ok(()) => needs_reindex = Some(editor.note.clone()),
-                    Err(e) => autosave_error = Some(e),
-                }
-            }
-        }
-        if let Some(note) = needs_reindex {
-            self.rescan_and_reindex();
-            self.reindex_note(&note);
-        }
-        if let Some(e) = autosave_error {
-            self.report_error("error-context-autosave", e);
-        }
-
-        // Fase 7 background-worker polling: writes chunk/embedding
+        // `self.editor` borrow ends before `rescan_and_reindex`/        // Fase 7 background-worker polling: writes chunk/embedding
         // results into the SQLite cache, and dispatches search/chat
         // query-embedding + generation events to whichever request is
         // pending.
         self.poll_indexer_results();
         self.poll_search_and_chat(ui.ctx());
 
-        // Apply Liquid Glass theme every frame.
-        theme::apply_liquid_glass_theme(ui.ctx());
+        // Apply Shapr3D / DUCAD theme every frame.
+        ui::apply_theme(ui.ctx(), self.theme_mode);
 
-        let t_nav_notes = self.t("nav-notes");
-        let t_nav_search = self.t("nav-search");
-        let t_nav_chat = self.t("nav-chat");
         let vault_open = self.vault.is_some();
         let in_editor = self.editor.is_some();
         let in_pdf = self.pdf_viewer.is_some();
 
-        // ─── Floating Top Bar ────────────────────────────────────────────────
-        egui::Panel::top("top_bar")
-            .frame(theme::glass_topbar_frame())
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    // Hamburger sidebar toggle (only when vault is open and
-                    // not inside editor/pdf viewer where sidebar is irrelevant)
-                    if vault_open && !in_editor && !in_pdf {
-                        let sidebar_icon = if self.sidebar_open { "✕" } else { "☰" };
-                        let btn = egui::Button::new(
-                            egui::RichText::new(sidebar_icon)
-                                .size(16.0)
-                                .color(theme::GLASS_TEXT_PRIMARY),
-                        )
-                        .frame(false);
-                        if ui.add(btn).clicked() {
-                            self.sidebar_open = !self.sidebar_open;
-                        }
-                        ui.add_space(4.0);
-                    }
+        // Global Command Palette keyboard shortcut (Cmd+K / Ctrl+K)
+        if ui.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::K)) {
+            self.command_palette.toggle();
+        }
 
-                    // App title
-                    ui.label(
-                        egui::RichText::new(self.t("app-title"))
-                            .size(17.0)
-                            .strong()
-                            .color(theme::GLASS_TEXT_PRIMARY),
-                    );
+        // ─── Floating Top Bar (Shapr3D / DUCAD Style) ────────────────────────
+        if !in_editor && !in_pdf {
+            let screen_rect = ui.ctx().viewport_rect();
+            let topbar_margin_x = 12.0;
+            let topbar_margin_y = 8.0;
+            let topbar_pos = screen_rect.min + egui::vec2(topbar_margin_x, topbar_margin_y);
+            let topbar_width = (screen_rect.width() - (topbar_margin_x * 2.0)).max(200.0);
 
-                    // Navigation tabs (centered flex)
-                    if vault_open && !in_editor && !in_pdf {
-                        ui.add_space(16.0);
-                        // Styled tab buttons
-                        let is_notes = self.view == View::Notes;
-                        let is_search = self.view == View::Search;
-                        let is_chat = self.view == View::Chat;
+            egui::Area::new(egui::Id::new("mnemonic_floating_topbar_area"))
+                .fixed_pos(topbar_pos)
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    ui.set_width(topbar_width);
 
-                        let tab_btn = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
-                            let text_color = if active {
-                                theme::GLASS_ACCENT_HOVER
+                    let vault_name = self
+                        .vault
+                        .as_ref()
+                        .and_then(|v| v.root.file_name())
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+
+                    let active_tab = match self.view {
+                        View::Notes => {
+                            if matches!(self.doc_filter, DocFilter::WhiteboardsOnly) {
+                                ui::TopBarNavTab::Canvas
                             } else {
-                                theme::GLASS_TEXT_SECONDARY
-                            };
-                            let btn = egui::Button::new(
-                                egui::RichText::new(label).color(text_color).size(13.5),
-                            )
-                            .frame(false);
-                            ui.add(btn).clicked()
-                        };
+                                ui::TopBarNavTab::Notes
+                            }
+                        }
+                        View::Canvas => ui::TopBarNavTab::Canvas,
+                        View::Search => ui::TopBarNavTab::Search,
+                        View::Chat => ui::TopBarNavTab::Chat,
+                    };
 
-                        if tab_btn(ui, &t_nav_notes, is_notes) {
-                            self.view = View::Notes;
-                        }
-                        ui.add_space(4.0);
-                        if tab_btn(ui, &t_nav_search, is_search) {
-                            self.view = View::Search;
-                        }
-                        ui.add_space(4.0);
-                        if tab_btn(ui, &t_nav_chat, is_chat) {
-                            self.view = View::Chat;
-                        }
-                    }
+                    let note_count = self
+                        .vault
+                        .as_ref()
+                        .map(|v| v.notes.iter().filter(|n| !n.frontmatter.trashed).count())
+                        .unwrap_or(0);
+                    let pdf_count = self.pdf_documents.len();
 
-                    // Right-aligned: search box + new note button
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if vault_open && !in_editor && !in_pdf && self.view == View::Notes {
-                            // New note / capture button
-                            let new_btn = egui::Button::new(
-                                egui::RichText::new("＋ Baru")
-                                    .color(theme::GLASS_TEXT_PRIMARY)
-                                    .size(13.0),
-                            )
-                            .fill(theme::GLASS_ACCENT)
-                            .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
-                            if ui.add(new_btn).clicked() && !self.quick_capture_text.is_empty() {
+                    let mut topbar_state = ui::TopBarState {
+                        vault_name,
+                        vault_open,
+                        active_tab,
+                        sidebar_open: self.sidebar_open,
+                        theme_mode: self.theme_mode,
+                        active_locale: self.locales.active_locale().to_string(),
+                        quick_capture_text: self.quick_capture_text.clone(),
+                        icon_size: 16.0,
+                        note_count,
+                        pdf_count,
+                    };
+
+                    if let Some(top_event) = ui::TopBar::show(ui, &mut topbar_state) {
+                        match top_event {
+                            ui::TopBarEvent::SelectTab(tab) => {
+                                match tab {
+                                    ui::TopBarNavTab::Notes => {
+                                        self.view = View::Notes;
+                                        if matches!(self.doc_filter, DocFilter::WhiteboardsOnly) {
+                                            self.doc_filter = DocFilter::All;
+                                        }
+                                    }
+                                    ui::TopBarNavTab::Canvas => {
+                                        self.view = View::Notes;
+                                        self.doc_filter = DocFilter::WhiteboardsOnly;
+                                    }
+                                    ui::TopBarNavTab::Search => {
+                                        self.view = View::Search;
+                                    }
+                                    ui::TopBarNavTab::Chat => {
+                                        self.view = View::Chat;
+                                    }
+                                }
+                            }
+                            ui::TopBarEvent::ToggleSidebar => {
+                                self.sidebar_open = !self.sidebar_open;
+                            }
+                            ui::TopBarEvent::OpenVaultPicker => {
+                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                    match Vault::open(folder) {
+                                        Ok(v) => self.activate_vault(v),
+                                        Err(e) => self.report_error("error-context-open-vault", e),
+                                    }
+                                }
+                            }
+                            ui::TopBarEvent::CreateNote(title) => {
                                 if let Some(vault) = self.vault.as_mut() {
-                                    match crate::notes::Note::create(
-                                        &vault.root,
-                                        &self.quick_capture_text,
-                                        "",
-                                    ) {
-                                        Ok(_note) => {
-                                            self.quick_capture_text.clear();
+                                    let note_title = if title.is_empty() {
+                                        "Catatan Baru"
+                                    } else {
+                                        &title
+                                    };
+                                    match Note::create(&vault.root, note_title, "") {
+                                        Ok(note) => {
                                             self.rescan_and_reindex();
+                                            self.open_note(note);
                                         }
                                         Err(e) => self.report_error("error-context-create-note", e),
                                     }
                                 }
                             }
-                            ui.add_space(6.0);
-                            // Inline title capture
-                            let capture = egui::TextEdit::singleline(&mut self.quick_capture_text)
-                                .hint_text("✏ Judul catatan baru...")
-                                .desired_width(180.0);
-                            ui.add(capture);
-                            ui.add_space(8.0);
-
-                            // Floating search box always visible in top bar
-                            let search = egui::TextEdit::singleline(&mut self.search_text)
-                                .hint_text("🔍 Cari catatan & PDF...")
-                                .desired_width(200.0);
-                            ui.add(search);
-                        }
-                    });
-                });
-            });
-
-        // ─── Floating Sidebar Overlay ────────────────────────────────────────
-        // Renders as an egui::Window (overlay) that slides in from the left,
-        // drawn before the central panel so it appears on top of the content.
-        if self.sidebar_open && vault_open && !in_editor && !in_pdf {
-            let notes_for_sidebar: Vec<crate::notes::Note> =
-                self.vault.as_ref().map(|v| v.notes.clone()).unwrap_or_default();
-            let all_tags = crate::notes::tags::all_tags(&notes_for_sidebar);
-            let pdf_docs = self.pdf_documents.clone();
-
-            let t_sidebar_all = self.t("sidebar-all");
-            let t_sidebar_notes = self.t("sidebar-notes-only");
-            let t_sidebar_pdfs = self.t("sidebar-pdfs-only");
-            let t_sidebar_archived = self.t("sidebar-archived");
-            let t_sidebar_trash = self.t("sidebar-trash");
-            let t_sidebar_tags = self.t("sidebar-tags");
-            let t_manage_tags = self.t("sidebar-manage-tags");
-            let t_import_pdf = self.t("pdf-import");
-
-            let screen_rect = ui.ctx().viewport_rect();
-            let sidebar_rect = egui::Rect::from_min_size(
-                screen_rect.min + egui::vec2(0.0, theme::TOPBAR_HEIGHT),
-                egui::vec2(theme::SIDEBAR_WIDTH, screen_rect.height() - theme::TOPBAR_HEIGHT),
-            );
-
-            let mut sidebar_open = self.sidebar_open;
-            let mut doc_filter = self.doc_filter.clone();
-            let mut show_label_manager = self.show_label_manager;
-            let mut pdf_import_action: Option<std::path::PathBuf> = None;
-
-            egui::Window::new("sidebar_overlay")
-                .title_bar(false)
-                .resizable(false)
-                .collapsible(false)
-                .fixed_rect(sidebar_rect)
-                .frame(theme::glass_panel_frame())
-                .show(ui.ctx(), |ui| {
-                    // Sidebar header
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(12.0);
-                        ui.label(
-                            egui::RichText::new("LONTAR")
-                                .size(14.0)
-                                .strong()
-                                .color(theme::GLASS_TEXT_PRIMARY),
-                        );
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                ui.add_space(8.0);
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new("✕")
-                                                .color(theme::GLASS_TEXT_FAINT),
-                                        )
-                                        .frame(false),
-                                    )
-                                    .clicked()
+                            ui::TopBarEvent::OpenCommandPalette => {
+                                self.command_palette.open();
+                            }
+                            ui::TopBarEvent::ToggleTheme => {
+                                self.theme_mode = self.theme_mode.toggled();
+                            }
+                            ui::TopBarEvent::SetLanguage(lang) => {
+                                self.locales.set_active(&lang);
+                            }
+                            ui::TopBarEvent::ImportPdf => {
+                                if let Some(file) =
+                                    rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file()
                                 {
-                                    sidebar_open = false;
+                                    self.import_pdf(file);
                                 }
-                            },
-                        );
-                    });
-                    ui.add_space(8.0);
+                            }
+                            ui::TopBarEvent::ManageLabels => {
+                                self.show_label_manager = true;
+                            }
+                            ui::TopBarEvent::NewCanvas => {
+                                if let Some(vault) = self.vault.as_mut() {
+                                    match Note::create_canvas(&vault.root, "Kanvas Baru") {
+                                        Ok(note) => {
+                                            self.rescan_and_reindex();
+                                            self.open_note(note);
+                                        }
+                                        Err(e) => self.report_error("error-context-create-note", e),
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
 
-                    // Thin separator
-                    ui.add(egui::Separator::default().spacing(0.0));
-                    ui.add_space(8.0);
+                    self.quick_capture_text = topbar_state.quick_capture_text;
+                });
+        }
 
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add_space(4.0);
+        // ─── Floating Sidebar Slide-Over Drawer ──────────────────────────────
+        if vault_open && !in_editor && !in_pdf {
+            let notes_for_sidebar: Vec<Note> = self
+                .vault
+                .as_ref()
+                .map(|v| v.notes.clone())
+                .unwrap_or_default();
+            let all_tags = tags::all_tags(&notes_for_sidebar);
+            let total_notes = notes_for_sidebar
+                .iter()
+                .filter(|n| !n.frontmatter.archived && !n.frontmatter.trashed)
+                .count();
+            let total_archived = notes_for_sidebar
+                .iter()
+                .filter(|n| n.frontmatter.archived && !n.frontmatter.trashed)
+                .count();
+            let total_trashed = notes_for_sidebar
+                .iter()
+                .filter(|n| n.frontmatter.trashed)
+                .count();
 
-                        // ── Document filter group ──
-                        let sidebar_item = |ui: &mut egui::Ui, label: &str, icon: &str, active: bool| -> bool {
-                            let text_color = if active {
-                                theme::GLASS_ACCENT_HOVER
-                            } else {
-                                theme::GLASS_TEXT_SECONDARY
-                            };
-                            let bg = if active {
-                                egui::Color32::from_rgba_premultiplied(99, 102, 241, 25)
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            };
-                            let full_label = format!("{icon}  {label}");
-                            let btn = egui::Button::new(
-                                egui::RichText::new(&full_label)
-                                    .color(text_color)
-                                    .size(13.0),
-                            )
-                            .fill(bg)
-                            .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
-                            let resp = ui
-                                .add_sized(
-                                    egui::vec2(ui.available_width() - 16.0, 28.0),
-                                    btn,
-                                );
-                            resp.clicked()
+            let sidebar_filter = match &self.doc_filter {
+                DocFilter::All => ui::SidebarDocFilter::All,
+                DocFilter::NotesOnly => ui::SidebarDocFilter::NotesOnly,
+                DocFilter::WhiteboardsOnly => ui::SidebarDocFilter::WhiteboardsOnly,
+                DocFilter::PdfsOnly => ui::SidebarDocFilter::PdfsOnly,
+                DocFilter::Archived => ui::SidebarDocFilter::Archived,
+                DocFilter::Trashed => ui::SidebarDocFilter::Trashed,
+                DocFilter::Tag(t) => ui::SidebarDocFilter::Tag(t.clone()),
+            };
+
+            let sidebar_state = ui::SidebarState {
+                is_open: self.sidebar_open,
+                current_filter: sidebar_filter,
+                all_tags,
+                pdf_documents: self.pdf_documents.clone(),
+                total_notes,
+                total_pdfs: self.pdf_documents.len(),
+                total_whiteboards: if self.standalone_canvas.is_some() {
+                    1
+                } else {
+                    0
+                },
+                total_archived,
+                total_trashed,
+            };
+
+            if let Some(side_event) = ui::SidebarDrawer::show(ui.ctx(), &sidebar_state) {
+                match side_event {
+                    ui::SidebarEvent::SelectFilter(f) => {
+                        self.doc_filter = match f {
+                            ui::SidebarDocFilter::All => DocFilter::All,
+                            ui::SidebarDocFilter::NotesOnly => DocFilter::NotesOnly,
+                            ui::SidebarDocFilter::WhiteboardsOnly => DocFilter::WhiteboardsOnly,
+                            ui::SidebarDocFilter::PdfsOnly => DocFilter::PdfsOnly,
+                            ui::SidebarDocFilter::Archived => DocFilter::Archived,
+                            ui::SidebarDocFilter::Trashed => DocFilter::Trashed,
+                            ui::SidebarDocFilter::Tag(t) => DocFilter::Tag(t),
                         };
-
-                        ui.add_space(2.0);
-                        ui.indent("sidebar_filters", |ui| {
-                            if sidebar_item(ui, &t_sidebar_all, "◎", doc_filter == DocFilter::All) {
-                                doc_filter = DocFilter::All;
-                            }
-                            ui.add_space(2.0);
-                            if sidebar_item(ui, &t_sidebar_notes, "📝", doc_filter == DocFilter::NotesOnly) {
-                                doc_filter = DocFilter::NotesOnly;
-                            }
-                            ui.add_space(2.0);
-                            if sidebar_item(ui, &t_sidebar_pdfs, "📄", doc_filter == DocFilter::PdfsOnly) {
-                                doc_filter = DocFilter::PdfsOnly;
-                            }
-                            ui.add_space(2.0);
-                            if sidebar_item(ui, &t_sidebar_archived, "📦", doc_filter == DocFilter::Archived) {
-                                doc_filter = DocFilter::Archived;
-                            }
-                            ui.add_space(2.0);
-                            if sidebar_item(ui, &t_sidebar_trash, "🗑", doc_filter == DocFilter::Trashed) {
-                                doc_filter = DocFilter::Trashed;
-                            }
-                        });
-
-                        ui.add_space(12.0);
-                        ui.add(egui::Separator::default().spacing(0.0));
-                        ui.add_space(8.0);
-
-                        // ── Tags ──
-                        ui.indent("sidebar_tags_header", |ui| {
-                            ui.label(
-                                egui::RichText::new(&t_sidebar_tags)
-                                    .size(11.0)
-                                    .color(theme::GLASS_TEXT_FAINT)
-                                    .strong(),
-                            );
-                        });
-                        ui.add_space(4.0);
-
-                        for (tag, count) in &all_tags {
-                            let is_selected = matches!(&doc_filter, DocFilter::Tag(t) if t.eq_ignore_ascii_case(tag));
-                            let color = theme::tag_color(tag);
-                            let label_str = format!("#{tag}  {count}");
-                            ui.indent("sidebar_tag", |ui| {
-                                let btn = egui::Button::new(
-                                    egui::RichText::new(&label_str)
-                                        .color(if is_selected { theme::GLASS_ACCENT_HOVER } else { color })
-                                        .size(12.5),
-                                )
-                                .fill(if is_selected {
-                                    egui::Color32::from_rgba_premultiplied(99, 102, 241, 25)
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                })
-                                .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
-                                if ui.add_sized(egui::vec2(ui.available_width() - 16.0, 26.0), btn).clicked() {
-                                    doc_filter = DocFilter::Tag(tag.clone());
-                                }
-                            });
-                            ui.add_space(1.0);
-                        }
-
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(&t_manage_tags)
-                                        .size(11.0)
-                                        .color(theme::GLASS_TEXT_FAINT),
-                                )
-                                .frame(false),
-                            )
-                            .clicked()
+                    }
+                    ui::SidebarEvent::OpenPdf(path) => {
+                        self.open_pdf(path);
+                    }
+                    ui::SidebarEvent::ImportPdf => {
+                        if let Some(file) =
+                            rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file()
                         {
-                            show_label_manager = true;
+                            self.import_pdf(file);
                         }
-
-                        ui.add_space(12.0);
-                        ui.add(egui::Separator::default().spacing(0.0));
-                        ui.add_space(8.0);
-
-                        // ── PDF Import ──
-                        ui.indent("sidebar_pdf", |ui| {
-                            ui.label(
-                                egui::RichText::new("PDF")
-                                    .size(11.0)
-                                    .color(theme::GLASS_TEXT_FAINT)
-                                    .strong(),
-                            );
-                        });
-                        ui.add_space(4.0);
-                        ui.indent("sidebar_pdf_import", |ui| {
-                            let import_btn = egui::Button::new(
-                                egui::RichText::new(&format!("📥  {t_import_pdf}"))
-                                    .color(theme::GLASS_ACCENT_HOVER)
-                                    .size(13.0),
-                            )
-                            .fill(egui::Color32::from_rgba_premultiplied(99, 102, 241, 15))
-                            .corner_radius(egui::CornerRadius::same(theme::ROUNDING_SM));
-                            let resp = ui.add_sized(
-                                egui::vec2(ui.available_width() - 16.0, 28.0),
-                                import_btn,
-                            );
-                            if resp.clicked() {
-                                if let Some(file) = rfd::FileDialog::new()
-                                    .add_filter("PDF", &["pdf"])
-                                    .pick_file()
-                                {
-                                    pdf_import_action = Some(file);
-                                }
-                            }
-
-                            // List imported PDFs compactly
-                            ui.add_space(4.0);
-                            for path in &pdf_docs {
-                                let name = path
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| "PDF".to_string());
-                                let truncated = if name.len() > 22 {
-                                    format!("{}…", &name[..19])
-                                } else {
-                                    name.clone()
-                                };
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new(format!("  📄 {truncated}"))
-                                                .size(12.0)
-                                                .color(theme::GLASS_TEXT_SECONDARY),
-                                        )
-                                        .frame(false),
-                                    )
-                                    .clicked()
-                                {
-                                    // open PDF from sidebar list
-                                }
-                            }
-                        });
-
-                        ui.add_space(16.0);
-                    });
-                });
-
-            // Write back sidebar state
-            self.sidebar_open = sidebar_open;
-            self.doc_filter = doc_filter;
-            self.show_label_manager = show_label_manager;
-            if let Some(path) = pdf_import_action {
-                self.import_pdf(path);
+                    }
+                    ui::SidebarEvent::ManageLabels => {
+                        self.show_label_manager = true;
+                    }
+                    ui::SidebarEvent::CloseSidebar => {
+                        self.sidebar_open = false;
+                    }
+                }
             }
         }
 
@@ -3186,23 +3956,27 @@ impl eframe::App for LontarApp {
                 ui.vertical_centered(|ui| {
                     ui.add_space(60.0);
                     ui.label(
-                        egui::RichText::new("📂")
+                        egui::RichText::new(egui_icons::icons::ICON_FOLDER_OPEN.codepoint)
                             .size(48.0)
-                            .color(theme::GLASS_TEXT_FAINT),
+                            .color(theme::ACCENT_BLUE),
                     );
                     ui.add_space(12.0);
                     ui.label(
                         egui::RichText::new(self.t("vault-select-prompt"))
                             .size(15.0)
-                            .color(theme::GLASS_TEXT_SECONDARY),
+                            .color(theme::TEXT_SECONDARY),
                     );
                     ui.add_space(16.0);
                     let pick_btn = egui::Button::new(
-                        egui::RichText::new(self.t("vault-pick-folder"))
-                            .color(egui::Color32::WHITE)
-                            .size(14.0),
+                        egui::RichText::new(format!(
+                            "{}  {}",
+                            egui_icons::icons::ICON_FOLDER.codepoint,
+                            self.t("vault-pick-folder")
+                        ))
+                        .color(egui::Color32::WHITE)
+                        .size(14.0),
                     )
-                    .fill(theme::GLASS_ACCENT)
+                    .fill(theme::ACCENT_BLUE)
                     .corner_radius(egui::CornerRadius::same(theme::ROUNDING_MD));
                     if ui.add(pick_btn).clicked() {
                         if let Some(folder) = rfd::FileDialog::new().pick_folder() {
@@ -3228,10 +4002,13 @@ impl eframe::App for LontarApp {
 
             match self.view {
                 View::Notes => self.show_grid(ui),
+                View::Canvas => self.show_standalone_canvas(ui),
                 View::Search => self.show_search(ui),
                 View::Chat => self.show_chat(ui),
             }
         });
+
+        // ─── Floating Command Palette Modal (⌘K) ─────────────────────────────
+        self.show_command_palette_modal(ui.ctx());
     }
 }
-

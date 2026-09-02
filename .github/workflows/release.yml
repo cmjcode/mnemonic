@@ -1,6 +1,6 @@
 name: Release build
 
-# §Fase 10 ("build release cross-platform"): builds a LONTAR release
+# §Fase 10 ("build release cross-platform"): builds a MNEMONIC release
 # binary for Windows, macOS, and Linux — on every `v*` tag push, and
 # on-demand via workflow_dispatch for a manual/test run. Each job just runs
 # a native `cargo build --release`, no cross-compilation, so the repo's
@@ -28,14 +28,14 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: lontar
-            asset_name: lontar-linux-x86_64
+            artifact_name: mnemonic
+            asset_name: mnemonic-linux-x86_64
           - os: windows-latest
-            artifact_name: lontar.exe
-            asset_name: lontar-windows-x86_64.exe
+            artifact_name: mnemonic.exe
+            asset_name: mnemonic-windows-x86_64.exe
           - os: macos-latest
-            artifact_name: lontar
-            asset_name: lontar-macos-aarch64
+            artifact_name: mnemonic
+            asset_name: mnemonic-macos-aarch64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

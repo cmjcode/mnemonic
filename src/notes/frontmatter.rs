@@ -22,13 +22,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Note type discriminator, mirrors §3.1.2 (Text Note vs Checklist Note).
+/// Note type discriminator, mirrors §3.1.2 (Text Note vs Checklist Note) & Canvas Whiteboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NoteType {
     #[default]
     Note,
     Checklist,
+    Canvas,
 }
 
 /// Metadata stored in the YAML frontmatter block, per §3.1.1.

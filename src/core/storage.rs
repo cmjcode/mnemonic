@@ -19,14 +19,14 @@ use super::ingestion::DocumentChunk;
 use crate::notes::Note;
 
 /// Opens (creating if needed) the SQLite index cache file at
-/// `vault_root/.lontar-index.sqlite3` and ensures its schema exists.
+/// `vault_root/.mnemonic-index.sqlite3` and ensures its schema exists.
 pub struct IndexStore {
     conn: Connection,
 }
 
 impl IndexStore {
     pub fn open(vault_root: &Path) -> Result<IndexStore> {
-        let path = vault_root.join(".lontar-index.sqlite3");
+        let path = vault_root.join(".mnemonic-index.sqlite3");
         let conn = Connection::open(&path)
             .with_context(|| format!("opening index db {}", path.display()))?;
         let store = IndexStore { conn };
@@ -338,7 +338,7 @@ mod tests {
         }
 
         // Simulate a corrupt/missing index file being deleted externally.
-        std::fs::remove_file(dir.path().join(".lontar-index.sqlite3")).unwrap();
+        std::fs::remove_file(dir.path().join(".mnemonic-index.sqlite3")).unwrap();
 
         let mut store = IndexStore::open(dir.path()).unwrap();
         assert_eq!(store.count().unwrap(), 0); // fresh db, empty until rebuild

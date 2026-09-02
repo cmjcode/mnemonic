@@ -1,4 +1,4 @@
-# LONTAR 
+# MNEMONIC 
 
 ##  Software Development Plan: Personal Note Vault, Semantic RAG, PDF Editor & AI Assistant (Rust + egui + Candle + Qwen 2.5)
 
@@ -265,7 +265,7 @@ Aplikasi ini adalah tool produktivitas desktop/mobile mandiri (*100% offline & p
 ## 4. Struktur Proyek (Directory Layout)
 
 ```
-lontar/
+mnemonic/
 ├── Cargo.toml
 ├── assets/
 │   ├── models/

@@ -1,6 +1,8 @@
 //! Entry point: initializes logging and runs the `eframe` window (§4).
 
 mod app;
+mod block;
+mod canvas;
 mod core;
 mod i18n;
 mod llm;
@@ -28,8 +30,8 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
-        "LONTAR",
+        "MNEMONIC",
         native_options,
-        Box::new(|_cc| Ok(Box::new(app::LontarApp::new()))),
+        Box::new(|_cc| Ok(Box::new(app::MnemonicApp::new()))),
     )
 }

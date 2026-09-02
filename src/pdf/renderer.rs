@@ -34,7 +34,7 @@ pub struct RenderedPage {
 /// than caching one across calls, matching `llm::CandleEngine`'s same
 /// simplification (see the Fase 6 note in the roadmap memory) — a
 /// long-lived `PdfDocument` would tie a borrowed lifetime into
-/// `LontarApp`'s state, which isn't worth the complexity for a personal
+/// `MnemonicApp`'s state, which isn't worth the complexity for a personal
 /// vault's PDFs.
 pub struct PdfRenderer {
     pdfium: Pdfium,
@@ -48,9 +48,9 @@ impl PdfRenderer {
     /// the OS package manager). Returns `Err` — never panics — if neither
     /// is found.
     pub fn new() -> Result<PdfRenderer> {
-        let bundled = bundled_library_dirs()
-            .into_iter()
-            .find_map(|dir| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir)).ok());
+        let bundled = bundled_library_dirs().into_iter().find_map(|dir| {
+            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir)).ok()
+        });
 
         let bindings = match bundled {
             Some(b) => b,
@@ -58,7 +58,9 @@ impl PdfRenderer {
                 .context("loading the PDFium library (not found bundled in assets/pdfium/ or system-installed)")?,
         };
 
-        Ok(PdfRenderer { pdfium: Pdfium::new(bindings) })
+        Ok(PdfRenderer {
+            pdfium: Pdfium::new(bindings),
+        })
     }
 
     /// Number of pages in the PDF at `path`.
@@ -71,7 +73,12 @@ impl PdfRenderer {
     /// pixels, scaled so its width is `target_width` (height follows the
     /// page's own aspect ratio, capped generously so an unusually tall
     /// page can't blow past PDFium's internal bitmap size limits).
-    pub fn render_page(&self, path: &Path, page_index: usize, target_width: u16) -> Result<RenderedPage> {
+    pub fn render_page(
+        &self,
+        path: &Path,
+        page_index: usize,
+        target_width: u16,
+    ) -> Result<RenderedPage> {
         let document = self.load(path)?;
         let page = document
             .pages()

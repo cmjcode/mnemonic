@@ -1,4 +1,4 @@
-app-title = LONTAR
+app-title = MNEMONIC
 
 vault-empty = Belum ada catatan. Ketuk tombol + untuk membuat catatan baru.
 vault-pick-folder = Pilih Folder Vault
@@ -124,7 +124,7 @@ pdf-export = Ekspor sebagai Baru...
 
 # §Fase 10: banner kesalahan umum yang menggantikan kegagalan yang
 # sebelumnya hanya dicatat di log (`log::warn!`) tanpa terlihat pengguna —
-# lihat `LontarApp::report_error`.
+# lihat `MnemonicApp::report_error`.
 error-banner = Kesalahan saat { $context }: { $error }
 error-context-autosave = menyimpan otomatis
 error-context-save-note = menyimpan catatan
@@ -132,3 +132,15 @@ error-context-delete-note = menghapus catatan
 error-context-move-note = memindahkan catatan
 error-context-create-note = membuat catatan
 error-context-open-vault = membuka vault
+
+nav-canvas = Whiteboard
+editor-mode-page = Halaman
+editor-mode-edgeless = Kanvas
+sidebar-whiteboards-only = Whiteboards & Kanvas
+command-palette-title = Perintah & Navigasi Cepat
+command-palette-hint = Ketik judul catatan, nama PDF, atau perintah...
+command-palette-new-note = ＋ Buat Catatan Baru
+command-palette-open-canvas = 🎨 Buka Whiteboard Canvas
+command-palette-search = 🔍 Cari Semantik Vault
+command-palette-chat = 💬 Tanya AI Assistant (Local RAG)
+command-palette-switch-vault = 📂 Buka Folder Vault Lain

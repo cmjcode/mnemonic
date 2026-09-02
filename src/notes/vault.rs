@@ -17,7 +17,7 @@ struct AppConfig {
 
 fn config_path() -> Result<PathBuf> {
     let dir = dirs::config_dir().context("no config dir available on this platform")?;
-    let dir = dir.join("lontar");
+    let dir = dir.join("mnemonic");
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating config dir {}", dir.display()))?;
     Ok(dir.join("config.toml"))

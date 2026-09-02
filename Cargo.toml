@@ -1,5 +1,5 @@
 [package]
-name = "lontar"
+name = "mnemonic"
 version = "0.1.0"
 edition = "2024"
 
@@ -43,7 +43,10 @@ dhat = { version = "0.3.3", optional = true }
 dirs = "6.0.0"
 eframe = "0.36.1"
 egui = "0.36.1"
-egui_commonmark = { version = "0.25.0", features = ["better_syntax_highlighting"] }
+egui_icons = "0.0.1"
+egui_commonmark = { version = "0.25.0", features = [
+    "better_syntax_highlighting",
+] }
 env_logger = "0.11.11"
 fastembed = "6.0.0"
 fluent-bundle = "0.16.0"
@@ -60,10 +63,13 @@ pdf-extract = "0.12.0"
 # missing). `image_latest`/`thread_safe` (the other two default features)
 # are dropped since we only need raw RGBA bytes for an egui texture, not
 # `image::DynamicImage` conversion or cross-thread bitmap handles.
-pdfium-render = { version = "0.9", default-features = false, features = ["pdfium_latest"] }
+pdfium-render = { version = "0.9", default-features = false, features = [
+    "pdfium_latest",
+] }
 rfd = "0.17.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0"
 serde_yaml = "0.9.34"
 tokenizers = "0.23.1"
 toml = "1.1.4"

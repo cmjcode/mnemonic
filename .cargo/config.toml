@@ -23,7 +23,7 @@
 # x86_64 CPU (2013+, the "x86-64-v3" microarchitecture level) — it faults
 # with SIGILL on older hardware. This is the same baseline most shipped
 # local ML tooling assumes (e.g. llama.cpp's default release builds) and is
-# judged acceptable for LONTAR's release builds. If broader legacy-CPU
+# judged acceptable for MNEMONIC's release builds. If broader legacy-CPU
 # compatibility is ever required, delete this file: candle-core's matmul
 # falls back to its portable scalar kernel automatically — still correct,
 # just slower — no source changes needed either way.

@@ -192,7 +192,8 @@ pub fn render_cached(
         if visible.contains(&i) {
             match &index.segments[i] {
                 Segment::Markdown(text) => {
-                    let transformed = transform_wikilinks(text);
+                    let canvas_processed = transform_canvas_code_blocks(text);
+                    let transformed = transform_wikilinks(&canvas_processed);
                     CommonMarkViewer::new()
                         .enable_scroll_to_heading(true)
                         .show(ui, cache, &transformed);
@@ -200,7 +201,8 @@ pub fn render_cached(
                 Segment::Checklist { line_idx, checked, text } => {
                     let line_idx = *line_idx;
                     let is_checked_initially = *checked;
-                    let transformed = transform_wikilinks(text);
+                    let canvas_processed = transform_canvas_code_blocks(text);
+                    let transformed = transform_wikilinks(&canvas_processed);
                     ui.horizontal(|ui| {
                         let mut is_checked = is_checked_initially;
                         if ui.checkbox(&mut is_checked, "").changed() {
@@ -404,6 +406,47 @@ fn flip_checkbox_marker(line: &str) -> String {
     } else {
         line.to_string()
     }
+}
+
+/// Transform raw ```canvas ... ``` blocks into clean, beautiful visual callout alerts with human-readable text.
+fn transform_canvas_code_blocks(text: &str) -> String {
+    if !text.contains("```canvas") {
+        return text.to_string();
+    }
+
+    let mut result = String::new();
+    let mut remaining = text;
+
+    while let Some(start) = remaining.find("```canvas") {
+        result.push_str(&remaining[..start]);
+        let after_start = &remaining[start + 9..];
+        if let Some(end) = after_start.find("```") {
+            let json_body = after_start[..end].trim();
+            let doc = crate::canvas::CanvasDocument::from_markdown_body("", json_body);
+            let summary = doc.summary_text();
+            let readable = doc.to_readable_markdown();
+
+            result.push_str("> [!note] 🎨 **Papan Tulis Kanvas (Edgeless)**\n");
+            result.push_str(&format!("> *{}*\n", summary));
+            if !readable.is_empty() {
+                result.push_str(">\n");
+                for line in readable.lines() {
+                    result.push_str(&format!("> {}\n", line));
+                }
+            } else {
+                result.push_str(">\n> *Kanvas masih kosong. Buka mode 🎨 Edgeless di atas untuk mulai menggambar visual.*\n");
+            }
+            result.push('\n');
+
+            remaining = &after_start[end + 3..];
+        } else {
+            result.push_str(&remaining[start..]);
+            remaining = "";
+            break;
+        }
+    }
+    result.push_str(remaining);
+    result
 }
 
 /// Rewrite `[[Title]]` / `[[Title|Alias]]` into a real CommonMark link
@@ -642,5 +685,15 @@ mod tests {
 
         let checklist = Segment::Checklist { line_idx: 0, checked: false, text: "x".into() };
         assert_eq!(estimate_height(&checklist), estimate_height(&one_line));
+    }
+
+    #[test]
+    fn transform_canvas_code_blocks_renders_alert_and_prose() {
+        let doc = crate::canvas::CanvasDocument::new("Diagram");
+        let raw_canvas_body = doc.to_markdown_body();
+        let out = transform_canvas_code_blocks(&raw_canvas_body);
+        assert!(out.contains("> [!note] 🎨 **Papan Tulis Kanvas (Edgeless)**"));
+        assert!(out.contains("Kanvas masih kosong"));
+        assert!(!out.contains("```canvas"));
     }
 }
