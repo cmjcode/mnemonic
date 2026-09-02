@@ -108,35 +108,9 @@ impl TopBar {
                     event = Some(TopBarEvent::ToggleSidebar);
                 }
 
-                // 2. Vault Name badge (hanya bila vault aktif)
+                // 2. Search Input Field (Langsung di Header Menu - Tanpa border dan icon)
                 if state.vault_open {
-                    ui.add_space(2.0);
-                    let vault_label = if state.vault_name.is_empty() {
-                        "Vault".to_string()
-                    } else {
-                        state.vault_name.clone()
-                    };
-                    let pill_text = RichText::new(format!("📁 {vault_label}"))
-                        .size(11.5)
-                        .color(TEXT_SECONDARY);
-
-                    let pill_frame = Frame {
-                        inner_margin: Margin::symmetric(7, 3),
-                        outer_margin: Margin::ZERO,
-                        corner_radius: CornerRadius::same(ROUNDING_SM),
-                        fill: BG_CARD_DARK,
-                        stroke: Stroke::new(0.5, BORDER_SUBTLE),
-                        shadow: egui::Shadow::NONE,
-                    };
-
-                    pill_frame.show(ui, |ui| {
-                        ui.label(pill_text);
-                    });
-                }
-
-                // 3. Search Input Field (Langsung di Header Menu - Tanpa border dan icon)
-                if state.vault_open {
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
 
                     let edit = egui::TextEdit::singleline(&mut state.search_text)
                         .hint_text("Cari catatan, tag, berkas...")
