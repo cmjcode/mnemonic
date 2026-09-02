@@ -8,8 +8,8 @@ use egui::{
     Align2, Color32, CornerRadius, Frame, Margin, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
 };
 use egui_icons::icons::{
-    ICON_ADD, ICON_AUTO_AWESOME, ICON_CLOSE, ICON_DARK_MODE, ICON_LANGUAGE, ICON_LIGHT_MODE,
-    ICON_MENU, ICON_SEARCH,
+    ICON_AUTO_AWESOME, ICON_CLOSE, ICON_DARK_MODE, ICON_LANGUAGE, ICON_LIGHT_MODE, ICON_MENU,
+    ICON_SEARCH,
 };
 
 use crate::ui::theme::{
@@ -28,17 +28,10 @@ pub enum TopBarNavTab {
 pub enum TopBarEvent {
     SelectTab(TopBarNavTab),
     ToggleSidebar,
-    OpenVaultPicker,
-    CreateNote(String),
     OpenCommandPalette,
     ToggleTheme,
     SetLanguage(String),
-    ImportPdf,
-    ManageLabels,
-    OpenSettings,
-    NewCanvas,
     SearchChanged(String),
-    ClearSearch,
 }
 
 pub struct TopBarState {
@@ -48,7 +41,6 @@ pub struct TopBarState {
     pub sidebar_open: bool,
     pub theme_mode: ThemeMode,
     pub active_locale: String,
-    pub quick_capture_text: String,
     pub search_text: String,
     pub icon_size: f32,
     pub note_count: usize,
@@ -221,7 +213,7 @@ impl TopBar {
                     }
                 }
 
-                // 4. Right Layout: Quick Capture + Omnibox ⌘K + Theme + Language
+                // 4. Right Layout: Omnibox ⌘K + Theme + Language
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Theme Switcher button
                     let theme_icon = match state.theme_mode {
@@ -303,42 +295,6 @@ impl TopBar {
                     {
                         event = Some(TopBarEvent::OpenCommandPalette);
                     }
-
-                    // Quick Note Capture input (saat tidak di mode Chat)
-                    if state.vault_open && state.active_tab != TopBarNavTab::Chat {
-                        ui.add_space(4.0);
-
-                        // Tombol submit tambah
-                        let add_icon_btn = ui.add(
-                            egui::Button::new(
-                                RichText::new(ICON_ADD.codepoint)
-                                    .size(icon_sz)
-                                    .color(Color32::WHITE),
-                            )
-                            .fill(ACCENT_BLUE)
-                            .corner_radius(CornerRadius::same(ROUNDING_SM)),
-                        );
-
-                        let should_submit = add_icon_btn.clicked()
-                            && !state.quick_capture_text.trim().is_empty();
-
-                        // Input field
-                        let edit = egui::TextEdit::singleline(&mut state.quick_capture_text)
-                            .hint_text("✏ Judul cepat...")
-                            .desired_width(130.0);
-                        let edit_resp = ui.add(edit);
-
-                        if (should_submit
-                            || (edit_resp.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))))
-                            && !state.quick_capture_text.trim().is_empty()
-                        {
-                            event = Some(TopBarEvent::CreateNote(
-                                state.quick_capture_text.trim().to_string(),
-                            ));
-                            state.quick_capture_text.clear();
-                        }
-                    }
                 });
             });
         });
@@ -360,7 +316,6 @@ mod tests {
             sidebar_open: false,
             theme_mode: ThemeMode::Dark,
             active_locale: "id-ID".to_string(),
-            quick_capture_text: String::new(),
             search_text: String::new(),
             icon_size: 16.0,
             note_count: 5,

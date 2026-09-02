@@ -265,7 +265,6 @@ pub struct MnemonicApp {
     index: Option<IndexStore>,
     indexer: Option<IndexingWorker>,
     generator: Option<GenerationWorker>,
-    quick_capture_text: String,
     status: String,
     editor: Option<MarkdownEditor>,
     markdown_cache: CommonMarkCache,
@@ -325,7 +324,6 @@ impl MnemonicApp {
             // submitted job, so this never blocks startup (§6 risk 2).
             indexer: Some(IndexingWorker::spawn()),
             generator: Some(GenerationWorker::spawn()),
-            quick_capture_text: String::new(),
             status: String::new(),
             editor: None,
             markdown_cache: CommonMarkCache::default(),
@@ -1015,7 +1013,42 @@ impl MnemonicApp {
             if ui.button(t_back.as_str()).clicked() {
                 close_requested = true;
             }
-            ui.heading(editor.note.frontmatter.title.as_str());
+
+            // Editable title with double-click support
+            if editor.is_editing_title {
+                let edit_resp = ui.add(
+                    egui::TextEdit::singleline(&mut editor.title_edit_buffer)
+                        .font(egui::TextStyle::Heading)
+                        .desired_width(260.0),
+                );
+                edit_resp.request_focus();
+
+                let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                if enter_pressed || edit_resp.lost_focus() {
+                    let trimmed = editor.title_edit_buffer.trim().to_string();
+                    if !trimmed.is_empty() {
+                        editor.set_title(trimmed);
+                    } else {
+                        editor.title_edit_buffer = editor.note.frontmatter.title.clone();
+                    }
+                    editor.is_editing_title = false;
+                } else if esc_pressed {
+                    editor.title_edit_buffer = editor.note.frontmatter.title.clone();
+                    editor.is_editing_title = false;
+                }
+            } else {
+                let title_label = egui::RichText::new(editor.note.frontmatter.title.as_str())
+                    .heading()
+                    .strong();
+                let title_resp = ui.add(egui::Label::new(title_label).sense(egui::Sense::click()));
+                let title_resp = title_resp.on_hover_text("Klik 2x untuk mengganti nama dokumen");
+                if title_resp.double_clicked() {
+                    editor.is_editing_title = true;
+                    editor.title_edit_buffer = editor.note.frontmatter.title.clone();
+                }
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // AFFiNE Dual-State Switcher: [ 📄 Page | 🎨 Edgeless ]
@@ -1693,7 +1726,7 @@ impl MnemonicApp {
             match cmd_id {
                 "new_note" => {
                     if let Some(vault) = self.vault.as_mut() {
-                        if let Ok(note) = Note::create(&vault.root, "Catatan Baru", "") {
+                        if let Ok(note) = Note::create(&vault.root, "New Doc", "") {
                             self.rescan_and_reindex();
                             self.open_note(note);
                         }
@@ -3822,7 +3855,6 @@ impl eframe::App for MnemonicApp {
                         sidebar_open: self.sidebar_open,
                         theme_mode: self.theme_mode,
                         active_locale: self.locales.active_locale().to_string(),
-                        quick_capture_text: self.quick_capture_text.clone(),
                         search_text: self.search_text.clone(),
                         icon_size: 16.0,
                         note_count,
@@ -3838,9 +3870,6 @@ impl eframe::App for MnemonicApp {
                                     self.editor = None;
                                     self.pdf_viewer = None;
                                 }
-                            }
-                            ui::TopBarEvent::ClearSearch => {
-                                self.search_text.clear();
                             }
                             ui::TopBarEvent::SelectTab(tab) => {
                                 match tab {
@@ -3862,30 +3891,6 @@ impl eframe::App for MnemonicApp {
                             ui::TopBarEvent::ToggleSidebar => {
                                 self.sidebar_open = !self.sidebar_open;
                             }
-                            ui::TopBarEvent::OpenVaultPicker => {
-                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                    match Vault::open(folder) {
-                                        Ok(v) => self.activate_vault(v),
-                                        Err(e) => self.report_error("error-context-open-vault", e),
-                                    }
-                                }
-                            }
-                            ui::TopBarEvent::CreateNote(title) => {
-                                if let Some(vault) = self.vault.as_mut() {
-                                    let note_title = if title.is_empty() {
-                                        "Catatan Baru"
-                                    } else {
-                                        &title
-                                    };
-                                    match Note::create(&vault.root, note_title, "") {
-                                        Ok(note) => {
-                                            self.rescan_and_reindex();
-                                            self.open_note(note);
-                                        }
-                                        Err(e) => self.report_error("error-context-create-note", e),
-                                    }
-                                }
-                            }
                             ui::TopBarEvent::OpenCommandPalette => {
                                 self.command_palette.open();
                             }
@@ -3895,32 +3900,9 @@ impl eframe::App for MnemonicApp {
                             ui::TopBarEvent::SetLanguage(lang) => {
                                 self.locales.set_active(&lang);
                             }
-                            ui::TopBarEvent::ImportPdf => {
-                                if let Some(file) =
-                                    rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file()
-                                {
-                                    self.import_pdf(file);
-                                }
-                            }
-                            ui::TopBarEvent::ManageLabels => {
-                                self.show_label_manager = true;
-                            }
-                            ui::TopBarEvent::NewCanvas => {
-                                if let Some(vault) = self.vault.as_mut() {
-                                    match Note::create_canvas(&vault.root, "Kanvas Baru") {
-                                        Ok(note) => {
-                                            self.rescan_and_reindex();
-                                            self.open_note(note);
-                                        }
-                                        Err(e) => self.report_error("error-context-create-note", e),
-                                    }
-                                }
-                            }
-                            _ => {}
                         }
                     }
 
-                    self.quick_capture_text = topbar_state.quick_capture_text;
                     self.search_text = topbar_state.search_text;
                 });
         }
@@ -4015,7 +3997,7 @@ impl eframe::App for MnemonicApp {
                         self.sidebar_open = false;
                         self.view = View::Notes;
                         if let Some(vault) = self.vault.as_mut() {
-                            match Note::create(&vault.root, "Catatan Baru", "") {
+                            match Note::create(&vault.root, "New Doc", "") {
                                 Ok(note) => {
                                     self.rescan_and_reindex();
                                     self.open_note(note);
@@ -4039,6 +4021,72 @@ impl eframe::App for MnemonicApp {
                     }
                 }
             }
+        }
+
+        // ─── Floating Action Button (+) Pojok Kanan Bawah ────────────────────
+        if vault_open && !in_editor && !in_pdf {
+            let screen_rect = ui.ctx().viewport_rect();
+            let fab_size = egui::vec2(52.0, 52.0);
+            let margin = 24.0;
+            let fab_pos = egui::pos2(
+                screen_rect.max.x - fab_size.x - margin,
+                screen_rect.max.y - fab_size.y - margin,
+            );
+
+            egui::Area::new(egui::Id::new("mnemonic_fab_new_doc_area"))
+                .fixed_pos(fab_pos)
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    let (rect, resp) = ui.allocate_exact_size(fab_size, egui::Sense::click());
+                    let is_hovered = resp.hovered();
+
+                    // Subtle drop shadow
+                    let shadow_rect = rect.translate(egui::vec2(0.0, if is_hovered { 3.0 } else { 2.0 }));
+                    ui.painter().rect(
+                        shadow_rect,
+                        egui::CornerRadius::same(26),
+                        egui::Color32::from_rgba_premultiplied(0, 0, 0, if is_hovered { 90 } else { 60 }),
+                        egui::Stroke::NONE,
+                        egui::StrokeKind::Outside,
+                    );
+
+                    let bg_color = if is_hovered {
+                        egui::Color32::from_rgb(30, 145, 255)
+                    } else {
+                        theme::ACCENT_BLUE
+                    };
+
+                    ui.painter().rect(
+                        rect,
+                        egui::CornerRadius::same(26),
+                        bg_color,
+                        egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 40)),
+                        egui::StrokeKind::Inside,
+                    );
+
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        egui_icons::icons::ICON_ADD.codepoint,
+                        egui::FontId::proportional(24.0),
+                        egui::Color32::WHITE,
+                    );
+
+                    if resp
+                        .on_hover_text("Buat Dokumen Baru (New Doc)")
+                        .clicked()
+                    {
+                        if let Some(vault) = self.vault.as_mut() {
+                            match Note::create(&vault.root, "New Doc", "") {
+                                Ok(note) => {
+                                    self.rescan_and_reindex();
+                                    self.open_note(note);
+                                }
+                                Err(e) => self.report_error("error-context-create-note", e),
+                            }
+                        }
+                    }
+                });
         }
 
         // ─── Central Panel ───────────────────────────────────────────────────

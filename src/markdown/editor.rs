@@ -55,6 +55,10 @@ pub struct MarkdownEditor {
     pub canvas: Option<CanvasDocument>,
     /// Interaction state for canvas manipulation.
     pub canvas_interaction: InteractionState,
+    /// Whether the user is currently editing the document's title (double-click rename).
+    pub is_editing_title: bool,
+    /// Working buffer during inline title editing.
+    pub title_edit_buffer: String,
 }
 
 impl MarkdownEditor {
@@ -75,6 +79,8 @@ impl MarkdownEditor {
             None
         };
 
+        let title = note.frontmatter.title.clone();
+
         MarkdownEditor {
             note,
             mode: initial_mode,
@@ -85,11 +91,27 @@ impl MarkdownEditor {
             render_cache: RenderCache::default(),
             canvas,
             canvas_interaction: InteractionState::new(),
+            is_editing_title: false,
+            title_edit_buffer: title,
         }
     }
 
     pub fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// Update the note's title and mark as dirty for autosave.
+    pub fn set_title(&mut self, new_title: String) {
+        if new_title == self.note.frontmatter.title {
+            return;
+        }
+        self.note.frontmatter.title = new_title.clone();
+        self.title_edit_buffer = new_title.clone();
+        self.dirty = true;
+        self.pending_since = Some(Instant::now());
+        if let Some(canvas) = &mut self.canvas {
+            canvas.title = new_title;
+        }
     }
 
     /// Ensure the canvas document exists, generating or parsing it from the document's body if not yet initialized.
@@ -311,5 +333,15 @@ mod tests {
         editor.mode = EditorMode::Edgeless;
         let canvas = editor.ensure_canvas();
         assert_eq!(canvas.elements.len(), 2);
+    }
+
+    #[test]
+    fn set_title_updates_frontmatter_and_marks_dirty() {
+        let (_dir, mut editor) = editor_with_body("content");
+        assert_eq!(editor.note.frontmatter.title, "Judul");
+        editor.set_title("New Doc".to_string());
+        assert_eq!(editor.note.frontmatter.title, "New Doc");
+        assert_eq!(editor.title_edit_buffer, "New Doc");
+        assert!(editor.is_dirty());
     }
 }
