@@ -281,12 +281,10 @@ impl SidebarDrawer {
 
                 // ── Header Drawer (Vault Name & Switcher / Close) ──
                 ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new(ICON_FOLDER_OPEN.codepoint)
-                            .size(16.0)
-                            .color(ACCENT_BLUE),
-                    );
+                    ui.add_space(8.0);
+                    let logo_tex = crate::ui::logo::get_or_load_logo_texture(ui.ctx());
+                    ui.add(egui::Image::new((logo_tex.id(), Vec2::splat(18.0))).corner_radius(4.0));
+                    ui.add_space(4.0);
                     let vname = if state.vault_name.is_empty() {
                         "Vault".to_string()
                     } else {

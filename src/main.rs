@@ -19,7 +19,15 @@ fn main() -> eframe::Result<()> {
 
     env_logger::init();
 
-    let native_options = eframe::NativeOptions::default();
+    let icon = mnemonic::ui::logo::load_app_icon_arc();
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_icon(icon)
+            .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([720.0, 480.0])
+            .with_title("MNEMONIC"),
+        ..Default::default()
+    };
     eframe::run_native(
         "MNEMONIC",
         native_options,

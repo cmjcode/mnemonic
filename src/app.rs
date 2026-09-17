@@ -4747,30 +4747,65 @@ impl eframe::App for MnemonicApp {
 
             if self.vault.is_none() {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(60.0);
-                    ui.label(
-                        egui::RichText::new(egui_icons::icons::ICON_FOLDER_OPEN.codepoint)
-                            .size(48.0)
-                            .color(theme::ACCENT_BLUE),
+                    ui.add_space(50.0);
+
+                    // Logo aplikasi MNEMONIC dengan container kartu rounded halus
+                    let logo_tex = ui::logo::get_or_load_logo_texture(ui.ctx());
+                    let logo_sz = egui::Vec2::splat(84.0);
+                    let (logo_rect, _) = ui.allocate_exact_size(logo_sz, egui::Sense::hover());
+                    
+                    ui.painter().rect_filled(
+                        logo_rect.expand(6.0),
+                        egui::CornerRadius::same(theme::ROUNDING_MD),
+                        egui::Color32::from_rgba_premultiplied(10, 132, 255, 18),
                     );
-                    ui.add_space(12.0);
+                    ui.painter().rect_stroke(
+                        logo_rect.expand(6.0),
+                        egui::CornerRadius::same(theme::ROUNDING_MD),
+                        egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(10, 132, 255, 50)),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.put(
+                        logo_rect,
+                        egui::Image::new((logo_tex.id(), logo_sz))
+                            .corner_radius(egui::CornerRadius::same(theme::ROUNDING_MD)),
+                    );
+
+                    ui.add_space(16.0);
                     ui.label(
-                        egui::RichText::new(self.t("vault-select-prompt"))
-                            .size(15.0)
+                        egui::RichText::new("MNEMONIC")
+                            .size(24.0)
+                            .strong()
+                            .color(theme::TEXT_PRIMARY),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Personal Knowledge Vault • Semantic RAG • Local AI")
+                            .size(13.0)
                             .color(theme::TEXT_SECONDARY),
                     );
-                    ui.add_space(16.0);
+
+                    ui.add_space(20.0);
+                    ui.label(
+                        egui::RichText::new(self.t("vault-select-prompt"))
+                            .size(14.0)
+                            .color(theme::TEXT_MUTED),
+                    );
+                    ui.add_space(14.0);
+
                     let pick_btn = egui::Button::new(
                         egui::RichText::new(format!(
                             "{}  {}",
-                            egui_icons::icons::ICON_FOLDER.codepoint,
+                            egui_icons::icons::ICON_FOLDER_OPEN.codepoint,
                             self.t("vault-pick-folder")
                         ))
                         .color(egui::Color32::WHITE)
                         .size(14.0),
                     )
                     .fill(theme::ACCENT_BLUE)
-                    .corner_radius(egui::CornerRadius::same(theme::ROUNDING_MD));
+                    .corner_radius(egui::CornerRadius::same(theme::ROUNDING_MD))
+                    .min_size(egui::Vec2::new(180.0, 36.0));
+
                     if ui.add(pick_btn).clicked() {
                         if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                             match crate::notes::Vault::open(folder) {
@@ -4779,6 +4814,38 @@ impl eframe::App for MnemonicApp {
                             }
                         }
                     }
+
+                    ui.add_space(28.0);
+                    
+                    // Highlight fitur ringkas
+                    ui.horizontal(|ui| {
+                        let total_w = 420.0;
+                        let offset = (ui.available_width() - total_w).max(0.0) / 2.0;
+                        ui.add_space(offset);
+
+                        let chip = |ui: &mut egui::Ui, icon: &str, text: &str| {
+                            theme::card_frame()
+                                .inner_margin(egui::Margin::symmetric(10, 6))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(icon)
+                                                .size(13.0)
+                                                .color(theme::ACCENT_BLUE),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(text)
+                                                .size(11.5)
+                                                .color(theme::TEXT_SECONDARY),
+                                        );
+                                    });
+                                });
+                        };
+
+                        chip(ui, egui_icons::icons::ICON_DESCRIPTION.codepoint, "Markdown + Canvas + PDF");
+                        ui.add_space(8.0);
+                        chip(ui, egui_icons::icons::ICON_AUTO_AWESOME.codepoint, "Local AI & RAG");
+                    });
                 });
                 return;
             }

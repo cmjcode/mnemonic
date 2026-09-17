@@ -108,6 +108,20 @@ impl TopBar {
                     event = Some(TopBarEvent::ToggleSidebar);
                 }
 
+                // Brand Emblem when no vault is open
+                if !state.vault_open {
+                    ui.add_space(6.0);
+                    let logo_tex = crate::ui::logo::get_or_load_logo_texture(ui.ctx());
+                    ui.add(egui::Image::new((logo_tex.id(), Vec2::splat(18.0))).corner_radius(4.0));
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("MNEMONIC")
+                            .size(13.0)
+                            .strong()
+                            .color(TEXT_PRIMARY),
+                    );
+                }
+
                 // 2. Search Input Field (Langsung di Header Menu - Tanpa border dan icon)
                 if state.vault_open {
                     ui.add_space(8.0);
