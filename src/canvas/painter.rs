@@ -30,6 +30,20 @@ fn color_from_rgba_unmultiplied(rgb: [f32; 3], alpha: u8) -> Color32 {
 /// Labels smaller than this (in screen pixels) are unreadable and skipped.
 const MIN_READABLE_FONT: f32 = 4.0;
 
+/// Snap a zoomed font size to a small set of sizes.
+///
+/// egui rasterizes and caches glyphs per exact font size, so feeding it
+/// `base * zoom` during a smooth zoom creates a new size every frame. That
+/// fills the font atlas, which egui then rebuilds and re-uploads wholesale —
+/// the periodic stall seen when zooming a large diagram.
+fn quantize_font_size(size: f32) -> f32 {
+    if size <= 24.0 {
+        size.round()
+    } else {
+        (size / 4.0).round() * 4.0
+    }
+}
+
 /// Black or white, whichever reads better on the given fill.
 fn contrasting_text_color(fill: [f32; 3]) -> Color32 {
     let luminance = 0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2];
@@ -47,7 +61,8 @@ fn draw_wrapped_label(painter: &Painter, rect: Rect, text: &str, font_size: f32,
     }
     let padding = (4.0 * font_size / 13.5).min(rect.width() * 0.1);
     let wrap_width = (rect.width() - padding * 2.0).max(1.0);
-    let galley = painter.layout(text.to_owned(), FontId::proportional(font_size), color, wrap_width);
+    let font = FontId::proportional(quantize_font_size(font_size));
+    let galley = painter.layout(text.to_owned(), font, color, wrap_width);
     let text_rect = Align2::CENTER_CENTER.anchor_size(rect.center(), galley.size());
     painter
         .with_clip_rect(rect.intersect(painter.clip_rect()))
@@ -139,7 +154,7 @@ pub fn draw_element(
                         title_rect.min,
                         Align2::LEFT_TOP,
                         title,
-                        FontId::proportional(font_size),
+                        FontId::proportional(quantize_font_size(font_size)),
                         border_color,
                     );
             }
@@ -271,7 +286,7 @@ pub fn draw_element(
             // Text inside sticky note
             let text_rect = screen_rect.shrink(10.0 * viewport.zoom);
             let text_color = Color32::from_rgb(35, 38, 45);
-            let font_size = (13.0 * viewport.zoom).clamp(8.0, 20.0);
+            let font_size = quantize_font_size((13.0 * viewport.zoom).clamp(8.0, 20.0));
             painter.text(
                 text_rect.min,
                 Align2::LEFT_TOP,
@@ -323,7 +338,7 @@ pub fn draw_element(
                 title_pos,
                 Align2::LEFT_TOP,
                 format!("{} {}", icon, title),
-                FontId::proportional((14.0 * viewport.zoom).clamp(9.0, 20.0)),
+                FontId::proportional(quantize_font_size((14.0 * viewport.zoom).clamp(9.0, 20.0))),
                 if is_dark {
                     Color32::WHITE
                 } else {
@@ -337,7 +352,7 @@ pub fn draw_element(
                 snippet_pos,
                 Align2::LEFT_TOP,
                 snippet,
-                FontId::proportional((11.5 * viewport.zoom).clamp(7.5, 16.0)),
+                FontId::proportional(quantize_font_size((11.5 * viewport.zoom).clamp(7.5, 16.0))),
                 if is_dark {
                     Color32::from_gray(190)
                 } else {
@@ -426,7 +441,7 @@ pub fn draw_element(
                 if font_size >= MIN_READABLE_FONT {
                     let galley = painter.layout(
                         label.clone(),
-                        FontId::proportional(font_size),
+                        FontId::proportional(quantize_font_size(font_size)),
                         stroke_c,
                         f32::INFINITY,
                     );

@@ -112,8 +112,14 @@ impl Viewport {
             Color32::from_black_alpha(25)
         };
 
-        // Grid cell step in world coordinates
-        let step_world = 32.0;
+        // Grid cell step in world coordinates, doubled while zoomed out so
+        // dots stay at least MIN_SCREEN_STEP apart — otherwise a zoomed-out
+        // view paints tens of thousands of dots every frame.
+        const MIN_SCREEN_STEP: f32 = 16.0;
+        let mut step_world = 32.0;
+        while step_world * self.zoom < MIN_SCREEN_STEP {
+            step_world *= 2.0;
+        }
 
         let origin = screen_rect.min;
         let top_left_world = self.screen_to_world(screen_rect.min, origin);

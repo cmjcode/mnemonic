@@ -468,7 +468,9 @@ pub(super) fn show_canvas_surface(
         interaction.active_tool = tool;
     }
 
-    // 1. Zoom & pan — only while the pointer is over the canvas.
+    // 1. Zoom & pan — only while the pointer is over the canvas. The viewport
+    // isn't part of the saved body, so these don't set `modified`: doing so
+    // re-serialized the whole diagram every frame of a zoom or pan.
     if response.contains_pointer() {
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
         let zoom_delta = ui.input(|i| i.zoom_delta());
@@ -478,19 +480,16 @@ pub(super) fn show_canvas_surface(
         if (zoom_delta - 1.0).abs() > 1e-4 {
             if let Some(pos) = hover_pos {
                 canvas.viewport.zoom_at(zoom_delta, pos, origin);
-                modified = true;
             }
         } else if ctrl_pressed && scroll_delta.y != 0.0 {
             let factor = if scroll_delta.y > 0.0 { 1.1 } else { 0.9 };
             if let Some(pos) = hover_pos {
                 canvas.viewport.zoom_at(factor, pos, origin);
-                modified = true;
             }
         } else if scroll_delta != Vec2::ZERO {
             canvas
                 .viewport
                 .add_pan_vec(scroll_delta / canvas.viewport.zoom);
-            modified = true;
         }
     }
 
@@ -507,6 +506,11 @@ pub(super) fn show_canvas_surface(
             if interaction.active_tool == CanvasTool::Pen {
                 interaction.current_freehand_points = vec![[world_pos.x, world_pos.y]];
             }
+            interaction.dragged_elem = if interaction.active_tool == CanvasTool::Select {
+                canvas.element_at(world_pos).map(|e| e.id())
+            } else {
+                None
+            };
         }
     } else if response.dragged() {
         let drag_delta = response.drag_delta();
@@ -518,7 +522,6 @@ pub(super) fn show_canvas_surface(
                     canvas
                         .viewport
                         .add_pan_vec(drag_delta / canvas.viewport.zoom);
-                    modified = true;
                 }
                 CanvasTool::Pen => {
                     interaction
@@ -526,27 +529,16 @@ pub(super) fn show_canvas_surface(
                         .push([world_pos.x, world_pos.y]);
                 }
                 CanvasTool::Select => {
-                    if let Some(start) = interaction.drag_start_world {
-                        let zoom = canvas.viewport.zoom;
-                        let start_world = egui::Pos2::new(start[0], start[1]);
-                        match canvas.element_at(start_world).map(|e| e.id()) {
-                            Some(elem_id) => {
-                                if let Some(target) = canvas.get_element_mut(elem_id) {
-                                    target.translate(drag_delta / zoom);
-                                    // Track the grab point so the element
-                                    // stays "held" as it moves.
-                                    interaction.drag_start_world = Some([
-                                        start[0] + drag_delta.x / zoom,
-                                        start[1] + drag_delta.y / zoom,
-                                    ]);
-                                    modified = true;
-                                }
-                            }
-                            None => {
-                                canvas.viewport.add_pan_vec(drag_delta / zoom);
-                                modified = true;
+                    // Moving an element only syncs the body once, on drag
+                    // stop — not on every frame of the drag.
+                    let zoom = canvas.viewport.zoom;
+                    match interaction.dragged_elem {
+                        Some(elem_id) => {
+                            if let Some(target) = canvas.get_element_mut(elem_id) {
+                                target.translate(drag_delta / zoom);
                             }
                         }
+                        None => canvas.viewport.add_pan_vec(drag_delta / zoom),
                     }
                 }
                 _ => {}
@@ -615,6 +607,9 @@ pub(super) fn show_canvas_surface(
                         modified = true;
                     }
                 }
+                CanvasTool::Select if interaction.dragged_elem.is_some() => {
+                    modified = true;
+                }
                 CanvasTool::Eraser => {
                     if let Some(id) = canvas
                         .element_at(egui::Pos2::new(start[0], start[1]))
@@ -628,6 +623,7 @@ pub(super) fn show_canvas_surface(
             }
         }
         interaction.is_dragging = false;
+        interaction.dragged_elem = None;
         interaction.drag_start_world = None;
         interaction.drag_current_world = None;
     }
@@ -649,7 +645,16 @@ pub(super) fn show_canvas_surface(
         let world = canvas.viewport.screen_to_world(pos, origin);
         canvas.element_at(world).map(|e| e.id())
     });
-    for elem in &canvas.elements {
+    // Skip elements entirely off-screen; the margin keeps connector labels and
+    // selection handles that poke past an element's bounds from popping.
+    let visible_world = canvas
+        .viewport
+        .screen_rect_to_world(screen_rect.expand(64.0), origin);
+    for elem in canvas
+        .elements
+        .iter()
+        .filter(|e| visible_world.intersects(e.bounding_rect()))
+    {
         canvas::draw_element(
             &painter,
             &canvas.viewport,

@@ -20,6 +20,13 @@ edition = "2024"
 # alive. `panic = "abort"` would turn that into a whole-process crash on
 # any panic anywhere, which is a strictly worse failure mode for a
 # note-taking app whose top priority is not losing unsaved edits.
+# Dependencies (egui/epaint tessellation, font rasterization, candle) are
+# optimized even in dev builds: unoptimized they make the canvas crawl on
+# large Draw.io imports. Our own crate stays at opt-level 0 so incremental
+# rebuilds remain fast; deps only compile once.
+[profile.dev.package."*"]
+opt-level = 2
+
 [profile.release]
 lto = true
 codegen-units = 1

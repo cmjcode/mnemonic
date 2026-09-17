@@ -42,6 +42,9 @@ pub struct InteractionState {
     pub drag_current_world: Option<[f32; 2]>,
     pub current_freehand_points: Vec<[f32; 2]>,
     pub editing_text_elem: Option<super::element::CanvasElementId>,
+    /// Element grabbed by the current Select-tool drag, if any. Resolved once
+    /// at drag start so the hit test doesn't run every frame.
+    pub dragged_elem: Option<super::element::CanvasElementId>,
 }
 
 impl InteractionState {
@@ -55,6 +58,7 @@ impl InteractionState {
             drag_current_world: None,
             current_freehand_points: Vec::new(),
             editing_text_elem: None,
+            dragged_elem: None,
         }
     }
 }
