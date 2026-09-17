@@ -40,15 +40,22 @@ pub fn load_app_icon_data() -> egui::IconData {
     }
 }
 
-/// Helper untuk memuat atau mengambil tekstur logo yang telah di-cache dalam `egui::Context`.
-pub fn get_or_load_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
-    ctx.load_texture(
+/// Tekstur logo, di-decode & di-upload sekali lalu di-cache di memori
+/// `egui::Context` — sebelumnya PNG di-decode ulang setiap frame.
+pub fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::new("app_logo_texture_handle");
+    if let Some(handle) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return handle;
+    }
+    let handle = ctx.load_texture(
         "app_logo_texture",
         load_logo_color_image().unwrap_or_else(|_| {
             egui::ColorImage::from_rgba_unmultiplied([1, 1], &[255, 255, 255, 255])
         }),
         egui::TextureOptions::LINEAR,
-    )
+    );
+    ctx.data_mut(|d| d.insert_temp(id, handle.clone()));
+    handle
 }
 
 /// Arc-wrapped IconData yang cocok langsung untuk `ViewportBuilder::with_icon`.

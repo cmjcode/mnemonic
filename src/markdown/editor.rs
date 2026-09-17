@@ -105,6 +105,22 @@ impl MarkdownEditor {
         self.dirty
     }
 
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// Restarts the debounce window without saving — used after a failed
+    /// save so the per-frame poll retries later instead of every frame.
+    pub fn postpone_autosave(&mut self) {
+        if self.dirty {
+            self.pending_since = Some(Instant::now());
+        }
+    }
+
     /// Update the note's title and mark as dirty for autosave.
     pub fn set_title(&mut self, new_title: String) {
         if new_title == self.note.frontmatter.title {
@@ -228,6 +244,9 @@ impl MarkdownEditor {
         if self.mode == EditorMode::Edgeless {
             self.sync_canvas_to_body();
         }
+        // `Note::save` stamps `modified` on the copy it writes; mirror that
+        // here so sorting by "last modified" is right without a rescan.
+        self.note.frontmatter.modified = chrono::Utc::now();
         self.note.save()?;
         self.dirty = false;
         self.pending_since = None;
@@ -269,21 +288,23 @@ impl MarkdownEditor {
 
 /// A `/` slash-command template offered by the insertion popup (§3.2.4).
 pub struct SlashTemplate {
-    pub label: &'static str,
+    /// Locale key for the menu label (see `locales/*/main.ftl`).
+    pub key: &'static str,
     pub insert: &'static str,
 }
 
 pub fn slash_templates() -> &'static [SlashTemplate] {
     &[
-        SlashTemplate { label: "Heading 1", insert: "# " },
-        SlashTemplate { label: "Heading 2", insert: "## " },
-        SlashTemplate { label: "Checklist", insert: "- [ ] " },
-        SlashTemplate { label: "Code block", insert: "```rust\n\n```" },
-        SlashTemplate { label: "Callout Note", insert: "> [!note]\n> " },
-        SlashTemplate { label: "Callout Warning", insert: "> [!warning]\n> " },
-        SlashTemplate { label: "Table", insert: "| Kolom 1 | Kolom 2 |\n| --- | --- |\n|  |  |" },
-        SlashTemplate { label: "Divider", insert: "---\n" },
-        SlashTemplate { label: "Canvas Embed", insert: "![[canvas:whiteboard]]\n" },
+        SlashTemplate { key: "slash-heading-1", insert: "# " },
+        SlashTemplate { key: "slash-heading-2", insert: "## " },
+        SlashTemplate { key: "slash-checklist", insert: "- [ ] " },
+        SlashTemplate { key: "slash-bullet-list", insert: "- " },
+        SlashTemplate { key: "slash-quote", insert: "> " },
+        SlashTemplate { key: "slash-code-block", insert: "```\n\n```" },
+        SlashTemplate { key: "slash-callout-note", insert: "> [!note]\n> " },
+        SlashTemplate { key: "slash-callout-warning", insert: "> [!warning]\n> " },
+        SlashTemplate { key: "slash-table", insert: "| A | B |\n| --- | --- |\n|  |  |" },
+        SlashTemplate { key: "slash-divider", insert: "---\n" },
     ]
 }
 

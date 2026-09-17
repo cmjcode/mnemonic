@@ -9,4 +9,5 @@ pub mod llm;
 pub mod markdown;
 pub mod notes;
 pub mod pdf;
+pub mod settings;
 pub mod ui;

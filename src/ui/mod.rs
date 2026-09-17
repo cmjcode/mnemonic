@@ -1,11 +1,13 @@
-//! Komponen UI MNEMONIC terpadu bergaya Shapr3D / DUCAD (Floating Canvas-First UI):
-//! - Tema glassmorphism gelap & terang serta token warna (`theme`)
-//! - Bilah atas mengambang & navigasi segmen (`top_bar`)
-//! - Slide-over drawer samping untuk filter dokumen & tag (`sidebar`)
-//! - Bilah alat vertikal mengambang di sisi kiri (`left_toolbar`)
-//! - Command palette bergaya VS Code / Spotlight (`command_palette`)
-//! - In-Canvas HUD pills untuk zoom & style picker (`canvas_hud`)
-//! - Dialog modal & konfirmasi destruktif (`modal`)
+//! MNEMONIC UI components, all built on one design system:
+//! - `theme`: palettes (dark & light), type scale, spacing, frames
+//! - `widgets`: shared buttons, rows, inputs, empty states
+//! - `top_bar`: docked, context-aware app bar (search / editor / PDF)
+//! - `sidebar`: vault switcher, library filters, folder tree, labels
+//! - `chat_sidebar`: docked AI assistant panel
+//! - `command_palette`: ⌘K command & note switcher
+//! - `left_toolbar`, `canvas_hud`: whiteboard tool dock & HUD pills
+//! - `modal`: confirmation / prompt / picker dialogs
+//! - `toast`: non-blocking notifications with undo
 
 pub mod canvas_hud;
 pub mod chat_sidebar;
@@ -15,7 +17,9 @@ pub mod logo;
 pub mod modal;
 pub mod sidebar;
 pub mod theme;
+pub mod toast;
 pub mod top_bar;
+pub mod widgets;
 
 pub use canvas_hud::{CanvasHud, CanvasHudEvent};
 pub use chat_sidebar::{
@@ -24,13 +28,14 @@ pub use chat_sidebar::{
 };
 pub use command_palette::{CommandPalette, PaletteCommand};
 pub use left_toolbar::{LeftToolbar, LeftToolbarEvent};
-pub use logo::{get_or_load_logo_texture, load_app_icon_arc, load_app_icon_data, load_logo_color_image};
-pub use modal::{ConfirmModal, LabelManagerEvent, LabelManagerModal, MoveFolderModal, PromptInputModal};
-pub use sidebar::{FileTreeNode, SidebarDocFilter, SidebarDrawer, SidebarEvent, SidebarState, SidebarTab};
-pub use theme::{
-    apply_theme, card_frame, color_for, color_solid_for, glass_frame, glass_panel_frame,
-    glass_topbar_frame, pill_frame, tag_chip_frame, tag_color, ThemeMode, ACCENT_BLUE,
-    ACCENT_GREEN, ACCENT_ORANGE, ACCENT_PURPLE, BG_CANVAS, BG_CARD_DARK, BG_HOVER_DARK,
-    BG_PANEL_DARK, BORDER_SUBTLE, CHAT_SIDEBAR_WIDTH, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+pub use logo::{load_app_icon_arc, load_app_icon_data, load_logo_color_image, logo_texture};
+pub use modal::{
+    ConfirmModal, LabelManagerEvent, LabelManagerModal, MoveChoice, MoveFolderModal,
+    PromptInputModal, ShortcutsModal,
 };
-pub use top_bar::{TopBar, TopBarEvent, TopBarNavTab, TopBarState};
+pub use sidebar::{
+    FileTreeNode, SidebarCounts, SidebarDocFilter, SidebarDrawer, SidebarEvent, SidebarState,
+};
+pub use theme::{ThemeMode, apply_theme, pal};
+pub use toast::{ToastKind, Toasts};
+pub use top_bar::{EditorModeTab, SaveState, TopBar, TopBarContext, TopBarEvent, TopBarState};

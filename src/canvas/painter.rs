@@ -38,12 +38,12 @@ pub fn draw_element(
 
             painter.rect_filled(
                 screen_rect,
-                CornerRadius::same(theme::ROUNDING_SM),
+                CornerRadius::same(theme::RADIUS_SM),
                 frame_color,
             );
             painter.rect_stroke(
                 screen_rect,
-                CornerRadius::same(theme::ROUNDING_SM),
+                CornerRadius::same(theme::RADIUS_SM),
                 (1.5 * viewport.zoom, border_color),
                 StrokeKind::Middle,
             );
@@ -89,12 +89,12 @@ pub fn draw_element(
                 ShapeKind::RoundedRect | ShapeKind::CalloutBubble => {
                     painter.rect_filled(
                         screen_rect,
-                        CornerRadius::same(theme::ROUNDING_MD),
+                        CornerRadius::same(theme::RADIUS_MD),
                         fill,
                     );
                     painter.rect_stroke(
                         screen_rect,
-                        CornerRadius::same(theme::ROUNDING_MD),
+                        CornerRadius::same(theme::RADIUS_MD),
                         (stroke_w, stroke_c),
                         StrokeKind::Middle,
                     );
@@ -168,20 +168,20 @@ pub fn draw_element(
             let shadow_rect = screen_rect.translate(Vec2::new(2.0, 3.0) * viewport.zoom);
             painter.rect_filled(
                 shadow_rect,
-                CornerRadius::same(theme::ROUNDING_SM),
+                CornerRadius::same(theme::RADIUS_SM),
                 shadow_color,
             );
 
             // Note body
             painter.rect_filled(
                 screen_rect,
-                CornerRadius::same(theme::ROUNDING_SM),
+                CornerRadius::same(theme::RADIUS_SM),
                 fill,
             );
             let border_color = color_from_rgb(*color, 255);
             painter.rect_stroke(
                 screen_rect,
-                CornerRadius::same(theme::ROUNDING_SM),
+                CornerRadius::same(theme::RADIUS_SM),
                 (1.0 * viewport.zoom, border_color),
                 StrokeKind::Middle,
             );
@@ -224,12 +224,12 @@ pub fn draw_element(
 
             painter.rect_filled(
                 screen_rect,
-                CornerRadius::same(theme::ROUNDING_MD),
+                CornerRadius::same(theme::RADIUS_MD),
                 bg_color,
             );
             painter.rect_stroke(
                 screen_rect,
-                CornerRadius::same(theme::ROUNDING_MD),
+                CornerRadius::same(theme::RADIUS_MD),
                 (1.2 * viewport.zoom, stroke_color),
                 StrokeKind::Middle,
             );
@@ -360,7 +360,7 @@ pub fn draw_element(
         let sel_color = Color32::from_rgb(80, 150, 255);
         painter.rect_stroke(
             bounds.expand(4.0),
-            CornerRadius::same(theme::ROUNDING_SM),
+            CornerRadius::same(theme::RADIUS_SM),
             (1.8, sel_color),
             StrokeKind::Outside,
         );

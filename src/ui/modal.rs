@@ -1,302 +1,292 @@
-//! Modals, Alert Dialogs, and Toast Banners bergaya Shapr3D / DUCAD.
-//!
-//! Menyediakan dialog konfirmasi hapus permanen, modal pengelola label,
-//! serta banner notifikasi kesalahan / status.
+//! Modal dialogs: confirmation, text prompt, folder picker, label manager,
+//! and the keyboard shortcut cheat sheet. All share one look — dimmed
+//! backdrop, centered card, Esc / click-outside to cancel, Enter to confirm.
 
-use egui::{
-    Color32, CornerRadius, Pos2, Rect, RichText, Sense, Vec2,
-};
+use std::path::PathBuf;
+
+use egui::{Align, Align2, Id, Layout, Margin, RichText, Ui, Vec2};
 use egui_icons::icons::{
-    ICON_CHECK, ICON_CLOSE, ICON_DELETE, ICON_EDIT, ICON_PALETTE, ICON_WARNING,
+    ICON_CHECK, ICON_CLOSE, ICON_DELETE, ICON_EDIT, ICON_FOLDER, ICON_HOME, ICON_KEYBOARD,
+    ICON_LABEL, ICON_WARNING,
 };
 
-use crate::ui::theme::{
-    glass_frame, tag_color, ACCENT_BLUE, BG_CARD_DARK, GLASS_ERROR, ROUNDING_SM, TEXT_MUTED,
-    TEXT_PRIMARY, TEXT_SECONDARY,
-};
+use crate::i18n::LocaleManager;
+use crate::ui::theme::{self, pal, tag_color};
+use crate::ui::widgets::{self, ButtonKind};
+
+/// Shows a centered modal card of `width`. Returns `(content result,
+/// dismissed)` where `dismissed` is true on Esc or a backdrop click.
+fn modal<R>(
+    ctx: &egui::Context,
+    id: &str,
+    width: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> (Option<R>, bool) {
+    let backdrop_clicked = widgets::modal_backdrop(ctx, Id::new((id, "backdrop")));
+    let width = width.min(ctx.viewport_rect().width() - 32.0);
+    let inner = egui::Window::new(id)
+        .id(Id::new((id, "window")))
+        .title_bar(false)
+        .resizable(false)
+        .collapsible(false)
+        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+        .default_width(width)
+        .min_width(width)
+        .max_width(width)
+        .frame(theme::popover_frame().inner_margin(Margin::same(20)))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            add_contents(ui)
+        })
+        .and_then(|r| r.inner);
+    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    (inner, esc || backdrop_clicked)
+}
+
+fn modal_title(ui: &mut Ui, icon: &str, icon_color: egui::Color32, title: &str) {
+    let p = pal();
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(icon).size(20.0).color(icon_color));
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(title)
+                .font(theme::semibold(theme::TEXT_LG))
+                .color(p.text),
+        );
+    });
+}
+
+/// Right-aligned footer with a cancel and a confirm button. Returns
+/// `Some(true)` for confirm, `Some(false)` for cancel.
+fn footer(
+    ui: &mut Ui,
+    confirm_label: &str,
+    cancel_label: &str,
+    confirm_kind: ButtonKind,
+    confirm_enabled: bool,
+) -> Option<bool> {
+    let mut result = None;
+    ui.add_space(theme::SPACE_L);
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.add_enabled_ui(confirm_enabled, |ui| {
+            if widgets::button(ui, confirm_kind, None, confirm_label).clicked() {
+                result = Some(true);
+            }
+        });
+        if widgets::button(ui, ButtonKind::Ghost, None, cancel_label).clicked() {
+            result = Some(false);
+        }
+    });
+    result
+}
 
 pub struct ConfirmModal;
 
 impl ConfirmModal {
-    /// Render alert konfirmasi hapus atau tindakan destruktif lainnya.
+    /// `Some(true)` confirmed, `Some(false)` cancelled, `None` still open.
+    /// Enter confirms only non-destructive dialogs.
     pub fn show(
         ctx: &egui::Context,
         title: &str,
         message: &str,
         confirm_label: &str,
+        cancel_label: &str,
         is_destructive: bool,
     ) -> Option<bool> {
-        let mut result = None;
-        let screen_rect = ctx.viewport_rect();
-
-        let backdrop_layer = egui::LayerId::new(
-            egui::Order::Middle,
-            egui::Id::new("confirm_modal_backdrop"),
-        );
-        let backdrop_painter = ctx.layer_painter(backdrop_layer);
-        backdrop_painter.rect_filled(
-            screen_rect,
-            CornerRadius::ZERO,
-            Color32::from_black_alpha(120),
-        );
-
-        let modal_width = 380.0;
-        let modal_height = 170.0;
-        let modal_pos = Pos2::new(
-            screen_rect.center().x - modal_width / 2.0,
-            screen_rect.center().y - modal_height / 2.0,
-        );
-
-        egui::Window::new("confirm_modal_dialog")
-            .title_bar(false)
-            .resizable(false)
-            .collapsible(false)
-            .fixed_rect(Rect::from_min_size(
-                modal_pos,
-                Vec2::new(modal_width, modal_height),
-            ))
-            .frame(glass_frame())
-            .show(ctx, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    let icon_color = if is_destructive {
-                        GLASS_ERROR
-                    } else {
-                        ACCENT_BLUE
-                    };
-                    ui.label(
-                        RichText::new(ICON_WARNING.codepoint)
-                            .size(20.0)
-                            .color(icon_color),
-                    );
-                    ui.label(RichText::new(title).size(14.0).strong().color(TEXT_PRIMARY));
-                });
-
-                ui.add_space(8.0);
-                ui.label(RichText::new(message).size(12.5).color(TEXT_SECONDARY));
-
-                ui.add_space(16.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let btn_color = if is_destructive {
-                        GLASS_ERROR
-                    } else {
-                        ACCENT_BLUE
-                    };
-                    let confirm_btn = egui::Button::new(
-                        RichText::new(confirm_label)
-                            .size(12.5)
-                            .color(Color32::WHITE),
-                    )
-                    .fill(btn_color)
-                    .corner_radius(CornerRadius::same(ROUNDING_SM));
-
-                    if ui.add(confirm_btn).clicked() {
-                        result = Some(true);
-                    }
-
-                    ui.add_space(8.0);
-
-                    let cancel_btn = egui::Button::new(
-                        RichText::new("Batal")
-                            .size(12.5)
-                            .color(TEXT_SECONDARY),
-                    )
-                    .fill(BG_CARD_DARK)
-                    .corner_radius(CornerRadius::same(ROUNDING_SM));
-
-                    if ui.add(cancel_btn).clicked() {
-                        result = Some(false);
-                    }
-                });
-            });
-
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            result = Some(false);
+        let p = pal();
+        let (result, dismissed) = modal(ctx, "confirm_modal", 400.0, |ui| {
+            let (icon, color) = if is_destructive {
+                (ICON_WARNING.codepoint, p.danger)
+            } else {
+                (ICON_CHECK.codepoint, p.accent)
+            };
+            modal_title(ui, icon, color, title);
+            ui.add_space(theme::SPACE_S);
+            ui.label(
+                RichText::new(message)
+                    .size(theme::TEXT_BODY)
+                    .color(p.text_dim),
+            );
+            let kind = if is_destructive {
+                ButtonKind::Danger
+            } else {
+                ButtonKind::Primary
+            };
+            footer(ui, confirm_label, cancel_label, kind, true)
+        });
+        if dismissed {
+            return Some(false);
         }
-
-        result
+        if !is_destructive && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            return Some(true);
+        }
+        result.flatten()
     }
 }
 
-pub struct LabelManagerModal;
+pub struct PromptInputModal;
 
-impl LabelManagerModal {
-    /// Render modal pengelolaan label tag (rename, hapus).
+impl PromptInputModal {
+    /// Text prompt (new folder, rename). `Some(true)` confirmed with a
+    /// non-empty value, `Some(false)` cancelled, `None` still open.
     pub fn show(
         ctx: &egui::Context,
-        all_tags: &[(String, usize)],
-        rename_input: &mut String,
-        selected_tag_to_rename: &mut Option<String>,
-    ) -> Option<LabelManagerEvent> {
-        let mut event = None;
-        let screen_rect = ctx.viewport_rect();
+        title: &str,
+        message: &str,
+        input_value: &mut String,
+        placeholder: &str,
+        confirm_label: &str,
+        cancel_label: &str,
+    ) -> Option<bool> {
+        let p = pal();
+        let focused_once = Id::new("prompt_modal_focused");
+        let (result, dismissed) = modal(ctx, "prompt_modal", 420.0, |ui| {
+            modal_title(ui, ICON_EDIT.codepoint, p.accent, title);
+            ui.add_space(theme::SPACE_S);
+            ui.label(
+                RichText::new(message)
+                    .size(theme::TEXT_BODY)
+                    .color(p.text_dim),
+            );
+            ui.add_space(theme::SPACE_M);
 
-        let backdrop_layer = egui::LayerId::new(
-            egui::Order::Middle,
-            egui::Id::new("label_modal_backdrop"),
-        );
-        let backdrop_painter = ctx.layer_painter(backdrop_layer);
-        backdrop_painter.rect_filled(
-            screen_rect,
-            CornerRadius::ZERO,
-            Color32::from_black_alpha(120),
-        );
+            let edit_id = Id::new("prompt_modal_input");
+            let resp = ui.add(
+                egui::TextEdit::singleline(input_value)
+                    .id(edit_id)
+                    .hint_text(placeholder)
+                    .margin(Margin::symmetric(10, 8))
+                    .desired_width(f32::INFINITY),
+            );
+            // Focus once when opened, selecting the existing text so the
+            // user can type a replacement straight away.
+            if !ui
+                .ctx()
+                .data(|d| d.get_temp::<bool>(focused_once))
+                .unwrap_or(false)
+            {
+                resp.request_focus();
+                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
+                    let len = input_value.chars().count();
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::two(
+                            egui::text::CCursor::new(0),
+                            egui::text::CCursor::new(len),
+                        )));
+                    state.store(ui.ctx(), edit_id);
+                }
+                ui.ctx().data_mut(|d| d.insert_temp(focused_once, true));
+            }
 
-        let modal_width = 440.0;
-        let modal_height = 380.0;
-        let modal_pos = Pos2::new(
-            screen_rect.center().x - modal_width / 2.0,
-            screen_rect.center().y - modal_height / 2.0,
-        );
+            let valid = !input_value.trim().is_empty();
+            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let clicked = footer(ui, confirm_label, cancel_label, ButtonKind::Primary, valid);
+            if enter && valid { Some(true) } else { clicked }
+        });
+        let outcome = if dismissed {
+            Some(false)
+        } else {
+            result.flatten()
+        };
+        if outcome.is_some() {
+            ctx.data_mut(|d| d.remove::<bool>(focused_once));
+        }
+        outcome
+    }
+}
 
-        egui::Window::new("label_manager_modal")
-            .title_bar(false)
-            .resizable(false)
-            .collapsible(false)
-            .fixed_rect(Rect::from_min_size(
-                modal_pos,
-                Vec2::new(modal_width, modal_height),
-            ))
-            .frame(glass_frame())
-            .show(ctx, |ui| {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(ICON_PALETTE.codepoint)
-                            .size(16.0)
-                            .color(ACCENT_BLUE),
-                    );
-                    ui.label(
-                        RichText::new("Kelola Label & Tag")
-                            .size(14.0)
-                            .strong()
-                            .color(TEXT_PRIMARY),
-                    );
+/// What the user picked in [`MoveFolderModal`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MoveChoice {
+    Root,
+    Folder(PathBuf),
+    Cancel,
+}
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let close_btn = egui::Button::new(
-                            RichText::new(ICON_CLOSE.codepoint)
-                                .size(14.0)
-                                .color(TEXT_SECONDARY),
+pub struct MoveFolderModal;
+
+impl MoveFolderModal {
+    /// Folder picker for moving a file/folder. `None` while still open.
+    pub fn show(
+        ctx: &egui::Context,
+        tr: &LocaleManager,
+        item_name: &str,
+        available_folders: &[(PathBuf, String)],
+        search_filter: &mut String,
+    ) -> Option<MoveChoice> {
+        let t = |key: &str| tr.t(key, &[]);
+        let p = pal();
+        let (result, dismissed) = modal(ctx, "move_modal", 440.0, |ui| {
+            let mut choice = None;
+            modal_title(
+                ui,
+                ICON_FOLDER.codepoint,
+                p.accent,
+                &tr.t("move-modal-title", &[("name", item_name)]),
+            );
+            ui.add_space(theme::SPACE_M);
+            let width = ui.available_width();
+            widgets::search_field(
+                ui,
+                Id::new("move_modal_search"),
+                search_filter,
+                &t("move-modal-search"),
+                width,
+                None,
+            );
+            ui.add_space(theme::SPACE_S);
+
+            let filter = search_filter.to_lowercase();
+            egui::ScrollArea::vertical()
+                .max_height(280.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let row = |ui: &mut Ui, icon: &str, color, label: &str| {
+                        widgets::list_row(
+                            ui,
+                            widgets::RowSpec {
+                                icon,
+                                icon_color: color,
+                                label,
+                                trailing: None,
+                                selected: false,
+                                indent: 0.0,
+                                reserve_right: 0.0,
+                            },
                         )
-                        .frame(false);
-                        if ui.add(close_btn).clicked() {
-                            event = Some(LabelManagerEvent::Close);
+                        .clicked()
+                    };
+                    let root_label = t("move-modal-root");
+                    if (filter.is_empty() || root_label.to_lowercase().contains(&filter))
+                        && row(ui, ICON_HOME.codepoint, p.accent, &root_label)
+                    {
+                        choice = Some(MoveChoice::Root);
+                    }
+                    for (dir_path, display_name) in available_folders {
+                        if !filter.is_empty() && !display_name.to_lowercase().contains(&filter) {
+                            continue;
                         }
-                    });
+                        if row(ui, ICON_FOLDER.codepoint, p.folder_icon, display_name) {
+                            choice = Some(MoveChoice::Folder(dir_path.clone()));
+                        }
+                    }
                 });
 
-                ui.add_space(6.0);
-                ui.add(egui::Separator::default().spacing(0.0));
-                ui.add_space(6.0);
-
-                if all_tags.is_empty() {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(40.0);
-                        ui.label(
-                            RichText::new("Belum ada tag pada catatan di vault ini")
-                                .size(12.5)
-                                .color(TEXT_MUTED),
-                        );
-                    });
-                } else {
-                    egui::ScrollArea::vertical()
-                        .max_height(280.0)
-                        .show(ui, |ui| {
-                            for (tag, count) in all_tags {
-                                let is_editing = selected_tag_to_rename
-                                    .as_ref()
-                                    .map(|t| t == tag)
-                                    .unwrap_or(false);
-
-                                ui.horizontal(|ui| {
-                                    let dot_color = tag_color(tag);
-                                    let (d_rect, _) =
-                                        ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-                                    ui.painter().circle_filled(d_rect.center(), 4.0, dot_color);
-
-                                    if is_editing {
-                                        let edit =
-                                            egui::TextEdit::singleline(rename_input).desired_width(160.0);
-                                        ui.add(edit);
-
-                                        let save_btn = egui::Button::new(
-                                            RichText::new(ICON_CHECK.codepoint)
-                                                .size(13.0)
-                                                .color(Color32::WHITE),
-                                        )
-                                        .fill(ACCENT_BLUE)
-                                        .corner_radius(CornerRadius::same(ROUNDING_SM));
-
-                                        if ui.add(save_btn).clicked() && !rename_input.trim().is_empty() {
-                                            event = Some(LabelManagerEvent::Rename {
-                                                old_tag: tag.clone(),
-                                                new_tag: rename_input.trim().to_string(),
-                                            });
-                                            *selected_tag_to_rename = None;
-                                        }
-
-                                        let cancel_btn = egui::Button::new(
-                                            RichText::new(ICON_CLOSE.codepoint)
-                                                .size(13.0)
-                                                .color(TEXT_SECONDARY),
-                                        )
-                                        .frame(false);
-
-                                        if ui.add(cancel_btn).clicked() {
-                                            *selected_tag_to_rename = None;
-                                        }
-                                    } else {
-                                        ui.label(
-                                            RichText::new(format!("#{tag}"))
-                                                .size(12.5)
-                                                .color(TEXT_PRIMARY),
-                                        );
-                                        ui.label(
-                                            RichText::new(format!("({count})"))
-                                                .size(11.0)
-                                                .color(TEXT_MUTED),
-                                        );
-
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                let del_btn = egui::Button::new(
-                                                    RichText::new(ICON_DELETE.codepoint)
-                                                        .size(13.0)
-                                                        .color(GLASS_ERROR),
-                                                )
-                                                .frame(false);
-
-                                                if ui.add(del_btn).clicked() {
-                                                    event = Some(LabelManagerEvent::Delete(
-                                                        tag.clone(),
-                                                    ));
-                                                }
-
-                                                let edit_btn = egui::Button::new(
-                                                    RichText::new(ICON_EDIT.codepoint)
-                                                        .size(13.0)
-                                                        .color(TEXT_SECONDARY),
-                                                )
-                                                .frame(false);
-
-                                                if ui.add(edit_btn).clicked() {
-                                                    *selected_tag_to_rename = Some(tag.clone());
-                                                    *rename_input = tag.clone();
-                                                }
-                                            },
-                                        );
-                                    }
-                                });
-
-                                ui.add_space(3.0);
-                            }
-                        });
+            ui.add_space(theme::SPACE_M);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if widgets::ghost_button(ui, None, &t("confirm-cancel")).clicked() {
+                    choice = Some(MoveChoice::Cancel);
                 }
             });
-
-        event
+            choice
+        });
+        if dismissed {
+            return Some(MoveChoice::Cancel);
+        }
+        result.flatten()
     }
 }
 
@@ -307,261 +297,209 @@ pub enum LabelManagerEvent {
     Close,
 }
 
-pub struct PromptInputModal;
+pub struct LabelManagerModal;
 
-impl PromptInputModal {
-    /// Render modal input teks serbaguna (buat folder, rename, dll).
+impl LabelManagerModal {
+    /// Rename / delete tags across the vault.
     pub fn show(
         ctx: &egui::Context,
-        title: &str,
-        message: &str,
-        input_value: &mut String,
-        placeholder: &str,
-        confirm_label: &str,
-    ) -> Option<bool> {
-        let mut result = None;
-        let screen_rect = ctx.viewport_rect();
-
-        let backdrop_layer = egui::LayerId::new(
-            egui::Order::Middle,
-            egui::Id::new("prompt_modal_backdrop"),
-        );
-        let backdrop_painter = ctx.layer_painter(backdrop_layer);
-        backdrop_painter.rect_filled(
-            screen_rect,
-            CornerRadius::ZERO,
-            Color32::from_black_alpha(120),
-        );
-
-        let modal_width = 380.0;
-        let modal_height = 180.0;
-        let modal_pos = Pos2::new(
-            screen_rect.center().x - modal_width / 2.0,
-            screen_rect.center().y - modal_height / 2.0,
-        );
-
-        egui::Window::new("prompt_modal_dialog")
-            .title_bar(false)
-            .resizable(false)
-            .collapsible(false)
-            .fixed_rect(Rect::from_min_size(
-                modal_pos,
-                Vec2::new(modal_width, modal_height),
-            ))
-            .frame(glass_frame())
-            .show(ctx, |ui| {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(ICON_EDIT.codepoint)
-                            .size(18.0)
-                            .color(ACCENT_BLUE),
-                    );
-                    ui.label(RichText::new(title).size(14.0).strong().color(TEXT_PRIMARY));
-                });
-
-                ui.add_space(6.0);
-                ui.label(RichText::new(message).size(12.0).color(TEXT_SECONDARY));
-                ui.add_space(8.0);
-
-                let edit_resp = ui.add(
-                    egui::TextEdit::singleline(input_value)
-                        .hint_text(placeholder)
-                        .desired_width(ui.available_width() - 8.0),
-                );
-                edit_resp.request_focus();
-
-                let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
-
-                if esc_pressed {
-                    result = Some(false);
-                }
-
-                ui.add_space(14.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let is_valid = !input_value.trim().is_empty();
-                    let confirm_btn = egui::Button::new(
-                        RichText::new(confirm_label)
-                            .size(12.0)
-                            .color(if is_valid { Color32::WHITE } else { TEXT_MUTED }),
+        tr: &LocaleManager,
+        all_tags: &[(String, usize)],
+        rename_input: &mut String,
+        selected_tag_to_rename: &mut Option<String>,
+    ) -> Option<LabelManagerEvent> {
+        let t = |key: &str| tr.t(key, &[]);
+        let p = pal();
+        let (result, dismissed) = modal(ctx, "label_manager_modal", 460.0, |ui| {
+            let mut event = None;
+            ui.horizontal(|ui| {
+                modal_title(ui, ICON_LABEL.codepoint, p.accent, &t("tag-manager-title"));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::icon_button(
+                        ui,
+                        ICON_CLOSE.codepoint,
+                        &t("pdf-metadata-close"),
+                        false,
                     )
-                    .fill(if is_valid { ACCENT_BLUE } else { BG_CARD_DARK })
-                    .corner_radius(CornerRadius::same(ROUNDING_SM));
-
-                    if ui.add_enabled(is_valid, confirm_btn).clicked() || (enter_pressed && is_valid) {
-                        result = Some(true);
-                    }
-
-                    ui.add_space(8.0);
-
-                    let cancel_btn = egui::Button::new(
-                        RichText::new("Batal")
-                            .size(12.0)
-                            .color(TEXT_SECONDARY),
-                    )
-                    .frame(false);
-
-                    if ui.add(cancel_btn).clicked() {
-                        result = Some(false);
+                    .clicked()
+                    {
+                        event = Some(LabelManagerEvent::Close);
                     }
                 });
             });
+            ui.add_space(theme::SPACE_M);
 
-        result
+            if all_tags.is_empty() {
+                ui.label(
+                    RichText::new(t("tag-manager-empty"))
+                        .size(theme::TEXT_BODY)
+                        .color(p.text_dim),
+                );
+                return event;
+            }
+
+            egui::ScrollArea::vertical()
+                .max_height(340.0)
+                .show(ui, |ui| {
+                    for (tag, count) in all_tags {
+                        let editing = selected_tag_to_rename.as_deref() == Some(tag.as_str());
+                        ui.horizontal(|ui| {
+                            ui.set_height(theme::CONTROL_HEIGHT + 4.0);
+                            let (dot, _) =
+                                ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
+                            ui.painter()
+                                .circle_filled(dot.center(), 5.0, tag_color(tag));
+
+                            if editing {
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(rename_input)
+                                        .margin(Margin::symmetric(8, 5))
+                                        .desired_width(ui.available_width() - 80.0),
+                                );
+                                resp.request_focus();
+                                let enter = resp.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if widgets::icon_button(
+                                    ui,
+                                    ICON_CHECK.codepoint,
+                                    &t("tag-rename"),
+                                    true,
+                                )
+                                .clicked()
+                                    || enter
+                                {
+                                    if !rename_input.trim().is_empty() {
+                                        event = Some(LabelManagerEvent::Rename {
+                                            old_tag: tag.clone(),
+                                            new_tag: rename_input.trim().to_string(),
+                                        });
+                                    }
+                                    *selected_tag_to_rename = None;
+                                }
+                                if widgets::icon_button(
+                                    ui,
+                                    ICON_CLOSE.codepoint,
+                                    &t("confirm-cancel"),
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    *selected_tag_to_rename = None;
+                                }
+                            } else {
+                                ui.label(
+                                    RichText::new(format!("#{tag}"))
+                                        .size(theme::TEXT_BODY)
+                                        .color(p.text),
+                                );
+                                ui.label(
+                                    RichText::new(
+                                        tr.t("tag-note-count", &[("count", &count.to_string())]),
+                                    )
+                                    .size(theme::TEXT_XS)
+                                    .color(p.text_faint),
+                                );
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if widgets::icon_button(
+                                        ui,
+                                        ICON_DELETE.codepoint,
+                                        &t("tag-delete"),
+                                        false,
+                                    )
+                                    .clicked()
+                                    {
+                                        event = Some(LabelManagerEvent::Delete(tag.clone()));
+                                    }
+                                    if widgets::icon_button(
+                                        ui,
+                                        ICON_EDIT.codepoint,
+                                        &t("tag-rename"),
+                                        false,
+                                    )
+                                    .clicked()
+                                    {
+                                        *selected_tag_to_rename = Some(tag.clone());
+                                        *rename_input = tag.clone();
+                                    }
+                                });
+                            }
+                        });
+                    }
+                });
+            event
+        });
+        if dismissed {
+            // Esc while renaming only cancels the rename, not the dialog.
+            if selected_tag_to_rename.take().is_none() {
+                return Some(LabelManagerEvent::Close);
+            }
+            return None;
+        }
+        result.flatten()
     }
 }
 
-pub struct MoveFolderModal;
+pub struct ShortcutsModal;
 
-impl MoveFolderModal {
-    /// Render modal pemilihan folder tujuan untuk pemindahan berkas/folder.
-    /// Mengembalikan:
-    /// - `Some(Some(path))` jika folder tertentu dipilih dan dikonfirmasi
-    /// - `Some(None)` jika Root Vault dipilih dan dikonfirmasi
-    /// - `None` jika belum selesai / dibatalkan
-    pub fn show(
-        ctx: &egui::Context,
-        item_name: &str,
-        available_folders: &[(std::path::PathBuf, String)],
-        search_filter: &mut String,
-    ) -> Option<Option<std::path::PathBuf>> {
-        let mut result = None;
-        let mut close_requested = false;
-        let screen_rect = ctx.viewport_rect();
-
-        let backdrop_layer = egui::LayerId::new(
-            egui::Order::Middle,
-            egui::Id::new("move_modal_backdrop"),
-        );
-        let backdrop_painter = ctx.layer_painter(backdrop_layer);
-        backdrop_painter.rect_filled(
-            screen_rect,
-            CornerRadius::ZERO,
-            Color32::from_black_alpha(120),
-        );
-
-        let modal_width = 420.0;
-        let modal_height = 360.0;
-        let modal_pos = Pos2::new(
-            screen_rect.center().x - modal_width / 2.0,
-            screen_rect.center().y - modal_height / 2.0,
-        );
-
-        egui::Window::new("move_folder_dialog")
-            .title_bar(false)
-            .resizable(false)
-            .collapsible(false)
-            .fixed_rect(Rect::from_min_size(
-                modal_pos,
-                Vec2::new(modal_width, modal_height),
-            ))
-            .frame(glass_frame())
-            .show(ctx, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("📁")
-                            .size(16.0),
-                    );
-                    ui.label(
-                        RichText::new(format!("Pindahkan \"{item_name}\" ke..."))
-                            .size(13.5)
-                            .strong()
-                            .color(TEXT_PRIMARY),
-                    );
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let close_btn = egui::Button::new(
-                            RichText::new(ICON_CLOSE.codepoint)
-                                .size(13.0)
-                                .color(TEXT_SECONDARY),
-                        )
-                        .frame(false);
-
-                        if ui.add(close_btn).clicked() {
-                            close_requested = true;
-                        }
-                    });
-                });
-
-                ui.add_space(8.0);
-                ui.add(
-                    egui::TextEdit::singleline(search_filter)
-                        .hint_text("Cari folder tujuan...")
-                        .desired_width(ui.available_width() - 8.0),
+impl ShortcutsModal {
+    /// Keyboard shortcut cheat sheet. Returns true when closed.
+    pub fn show(ctx: &egui::Context, tr: &LocaleManager) -> bool {
+        let t = |key: &str| tr.t(key, &[]);
+        let p = pal();
+        let rows = [
+            ("⌘K", "shortcut-palette"),
+            ("⌘N", "shortcut-new-note"),
+            ("⌘F", "shortcut-search"),
+            ("⌘S", "shortcut-save"),
+            ("⌘E", "shortcut-toggle-read"),
+            ("⌘\\", "shortcut-sidebar"),
+            ("⌘J", "shortcut-ai"),
+            ("Esc", "shortcut-back"),
+            ("/", "shortcut-slash"),
+            ("[[", "shortcut-wikilink"),
+        ];
+        let (result, dismissed) = modal(ctx, "shortcuts_modal", 440.0, |ui| {
+            let mut close = false;
+            ui.horizontal(|ui| {
+                modal_title(
+                    ui,
+                    ICON_KEYBOARD.codepoint,
+                    p.accent,
+                    &t("settings-shortcuts"),
                 );
-                ui.add_space(8.0);
-                ui.add(egui::Separator::default().spacing(0.0));
-                ui.add_space(6.0);
-
-                egui::ScrollArea::vertical()
-                    .max_height(220.0)
-                    .show(ui, |ui| {
-                        // Opsi 1: Root Vault
-                        let root_match = search_filter.is_empty()
-                            || "root".contains(&search_filter.to_lowercase())
-                            || "utama".contains(&search_filter.to_lowercase());
-
-                        if root_match {
-                            let root_btn = egui::Button::new(
-                                RichText::new("📁 [Root] Folder Utama Vault")
-                                    .size(12.5)
-                                    .color(ACCENT_BLUE),
-                            )
-                            .fill(BG_CARD_DARK)
-                            .corner_radius(CornerRadius::same(ROUNDING_SM));
-
-                            if ui.add_sized(Vec2::new(ui.available_width() - 8.0, 28.0), root_btn).clicked() {
-                                result = Some(Some(None));
-                            }
-                            ui.add_space(4.0);
-                        }
-
-                        // Opsi 2+: Subfolder-subfolder
-                        let filter_lower = search_filter.to_lowercase();
-                        for (dir_path, display_name) in available_folders {
-                            if !filter_lower.is_empty()
-                                && !display_name.to_lowercase().contains(&filter_lower)
-                            {
-                                continue;
-                            }
-
-                            let folder_btn = egui::Button::new(
-                                RichText::new(format!("📁  {display_name}"))
-                                    .size(12.0)
-                                    .color(TEXT_PRIMARY),
-                            )
-                            .fill(BG_CARD_DARK)
-                            .corner_radius(CornerRadius::same(ROUNDING_SM));
-
-                            if ui.add_sized(Vec2::new(ui.available_width() - 8.0, 26.0), folder_btn).clicked() {
-                                result = Some(Some(Some(dir_path.clone())));
-                            }
-                            ui.add_space(2.0);
-                        }
-                    });
-
-                ui.add_space(8.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let cancel_btn = egui::Button::new(
-                        RichText::new("Batal")
-                            .size(12.0)
-                            .color(TEXT_SECONDARY),
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    close = widgets::icon_button(
+                        ui,
+                        ICON_CLOSE.codepoint,
+                        &t("pdf-metadata-close"),
+                        false,
                     )
-                    .frame(false);
-
-                    if ui.add(cancel_btn).clicked() {
-                        close_requested = true;
-                    }
+                    .clicked();
                 });
             });
-
-        if close_requested {
-            return Some(None);
-        }
-
-        result.flatten()
+            ui.add_space(theme::SPACE_M);
+            egui::Grid::new("shortcuts_grid")
+                .num_columns(2)
+                .spacing(Vec2::new(24.0, 10.0))
+                .show(ui, |ui| {
+                    for (keys, label) in rows {
+                        ui.label(RichText::new(t(label)).size(theme::TEXT_BODY).color(p.text));
+                        egui::Frame::NONE
+                            .fill(p.surface)
+                            .stroke(egui::Stroke::new(1.0, p.border))
+                            .corner_radius(egui::CornerRadius::same(theme::RADIUS_SM))
+                            .inner_margin(Margin::symmetric(8, 2))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(keys).size(theme::TEXT_SM).color(p.text_dim),
+                                );
+                            });
+                        ui.end_row();
+                    }
+                });
+            close
+        });
+        dismissed || result.unwrap_or(false)
     }
 }
 
@@ -570,7 +508,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_label_manager_event() {
+    fn modal_events_compare_by_value() {
         let ev = LabelManagerEvent::Rename {
             old_tag: "old".to_string(),
             new_tag: "new".to_string(),
@@ -582,6 +520,6 @@ mod tests {
                 new_tag: "new".to_string()
             }
         );
+        assert_ne!(MoveChoice::Root, MoveChoice::Cancel);
     }
 }
-

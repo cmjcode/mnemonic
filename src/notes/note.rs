@@ -207,15 +207,11 @@ impl Note {
     /// retention window is handled separately by `notes::trash`.
     pub fn move_to_trash(mut self, vault_root: &Path) -> Result<Note> {
         self.frontmatter.trashed = true;
-        let trash_dir = vault_root.join(".trash");
-        std::fs::create_dir_all(&trash_dir)
-            .with_context(|| format!("creating trash dir {}", trash_dir.display()))?;
-
         let file_name = self
             .path
             .file_name()
             .context("note path has no file name")?;
-        let new_path = trash_dir.join(file_name);
+        let new_path = super::trash::unique_trash_path(vault_root, file_name)?;
 
         self.save()?; // persist trashed:true at the old path first
         std::fs::rename(&self.path, &new_path)
@@ -228,18 +224,34 @@ impl Note {
     /// (§3.1.4 "Sampah"). Always restores to `vault_root` directly rather
     /// than its original subfolder, since that original location isn't
     /// tracked — a known simplification.
-    pub fn restore_from_trash(mut self, vault_root: &Path) -> Result<Note> {
-        self.frontmatter.trashed = false;
+    pub fn restore_from_trash(self, vault_root: &Path) -> Result<Note> {
         let file_name = self
             .path
             .file_name()
             .context("note path has no file name")?;
-        let new_path = vault_root.join(file_name);
+        let new_path = super::trash::unique_path_in(vault_root, file_name);
+        self.restore_to(new_path)
+    }
+
+    /// Moves a trashed note back out of `.trash/` to exactly `target`
+    /// (the "Urungkan" undo right after trashing, which knows the original
+    /// subfolder), clearing `trashed`. Falls back to a non-colliding name
+    /// next to `target` if something has taken its place meanwhile.
+    pub fn restore_to(mut self, target: PathBuf) -> Result<Note> {
+        self.frontmatter.trashed = false;
+        let target = match (target.parent(), target.file_name()) {
+            (Some(dir), Some(name)) => {
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("recreating folder {}", dir.display()))?;
+                super::trash::unique_path_in(dir, name)
+            }
+            _ => target,
+        };
 
         self.save()?; // persist trashed:false at the old (.trash) path first
-        std::fs::rename(&self.path, &new_path)
-            .with_context(|| format!("restoring note from trash {}", new_path.display()))?;
-        self.path = new_path;
+        std::fs::rename(&self.path, &target)
+            .with_context(|| format!("restoring note from trash {}", target.display()))?;
+        self.path = target;
         Ok(self)
     }
 
@@ -324,6 +336,29 @@ mod tests {
         assert!(!original_path.exists());
         assert!(trashed.path.exists());
         assert_eq!(trashed.path.parent().unwrap().file_name().unwrap(), ".trash");
+    }
+
+    #[test]
+    fn trashing_same_named_notes_keeps_both_and_undo_restores_subfolder() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("Projects");
+        std::fs::create_dir_all(&sub).unwrap();
+        let a = Note::create(dir.path(), "Kembar", "a").unwrap();
+        let mut b = Note::create(&sub, "Kembar", "b").unwrap();
+        // Give both files the same name (e.g. copied in from elsewhere).
+        let original_b = sub.join(a.path.file_name().unwrap());
+        std::fs::rename(&b.path, &original_b).unwrap();
+        b.path = original_b.clone();
+
+        let ta = a.move_to_trash(dir.path()).unwrap();
+        let tb = b.move_to_trash(dir.path()).unwrap();
+        assert_ne!(ta.path, tb.path);
+        assert!(ta.path.exists() && tb.path.exists());
+
+        let restored = tb.restore_to(original_b.clone()).unwrap();
+        assert_eq!(restored.path, original_b);
+        assert!(!restored.frontmatter.trashed);
+        assert_eq!(Note::load(&original_b).unwrap().body, "b");
     }
 
     #[test]

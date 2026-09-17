@@ -80,6 +80,9 @@ uuid = { version = "1.25.0", features = ["v4", "v5", "serde"] }
 walkdir = "2.5.0"
 
 [dev-dependencies]
+# Headless UI smoke tests (`tests/ui_smoke.rs`): drives the real app with
+# simulated input and renders frames offscreen to catch layout panics.
+egui_kittest = { version = "0.36.1", features = ["eframe", "wgpu", "snapshot"] }
 filetime = "0.2.29"
 tempfile = "3.27.0"
 

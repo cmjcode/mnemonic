@@ -1,158 +1,354 @@
-app-title = MNEMONIC
+## MNEMONIC — Bahasa Indonesia
+## Setiap key di sini WAJIB ada juga di en-US/main.ftl (dicek oleh tes).
 
-vault-empty = Belum ada catatan. Ketuk tombol + untuk membuat catatan baru.
+## ── Sambutan & vault ────────────────────────────────────────────────
+welcome-title = Selamat datang di MNEMONIC
+welcome-subtitle = Catatan, kanvas, dan PDF Anda — dengan asisten AI yang berjalan di komputer sendiri.
+welcome-create-vault = Buat Vault Baru
+welcome-open-folder = Buka Folder…
+welcome-default-vault-name = Catatan Saya
+welcome-feature-notes = Tulis catatan Markdown, gambar di kanvas, dan anotasi PDF
+welcome-feature-ai = Cari berdasarkan makna dan tanya asisten AI tentang isi vault
+welcome-feature-private = Semua data tersimpan sebagai berkas biasa di komputer Anda
+welcome-note-title = Selamat Datang 👋
+welcome-note-body =
+    # Mulai dari sini
+
+    Vault ini hanyalah folder biasa di komputer Anda. Setiap catatan adalah berkas Markdown, jadi data Anda selalu milik Anda.
+
+    ## Dasar-dasar
+    - [ ] Buat catatan baru dengan ⌘N atau tombol "Catatan Baru" di kiri
+    - [ ] Ketik / di awal baris untuk menyisipkan judul, daftar centang, tabel, dan lainnya
+    - [ ] Hubungkan catatan dengan mengetik [[ lalu pilih judulnya
+    - [ ] Cari apa saja dengan ⌘F — hasil yang mirip maknanya juga muncul
+    - [ ] Buka palet perintah dengan ⌘K untuk melompat ke mana pun
+
+    ## Tips
+    - Catatan tersimpan otomatis saat Anda berhenti mengetik.
+    - Salah hapus? Klik "Urungkan" pada notifikasi, atau pulihkan dari Sampah.
+    - Klik kanan pada catatan atau folder untuk melihat semua aksi.
+    - Tekan ⌘/ untuk melihat semua pintasan keyboard.
+
+    Silakan hapus catatan ini kapan saja.
 vault-pick-folder = Pilih Folder Vault
-vault-select-prompt = Pilih folder Vault untuk mulai mencatat.
 
-notes-count =
-    { $count ->
-        [one] { $count } catatan
-       *[other] { $count } catatan
-    }
+## ── Bar atas & pengaturan ───────────────────────────────────────────
+topbar-show-sidebar = Tampilkan sidebar
+topbar-hide-sidebar = Sembunyikan sidebar
+topbar-ai-assistant = Asisten AI
+topbar-settings = Pengaturan
+topbar-indexing = Mengindeks { $count }…
+topbar-indexing-hint = Menyiapkan pencarian makna & asisten AI. Anda tetap bisa bekerja seperti biasa.
+settings-appearance = Tampilan
+settings-theme-light = Terang
+settings-theme-dark = Gelap
+settings-language = Bahasa
+settings-switch-vault = Buka vault lain…
+settings-command-palette = Palet perintah
+settings-shortcuts = Pintasan keyboard
+
+## ── Sidebar ─────────────────────────────────────────────────────────
+sidebar-switch-vault = Ganti vault
+sidebar-recent-vaults = Vault terbaru
+sidebar-open-other-vault = Buka folder lain…
+sidebar-rescan = Muat ulang berkas
+sidebar-new-other = Buat yang lain…
+sidebar-new-canvas = Kanvas baru
+sidebar-new-folder = Folder baru
+sidebar-library = Pustaka
+sidebar-all = Semua Dokumen
+sidebar-notes-only = Catatan
+sidebar-whiteboards-only = Kanvas
+sidebar-pdfs-only = PDF
+sidebar-archived = Arsip
+sidebar-trash = Sampah
+sidebar-folders = Folder
+sidebar-folders-empty = Belum ada berkas. Buat catatan pertama Anda di atas.
+sidebar-folder-empty = Folder kosong
+sidebar-expand-all = Buka semua folder
+sidebar-collapse-all = Tutup semua folder
+sidebar-more-actions = Aksi lainnya
+sidebar-new-note-here = Catatan baru di sini
+sidebar-new-canvas-here = Kanvas baru di sini
+sidebar-new-subfolder = Subfolder baru
+sidebar-open = Buka
+sidebar-move-to = Pindahkan ke…
+sidebar-tags = Label
+sidebar-tags-empty = Tambahkan tag di frontmatter catatan untuk mengelompokkannya.
+sidebar-manage-tags = Kelola label
+
+## ── Beranda (grid) ──────────────────────────────────────────────────
+grid-item-count = { $count } item
+grid-sort = Urutkan
+sort-modified = Terakhir diubah
+sort-created = Tanggal dibuat
+sort-title = Judul (A–Z)
+sort-color = Warna
+grid-search-results = { $count } hasil untuk “{ $query }”
+grid-clear-search = Hapus pencarian
+grid-show-all = Lihat semua dokumen
+grid-empty-trash = Kosongkan Sampah
+grid-trash-info = Item di Sampah dihapus permanen otomatis setelah 30 hari.
+grid-semantic-title = Mungkin juga relevan
+grid-semantic-hint = ditemukan berdasarkan makna, bukan kata yang sama persis
+grid-semantic-match = { $percent }% cocok
+
+selection-mode-on = Pilih beberapa
+selection-mode-off = Selesai memilih
+selection-count = { $count } dipilih
+selection-select-all = Pilih semua
+selection-archive = Arsipkan
+selection-trash = Pindahkan ke Sampah
 
 notes-new = Catatan Baru
-notes-delete = Hapus
-notes-pin = Sematkan
-notes-unpin = Lepas Sematan
+notes-pin = Sematkan di atas
+notes-unpin = Lepas sematan
+notes-pinned = Disematkan
+card-archive = Arsipkan
+card-unarchive = Keluarkan dari arsip
+card-trash = Pindahkan ke Sampah
+card-restore = Pulihkan
+card-delete-permanent = Hapus permanen
+card-color = Warna
+card-color-none = Tanpa warna
 
-app-status-ready = Siap
+time-just-now = baru saja
+time-minutes-ago = { $count } menit lalu
+time-hours-ago = { $count } jam lalu
+time-days-ago = { $count } hari lalu
 
+empty-vault-title = Mulai catatan pertama Anda
+empty-vault-body = Tulis ide, buat daftar tugas, atau gambar di kanvas. Semuanya tersimpan otomatis.
+empty-vault-tip = Tip: tekan ⌘N kapan saja untuk membuat catatan baru.
+empty-search-title = Tidak ada hasil untuk “{ $query }”
+empty-search-body = Coba kata lain yang lebih umum, atau periksa ejaannya.
+empty-trash-title = Sampah kosong
+empty-trash-body = Item yang Anda hapus akan muncul di sini dan bisa dipulihkan selama 30 hari.
+empty-archive-title = Belum ada arsip
+empty-archive-body = Arsipkan catatan yang sudah tidak aktif agar beranda tetap rapi.
+empty-pdf-title = Belum ada PDF
+empty-pdf-body = Impor PDF untuk membacanya, memberi anotasi, dan mencarinya bersama catatan Anda.
+empty-filter-title = Tidak ada dokumen di sini
+empty-filter-body = Belum ada dokumen yang cocok dengan filter ini.
+
+## ── Editor ──────────────────────────────────────────────────────────
 editor-back = Kembali
-editor-mode-source = Edit / Sumber
-editor-mode-live-preview = Pratinjau
-editor-mode-reading = Baca / Pratinjau
+editor-untitled = Tanpa Judul
+editor-rename-hint = Klik untuk mengganti judul
+editor-mode-write = Tulis
+editor-mode-read = Baca
+editor-mode-edgeless = Kanvas
+editor-mode-hint = Beralih antara menulis, membaca, dan kanvas (⌘E)
+editor-saved = Tersimpan
+editor-saving = Menyimpan…
+editor-save-failed = Gagal menyimpan
 editor-undo = Urungkan
 editor-redo = Ulangi
-editor-outline = Daftar Isi
-editor-backlinks = Tautan Balik
+editor-outline = Daftar isi
+editor-outline-toggle = Tampilkan/sembunyikan daftar isi
+editor-outline-empty = Tambahkan judul (# Judul) untuk membuat daftar isi.
+editor-backlinks = Ditautkan dari
 editor-backlinks-empty = Belum ada catatan lain yang menautkan ke sini.
 editor-word-count = { $count } kata
 editor-reading-time = ~{ $minutes } menit baca
+editor-placeholder = Mulai menulis… Ketik / untuk menyisipkan elemen, [[ untuk menautkan catatan.
+editor-slash-header = Sisipkan
+editor-link-header = Tautkan ke catatan
+editor-popup-hint = ↑↓ pilih · Enter sisipkan · Esc tutup
 
-sidebar-all = Semua Dokumen
-sidebar-notes-only = Catatan Markdown
-sidebar-pdfs-only = Dokumen PDF
-sidebar-archived = Diarsipkan
-sidebar-trash = Sampah
-sidebar-tags = Label
-sidebar-manage-tags = Kelola Label
+slash-heading-1 = Judul besar
+slash-heading-2 = Subjudul
+slash-checklist = Daftar centang
+slash-bullet-list = Daftar poin
+slash-quote = Kutipan
+slash-code-block = Blok kode
+slash-callout-note = Kotak catatan
+slash-callout-warning = Kotak peringatan
+slash-table = Tabel
+slash-divider = Garis pemisah
 
-sort-modified = Terakhir Diubah
-sort-created = Tanggal Dibuat
-sort-title = Judul
-sort-color = Warna
+## ── Kanvas ──────────────────────────────────────────────────────────
+canvas-untitled = Kanvas Tanpa Judul
+canvas-empty-hint = Pilih alat di kiri, lalu klik atau seret untuk mulai menggambar
+canvas-new-sticky = Catatan baru
+canvas-edit-hint = Esc untuk selesai
+canvas-edit-done = Selesai
+canvas-tool-select = Pilih & pindahkan
+canvas-tool-pan = Geser kanvas
+canvas-tool-sticky = Catatan tempel
+canvas-tool-rectangle = Persegi
+canvas-tool-rounded = Persegi membulat
+canvas-tool-ellipse = Elips
+canvas-tool-diamond = Belah ketupat
+canvas-tool-connector = Panah penghubung
+canvas-tool-pen = Pena
+canvas-tool-eraser = Penghapus
+canvas-import-drawio = Impor dari Draw.io
+canvas-export-drawio = Ekspor ke Draw.io
+canvas-import-success = Diagram berhasil diimpor
+canvas-import-failed = Gagal mengimpor diagram
+canvas-export-success = Diagram berhasil diekspor
+canvas-export-failed = Gagal mengekspor diagram
+canvas-zoom-in = Perbesar
+canvas-zoom-out = Perkecil
+canvas-zoom-reset = Kembalikan ke 100%
+canvas-width-thin = Tipis
+canvas-width-medium = Sedang
+canvas-width-thick = Tebal
+color-yellow = Kuning
+color-blue = Biru
+color-green = Hijau
+color-pink = Merah muda
+color-purple = Ungu
+color-orange = Oranye
+color-red = Merah
+color-graphite = Grafit
 
-selection-mode-on = Pilih Banyak
-selection-mode-off = Batal Pilih
-selection-archive = Arsipkan Terpilih
-selection-trash = Sampah-kan Terpilih
+## ── Pencarian, palet, asisten AI ────────────────────────────────────
+search-placeholder = Cari catatan, PDF, atau topik…
+command-palette-hint = Ketik perintah atau judul catatan…
+command-palette-empty = Tidak ada yang cocok
+command-palette-footer = ↑↓ pilih · Enter jalankan · Esc tutup
+palette-cat-actions = Aksi
+palette-cat-navigate = Buka
+palette-cat-documents = Dokumen
+palette-cat-view = Tampilan
+palette-search = Cari di vault
+palette-ask-ai = Tanya asisten AI
+palette-toggle-sidebar = Tampilkan/sembunyikan sidebar
+palette-toggle-theme = Ganti tema terang/gelap
+palette-toggle-language = Switch to English
 
-card-archive = Arsipkan
-card-unarchive = Batalkan Arsip
-card-trash = Pindahkan ke Sampah
-card-restore = Pulihkan
-card-delete-permanent = Hapus Permanen
-
-confirm-archive-title = Arsipkan Catatan?
-confirm-archive-body = Catatan ini akan dipindahkan ke Arsip dan disembunyikan dari daftar utama.
-confirm-archive-yes = Ya, Arsipkan
-
-confirm-unarchive-title = Batalkan Arsip?
-confirm-unarchive-body = Catatan ini akan dikembalikan ke daftar dokumen utama.
-confirm-unarchive-yes = Batalkan Arsip
-
-confirm-trash-title = Pindahkan ke Sampah?
-confirm-trash-body = Catatan ini akan dipindahkan ke Tong Sampah. Anda dapat memulihkannya nanti.
-confirm-trash-yes = Pindahkan ke Sampah
-
-confirm-delete-title = Hapus Permanen?
-confirm-delete-body = Catatan ini akan dihapus permanen dan tidak bisa dikembalikan.
-confirm-yes = Ya, Hapus
-confirm-cancel = Batal
-
-tag-manager-title = Kelola Label
-tag-rename = Ganti Nama
-tag-delete = Hapus
-
-grid-empty-filtered = Tidak ada catatan yang cocok.
-
-nav-notes = Catatan
-nav-search = Pencarian
-nav-chat = Obrolan
-nav-pdf = PDF
-
-search-placeholder = Cari catatan atau dokumen...
-search-button = Cari
-search-prompt = Ketik kata kunci untuk mencari di seluruh vault (judul, isi, dan makna semantik).
-search-no-results = Tidak ditemukan hasil yang cocok.
-search-error = Pencarian gagal
-
-chat-placeholder = Tanyakan sesuatu tentang catatan/dokumen Anda...
-chat-send = Kirim
-chat-empty = Mulai percakapan dengan bertanya tentang isi vault Anda.
-chat-sources = Sumber:
-chat-thinking = Memikirkan jawaban...
+chat-title = Asisten AI
+chat-subtitle = Menjawab berdasarkan catatan & PDF di vault Anda — berjalan lokal.
+chat-close = Tutup
+chat-clear = Mulai percakapan baru
+chat-empty-title = Tanyakan apa saja tentang vault Anda
+chat-empty = Jawaban disertai sumber yang bisa langsung Anda buka.
+chat-starter-summary = Ringkas poin penting dari catatan terbaru saya
+chat-starter-related = Catatan mana saja yang membahas topik yang sama?
+chat-starter-ideas = Bantu saya menyusun ide dari catatan-catatan ini
+chat-placeholder = Tanyakan sesuatu…
+chat-send = Kirim (Enter)
+chat-sources = Sumber
+chat-open-source = Buka sumber ini
+chat-thinking = Sedang mencari di vault dan menyusun jawaban…
 chat-error = Gagal memproses pertanyaan
+chat-citation-page = { $name } · hal. { $page }
 
+## ── PDF ─────────────────────────────────────────────────────────────
 pdf-import = Impor PDF
-pdf-library-empty = Belum ada PDF yang diimpor. Ketuk "Impor PDF" untuk menambahkan.
-pdf-open = Buka
-pdf-remove = Hapus dari Daftar
-pdf-back = ← Kembali
-pdf-page-of = Halaman { $current } / { $total }
-pdf-zoom = Perbesar
-pdf-rotate-left = ↺ Putar Kiri
-pdf-rotate-right = ↻ Putar Kanan
-pdf-delete-page = Hapus Halaman
-pdf-delete-page-confirm = Halaman ini akan dihapus ke berkas PDF baru. Berkas asli tidak berubah. Lanjutkan?
-pdf-split = Pisahkan halaman
+pdf-page-of = Halaman { $current } dari { $total }
+pdf-prev-page = Halaman sebelumnya
+pdf-next-page = Halaman berikutnya
+pdf-more = Aksi halaman & dokumen
+pdf-section-page = Halaman ini
+pdf-section-document = Dokumen
+pdf-rotate-left = Putar ke kiri
+pdf-rotate-right = Putar ke kanan
+pdf-delete-page = Hapus halaman
+pdf-delete-page-confirm = Halaman ini akan dihapus dan hasilnya disimpan sebagai berkas PDF baru. Berkas asli tidak berubah.
+pdf-split = Ambil halaman
 pdf-split-to = sampai
-pdf-split-go = Pisahkan ke Berkas Baru
-pdf-merge = Gabung dengan PDF Lain...
+pdf-split-go = Simpan sebagai PDF baru…
+pdf-merge = Gabungkan dengan PDF lain…
 pdf-op-success = Berhasil disimpan sebagai berkas baru
-pdf-op-error = Operasi PDF gagal
-pdf-render-unavailable = Tidak bisa menampilkan halaman (pustaka PDFium tidak ditemukan)
-
-pdf-annotate-none = Tidak ada (jelajah)
+pdf-op-error = memproses PDF
+pdf-render-unavailable = Halaman PDF tidak bisa ditampilkan
+pdf-annotate-none = Jelajah
 pdf-annotate-highlight = Sorot
-pdf-annotate-underline = Garis Bawah
-pdf-annotate-sticky = Catatan Tempel
-pdf-annotate-text = Sisipkan Teks
-pdf-annotate-color = Warna
-pdf-annotate-sticky-prompt = Isi Catatan Tempel
-pdf-annotate-text-prompt = Isi Teks yang Disisipkan
+pdf-annotate-underline = Garis bawah
+pdf-annotate-sticky = Catatan tempel
+pdf-annotate-text = Sisipkan teks
+pdf-annotate-color = Warna anotasi
+pdf-annotate-sticky-prompt = Isi catatan tempel
+pdf-annotate-text-prompt = Teks yang disisipkan
 pdf-annotate-add = Tambahkan
 pdf-annotate-cancel = Batal
-pdf-metadata-button = Metadata
-pdf-metadata-window-title = Edit Metadata PDF
+pdf-unsaved-annotations = { $count } anotasi belum disimpan
+pdf-metadata-button = Info dokumen
+pdf-metadata-window-title = Info dokumen
 pdf-metadata-field-title = Judul
 pdf-metadata-field-author = Penulis
-pdf-metadata-field-keywords = Kata Kunci
-pdf-metadata-close = Tutup
+pdf-metadata-field-keywords = Kata kunci
+pdf-metadata-hint = Perubahan diterapkan saat Anda menekan Simpan atau Ekspor.
+pdf-metadata-close = Selesai
 pdf-save = Simpan
-pdf-save-confirm = Berkas asli akan ditimpa (cadangan .bak dibuat otomatis). Lanjutkan?
-pdf-save-success = Berhasil disimpan ke berkas asli (cadangan: { $backup })
-pdf-export = Ekspor sebagai Baru...
+pdf-save-confirm = Anotasi dan info dokumen akan disimpan ke berkas asli. Cadangan (.bak) dibuat otomatis.
+pdf-save-success = Tersimpan. Cadangan: { $backup }
+pdf-export = Ekspor sebagai berkas baru…
 
-# §Fase 10: banner kesalahan umum yang menggantikan kegagalan yang
-# sebelumnya hanya dicatat di log (`log::warn!`) tanpa terlihat pengguna —
-# lihat `MnemonicApp::report_error`.
-error-banner = Kesalahan saat { $context }: { $error }
+## ── Dialog ──────────────────────────────────────────────────────────
+confirm-cancel = Batal
+confirm-yes = Hapus permanen
+confirm-delete-title = Hapus permanen?
+confirm-delete-body = Catatan ini akan dihapus selamanya dan tidak bisa dipulihkan.
+confirm-empty-trash-title = Kosongkan Sampah?
+confirm-empty-trash-body = Semua catatan di Sampah akan dihapus selamanya. Tindakan ini tidak bisa dibatalkan.
+confirm-empty-trash-yes = Kosongkan Sampah
+folder-new-title = Folder baru
+folder-new-message = Beri nama folder baru.
+folder-new-placeholder = mis. Proyek, Kuliah, Resep
+folder-new-confirm = Buat folder
+rename-folder-title = Ganti nama folder
+rename-file-title = Ganti nama
+rename-message = Nama baru untuk “{ $name }”.
+rename-placeholder = Nama baru
+rename-confirm = Simpan
+move-modal-title = Pindahkan “{ $name }”
+move-modal-search = Cari folder…
+move-modal-root = Folder utama vault
+tag-manager-title = Kelola label
+tag-manager-empty = Belum ada label. Tambahkan tag di frontmatter catatan, misalnya: tags: [kerja, ide]
+tag-note-count = { $count } catatan
+tag-rename = Ganti nama
+tag-delete = Hapus label
+
+## ── Pintasan ────────────────────────────────────────────────────────
+shortcut-palette = Palet perintah
+shortcut-new-note = Catatan baru
+shortcut-search = Cari
+shortcut-save = Simpan sekarang
+shortcut-toggle-read = Beralih Tulis/Baca
+shortcut-sidebar = Tampilkan/sembunyikan sidebar
+shortcut-ai = Asisten AI
+shortcut-back = Kembali ke beranda
+shortcut-slash = Sisipkan elemen (di awal baris)
+shortcut-wikilink = Tautkan ke catatan lain
+
+## ── Notifikasi ──────────────────────────────────────────────────────
+toast-undo = Urungkan
+toast-note-trashed = “{ $title }” dipindahkan ke Sampah
+toast-item-trashed = “{ $title }” dipindahkan ke Sampah
+toast-note-restored = “{ $title }” dipulihkan
+toast-restored = Berhasil dipulihkan
+toast-archived = Catatan diarsipkan
+toast-unarchived = Catatan dikeluarkan dari arsip
+toast-batch-archived = { $count } catatan diarsipkan
+toast-deleted-permanently = { $count } catatan dihapus permanen
+toast-moved = Dipindahkan ke { $folder }
+toast-name-taken = Nama “{ $name }” sudah dipakai di folder ini
+toast-open-failed = Berkas tidak bisa dibuka — mungkin sudah dipindah atau dihapus
+toast-pdfs-imported = { $count } PDF berhasil diimpor
+
+## ── Kesalahan ───────────────────────────────────────────────────────
+error-banner = Gagal { $context }: { $error }
 error-context-autosave = menyimpan otomatis
 error-context-save-note = menyimpan catatan
-error-context-delete-note = menghapus catatan
-error-context-move-note = memindahkan catatan
+error-context-delete-note = menghapus berkas
+error-context-move-note = memulihkan catatan
 error-context-create-note = membuat catatan
 error-context-open-vault = membuka vault
+error-context-create-folder = membuat folder
+error-context-rename-folder = mengganti nama folder
+error-context-move-file = memindahkan berkas
+error-context-delete-folder = memindahkan folder ke Sampah
+error-context-trash-note = memindahkan catatan ke Sampah
 
-nav-canvas = Whiteboard
-editor-mode-page = Halaman
-editor-mode-edgeless = Kanvas
-sidebar-whiteboards-only = Whiteboards & Kanvas
-command-palette-title = Perintah & Navigasi Cepat
-command-palette-hint = Ketik judul catatan, nama PDF, atau perintah...
-command-palette-new-note = ＋ Buat Catatan Baru
-command-palette-open-canvas = 🎨 Buka Whiteboard Canvas
-command-palette-search = 🔍 Cari Semantik Vault
-command-palette-chat = 💬 Tanya AI Assistant (Local RAG)
-command-palette-switch-vault = 📂 Buka Folder Vault Lain
+## ── Tambahan / Additional ──
+toast-close-unsaved = Perubahan terakhir gagal disimpan. Tutup sekali lagi untuk keluar tanpa menyimpan.
+canvas-count-sticky = { $count } catatan tempel
+canvas-count-shapes = { $count } bentuk
+canvas-count-connectors = { $count } penghubung
+canvas-count-strokes = { $count } coretan
+canvas-count-empty = Kanvas kosong

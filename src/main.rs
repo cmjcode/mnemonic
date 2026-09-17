@@ -24,13 +24,17 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon)
             .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([720.0, 480.0])
+            .with_min_inner_size([760.0, 520.0])
             .with_title("MNEMONIC"),
         ..Default::default()
     };
     eframe::run_native(
         "MNEMONIC",
         native_options,
-        Box::new(|_cc| Ok(Box::new(app::MnemonicApp::new()))),
+        Box::new(|cc| {
+            // Fonts must be registered before the first frame is laid out.
+            mnemonic::ui::theme::install_fonts(&cc.egui_ctx);
+            Ok(Box::new(app::MnemonicApp::new()))
+        }),
     )
 }

@@ -1,188 +1,179 @@
-//! In-Canvas HUD Pills bergaya Shapr3D / DUCAD.
-//!
-//! Menampilkan kontrol mengambang ringkas di pojok kanvas/editor untuk
-//! zoom, pemilihan warna goresan, ketebalan garis, dan status kanvas.
+//! In-canvas HUD pills: zoom controls (bottom-right) and the stroke color /
+//! width picker (bottom-center).
 
-use egui::{
-    Align2, Color32, CornerRadius, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
-};
-use egui_icons::icons::{ICON_ADD, ICON_REMOVE};
+use egui::{CornerRadius, RichText, Sense, Stroke, StrokeKind, Ui, Vec2};
+use egui_icons::icons::{ICON_ADD, ICON_FIT_SCREEN, ICON_REMOVE};
 
-use crate::ui::theme::{
-    pill_frame, ACCENT_BLUE, BG_CARD_DARK, BG_HOVER_DARK, ROUNDING_SM, TEXT_PRIMARY,
-    TEXT_SECONDARY,
-};
+use crate::i18n::LocaleManager;
+use crate::ui::theme::{self, pal};
+use crate::ui::widgets;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CanvasHudEvent {
     ZoomIn,
     ZoomOut,
     ResetZoom,
-    FitContent,
     SetStrokeColor([f32; 3]),
     SetStrokeWidth(f32),
 }
 
+/// `(rgb, locale key)` color presets for strokes and sticky notes.
+const COLOR_PRESETS: &[([f32; 3], &str)] = &[
+    ([1.0, 0.94, 0.55], "color-yellow"),
+    ([0.65, 0.85, 1.0], "color-blue"),
+    ([0.68, 0.94, 0.72], "color-green"),
+    ([1.0, 0.75, 0.85], "color-pink"),
+    ([0.85, 0.75, 1.0], "color-purple"),
+    ([1.0, 0.6, 0.1], "color-orange"),
+    ([1.0, 0.3, 0.35], "color-red"),
+    ([0.25, 0.28, 0.35], "color-graphite"),
+];
+
 pub struct CanvasHud;
 
 impl CanvasHud {
-    /// Render zoom HUD pill di pojok kanan bawah kanvas.
-    pub fn show_zoom_hud(ui: &mut Ui, zoom_level: f32) -> Option<CanvasHudEvent> {
+    pub fn show_zoom_hud(
+        ui: &mut Ui,
+        tr: &LocaleManager,
+        zoom_level: f32,
+    ) -> Option<CanvasHudEvent> {
+        let t = |key: &str| tr.t(key, &[]);
+        let p = pal();
         let mut event = None;
-
-        pill_frame().show(ui, |ui| {
+        theme::pill_frame().show(ui, |ui| {
             ui.horizontal(|ui| {
-                // Zoom Out (-)
-                let (minus_rect, minus_resp) =
-                    ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
-                if minus_resp.hovered() {
-                    ui.painter().rect(
-                        minus_rect,
-                        CornerRadius::same(ROUNDING_SM),
-                        BG_HOVER_DARK,
-                        Stroke::NONE,
-                        StrokeKind::Inside,
-                    );
-                }
-                ui.painter().text(
-                    minus_rect.center(),
-                    Align2::CENTER_CENTER,
+                ui.spacing_mut().item_spacing.x = 2.0;
+                if widgets::icon_button_sized(
+                    ui,
                     ICON_REMOVE.codepoint,
-                    egui::FontId::proportional(13.0),
-                    TEXT_PRIMARY,
-                );
-                if minus_resp.on_hover_text("Perkecil Tampilan").clicked() {
+                    &t("canvas-zoom-out"),
+                    false,
+                    28.0,
+                    16.0,
+                )
+                .clicked()
+                {
                     event = Some(CanvasHudEvent::ZoomOut);
                 }
-
-                // Zoom percentage label & reset on click
-                let zoom_pct = (zoom_level * 100.0).round() as i32;
-                let pct_text = RichText::new(format!("{zoom_pct}%"))
-                    .size(11.5)
-                    .color(TEXT_SECONDARY);
-
-                let label_resp = ui.add(egui::Label::new(pct_text).sense(Sense::click()));
-                if label_resp
-                    .on_hover_text("Klik untuk reset ke 100%")
+                let pct = RichText::new(format!("{}%", (zoom_level * 100.0).round() as i32))
+                    .size(theme::TEXT_SM)
+                    .color(p.text_dim);
+                if ui
+                    .add_sized(
+                        Vec2::new(48.0, 28.0),
+                        egui::Label::new(pct).sense(Sense::click()),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(t("canvas-zoom-reset"))
                     .clicked()
                 {
                     event = Some(CanvasHudEvent::ResetZoom);
                 }
-
-                // Zoom In (+)
-                let (plus_rect, plus_resp) =
-                    ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
-                if plus_resp.hovered() {
-                    ui.painter().rect(
-                        plus_rect,
-                        CornerRadius::same(ROUNDING_SM),
-                        BG_HOVER_DARK,
-                        Stroke::NONE,
-                        StrokeKind::Inside,
-                    );
-                }
-                ui.painter().text(
-                    plus_rect.center(),
-                    Align2::CENTER_CENTER,
+                if widgets::icon_button_sized(
+                    ui,
                     ICON_ADD.codepoint,
-                    egui::FontId::proportional(13.0),
-                    TEXT_PRIMARY,
-                );
-                if plus_resp.on_hover_text("Perbesar Tampilan").clicked() {
+                    &t("canvas-zoom-in"),
+                    false,
+                    28.0,
+                    16.0,
+                )
+                .clicked()
+                {
                     event = Some(CanvasHudEvent::ZoomIn);
+                }
+                if widgets::icon_button_sized(
+                    ui,
+                    ICON_FIT_SCREEN.codepoint,
+                    &t("canvas-zoom-reset"),
+                    false,
+                    28.0,
+                    16.0,
+                )
+                .clicked()
+                {
+                    event = Some(CanvasHudEvent::ResetZoom);
                 }
             });
         });
-
         event
     }
 
-    /// Render style picker HUD pill untuk warna stroke & ketebalan.
     pub fn show_style_hud(
         ui: &mut Ui,
+        tr: &LocaleManager,
         current_color: [f32; 3],
         current_width: f32,
     ) -> Option<CanvasHudEvent> {
+        let t = |key: &str| tr.t(key, &[]);
+        let p = pal();
         let mut event = None;
 
-        pill_frame().show(ui, |ui| {
+        theme::pill_frame().show(ui, |ui| {
             ui.horizontal(|ui| {
-                let color_presets: &[([f32; 3], &str)] = &[
-                    ([0.9, 0.9, 0.95], "Putih"),
-                    ([0.2, 0.6, 1.0], "Biru"),
-                    ([0.2, 0.85, 0.4], "Hijau"),
-                    ([1.0, 0.6, 0.1], "Oranye"),
-                    ([1.0, 0.3, 0.35], "Merah"),
-                    ([0.7, 0.4, 0.95], "Ungu"),
-                    ([1.0, 0.85, 0.2], "Kuning"),
-                ];
-
-                for (col, label) in color_presets {
-                    let is_active = (col[0] - current_color[0]).abs() < 0.05
-                        && (col[1] - current_color[1]).abs() < 0.05
-                        && (col[2] - current_color[2]).abs() < 0.05;
-
-                    let c32 = Color32::from_rgb(
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (col, key) in COLOR_PRESETS {
+                    let active = col
+                        .iter()
+                        .zip(current_color.iter())
+                        .all(|(a, b)| (a - b).abs() < 0.05);
+                    let c32 = egui::Color32::from_rgb(
                         (col[0] * 255.0) as u8,
                         (col[1] * 255.0) as u8,
                         (col[2] * 255.0) as u8,
                     );
-
-                    let (dot_rect, dot_resp) =
-                        ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-
-                    if is_active {
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+                    if active || resp.hovered() {
                         ui.painter().rect(
-                            dot_rect,
-                            CornerRadius::same(ROUNDING_SM),
-                            Color32::from_rgba_premultiplied(10, 132, 255, 60),
-                            Stroke::new(1.0, ACCENT_BLUE),
+                            rect,
+                            CornerRadius::same(theme::RADIUS_MD),
+                            if active { p.accent_soft } else { p.hover },
+                            if active {
+                                Stroke::new(1.0, p.accent)
+                            } else {
+                                Stroke::NONE
+                            },
                             StrokeKind::Inside,
                         );
                     }
-
-                    ui.painter().circle_filled(dot_rect.center(), 5.5, c32);
-
-                    if dot_resp.on_hover_text(*label).clicked() {
+                    ui.painter()
+                        .circle(rect.center(), 8.0, c32, Stroke::new(1.0, p.border_strong));
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(t(key))
+                        .clicked()
+                    {
                         event = Some(CanvasHudEvent::SetStrokeColor(*col));
                     }
                 }
 
-                ui.add_space(4.0);
-                ui.add(egui::Separator::default().spacing(0.0));
-                ui.add_space(4.0);
+                ui.add(egui::Separator::default().spacing(8.0));
 
-                let widths = [(2.0, "Tipis"), (4.0, "Sedang"), (7.0, "Tebal")];
-                for (w, w_label) in widths {
-                    let is_w_active = (current_width - w).abs() < 0.5;
-                    let (w_rect, w_resp) =
-                        ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
-
-                    if is_w_active {
-                        ui.painter().rect(
-                            w_rect,
-                            CornerRadius::same(ROUNDING_SM),
-                            BG_CARD_DARK,
-                            Stroke::new(1.0, ACCENT_BLUE),
-                            StrokeKind::Inside,
-                        );
-                    } else if w_resp.hovered() {
-                        ui.painter().rect(
-                            w_rect,
-                            CornerRadius::same(ROUNDING_SM),
-                            BG_HOVER_DARK,
-                            Stroke::NONE,
-                            StrokeKind::Inside,
+                for (w, key) in [
+                    (2.0, "canvas-width-thin"),
+                    (4.0, "canvas-width-medium"),
+                    (7.0, "canvas-width-thick"),
+                ] {
+                    let active = (current_width - w).abs() < 0.5;
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+                    if active || resp.hovered() {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(theme::RADIUS_MD),
+                            if active { p.accent_soft } else { p.hover },
                         );
                     }
-
-                    ui.painter().circle_filled(
-                        w_rect.center(),
-                        (w * 0.7).clamp(2.0, 6.0),
-                        if is_w_active { ACCENT_BLUE } else { TEXT_SECONDARY },
+                    ui.painter().line_segment(
+                        [
+                            rect.left_center() + Vec2::new(8.0, 0.0),
+                            rect.right_center() - Vec2::new(8.0, 0.0),
+                        ],
+                        Stroke::new(w * 0.8, if active { p.accent } else { p.text_dim }),
                     );
-
-                    if w_resp.on_hover_text(w_label).clicked() {
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(t(key))
+                        .clicked()
+                    {
                         event = Some(CanvasHudEvent::SetStrokeWidth(w));
                     }
                 }
@@ -201,5 +192,6 @@ mod tests {
     fn test_canvas_hud_event_variants() {
         let ev = CanvasHudEvent::SetStrokeWidth(4.0);
         assert_eq!(ev, CanvasHudEvent::SetStrokeWidth(4.0));
+        assert_eq!(COLOR_PRESETS.len(), 8);
     }
 }

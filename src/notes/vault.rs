@@ -1,69 +1,28 @@
 //! Vault selection & initial scan. A "vault" is a user-chosen folder on
-//! disk containing `.md` note files (§3.1.1). Callers: `app.rs`.
+//! disk containing `.md` note files (§3.1.1). Remembering which vault was
+//! open last lives in `crate::settings`. Callers: `app.rs`.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 
 use super::note::Note;
 
-/// Persisted app config — currently just remembers the last opened vault
-/// path so the user doesn't have to re-pick it on every launch.
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct AppConfig {
-    vault_path: Option<String>,
-}
-
-fn config_path() -> Result<PathBuf> {
-    let dir = dirs::config_dir().context("no config dir available on this platform")?;
-    let dir = dir.join("mnemonic");
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating config dir {}", dir.display()))?;
-    Ok(dir.join("config.toml"))
-}
-
-fn load_config() -> AppConfig {
-    let Ok(path) = config_path() else {
-        return AppConfig::default();
-    };
-    match std::fs::read_to_string(&path) {
-        Ok(raw) => toml::from_str(&raw).unwrap_or_default(),
-        Err(_) => AppConfig::default(),
-    }
-}
-
-fn save_config(cfg: &AppConfig) -> Result<()> {
-    let path = config_path()?;
-    let raw = toml::to_string_pretty(cfg)?;
-    std::fs::write(&path, raw)
-        .with_context(|| format!("writing config file {}", path.display()))?;
-    Ok(())
-}
-
 /// An open vault: a root folder plus the notes currently loaded from it.
+/// `notes` includes trashed notes (loaded from `.trash/`, flagged
+/// `frontmatter.trashed`) so the Trash view can list and restore them;
+/// every other consumer already filters on that flag.
 pub struct Vault {
     pub root: PathBuf,
     pub notes: Vec<Note>,
 }
 
 impl Vault {
-    /// Load the previously remembered vault path, if any, and scan it.
-    pub fn load_last() -> Option<Result<Vault>> {
-        let cfg = load_config();
-        cfg.vault_path.map(|p| Vault::open(PathBuf::from(p)))
-    }
-
-    /// Open (or create) a vault at `root`, remember it for next launch,
-    /// and perform an initial recursive scan for `.md` files.
+    /// Open (or create) a vault at `root` and perform an initial
+    /// recursive scan for `.md` files.
     pub fn open(root: PathBuf) -> Result<Vault> {
         std::fs::create_dir_all(&root)
             .with_context(|| format!("creating vault root {}", root.display()))?;
-
-        save_config(&AppConfig {
-            vault_path: Some(root.to_string_lossy().to_string()),
-        })?;
-
         let notes = scan(&root)?;
         Ok(Vault { root, notes })
     }
@@ -76,9 +35,11 @@ impl Vault {
     }
 }
 
-/// Recursively find all `.md` files under `root` (skipping the `.trash`
-/// folder, per §3.1.4) and load them as notes. A single unreadable file
-/// is logged and skipped rather than failing the whole scan.
+/// Recursively find all `.md` files under `root` and load them as notes.
+/// `.trash/` is not walked recursively (a trashed folder keeps its tree
+/// out of the main view), but its top-level notes are loaded so the Trash
+/// view can show them (§3.1.4). A single unreadable file is logged and
+/// skipped rather than failing the whole scan.
 fn scan(root: &Path) -> Result<Vec<Note>> {
     let mut notes = Vec::new();
     for entry in walkdir::WalkDir::new(root)
@@ -92,18 +53,38 @@ fn scan(root: &Path) -> Result<Vec<Note>> {
                 continue;
             }
         };
-        if !entry.file_type().is_file() {
-            continue;
+        if entry.file_type().is_file() && is_markdown(entry.path()) {
+            load_into(&mut notes, entry.path(), false);
         }
-        if entry.path().extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-        match Note::load(entry.path()) {
-            Ok(note) => notes.push(note),
-            Err(e) => log::warn!("vault scan: failed to load {}: {e}", entry.path().display()),
+    }
+
+    if let Ok(entries) = std::fs::read_dir(root.join(".trash")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && is_markdown(&path) {
+                load_into(&mut notes, &path, true);
+            }
         }
     }
     Ok(notes)
+}
+
+fn is_markdown(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("md")
+}
+
+fn load_into(notes: &mut Vec<Note>, path: &Path, in_trash: bool) {
+    match Note::load(path) {
+        Ok(mut note) => {
+            // A note sitting in `.trash/` is trashed regardless of what
+            // its frontmatter says (e.g. dropped there by hand).
+            if in_trash {
+                note.frontmatter.trashed = true;
+            }
+            notes.push(note);
+        }
+        Err(e) => log::warn!("vault scan: failed to load {}: {e}", path.display()),
+    }
 }
 
 #[cfg(test)]
@@ -112,7 +93,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn scan_finds_only_markdown_files_and_skips_trash() {
+    fn scan_finds_markdown_files_and_flags_trashed_ones() {
         let dir = tempdir().unwrap();
         Note::create(dir.path(), "Note A", "isi a").unwrap();
         Note::create(dir.path(), "Note B", "isi b").unwrap();
@@ -121,8 +102,15 @@ mod tests {
         let trash_dir = dir.path().join(".trash");
         std::fs::create_dir_all(&trash_dir).unwrap();
         Note::create(&trash_dir, "Trashed", "isi").unwrap();
+        // A whole trashed folder is not listed note-by-note.
+        let trashed_folder = trash_dir.join("Old Folder");
+        std::fs::create_dir_all(&trashed_folder).unwrap();
+        Note::create(&trashed_folder, "Nested", "isi").unwrap();
 
         let notes = scan(dir.path()).unwrap();
-        assert_eq!(notes.len(), 2);
+        assert_eq!(notes.len(), 3);
+        let trashed: Vec<_> = notes.iter().filter(|n| n.frontmatter.trashed).collect();
+        assert_eq!(trashed.len(), 1);
+        assert_eq!(trashed[0].frontmatter.title, "Trashed");
     }
 }
