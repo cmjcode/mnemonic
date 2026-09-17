@@ -582,6 +582,7 @@ pub(super) fn show_canvas_surface(
                         stroke_width: interaction.stroke_width,
                         fill_color: None,
                         text: String::new(),
+                        text_color: None,
                     });
                     interaction.active_tool = CanvasTool::Select;
                     modified = true;
@@ -598,6 +599,7 @@ pub(super) fn show_canvas_surface(
                         stroke_width: interaction.stroke_width,
                         label: String::new(),
                         arrow_end: true,
+                        waypoints: Vec::new(),
                     });
                     interaction.active_tool = CanvasTool::Select;
                     modified = true;
@@ -823,12 +825,31 @@ pub(super) fn show_canvas_surface(
                             .unwrap_or_else(|| canvas.title.clone());
                         let result = std::fs::read_to_string(&load_path)
                             .map_err(anyhow::Error::from)
-                            .and_then(|xml| CanvasDocument::from_drawio_xml(&title, &xml));
+                            .and_then(|xml| canvas::DrawioImporter::from_xml_with_report(&title, &xml));
                         toast = Some(match result {
-                            Ok(imported) => {
+                            Ok((imported, _)) if imported.elements.is_empty() => {
+                                (ToastKind::Error, tr.t("canvas-import-empty", &[]))
+                            }
+                            Ok((imported, report)) => {
                                 canvas.elements = imported.elements;
+                                let bounds = canvas
+                                    .elements
+                                    .iter()
+                                    .map(|e| e.bounding_rect())
+                                    .fold(egui::Rect::NOTHING, |acc, r| acc.union(r));
+                                canvas.viewport.fit_rect(bounds, screen_rect.size());
                                 modified = true;
-                                (ToastKind::Success, tr.t("canvas-import-success", &[]))
+                                let count = report.elements.to_string();
+                                let mut message =
+                                    tr.t("canvas-import-success", &[("count", &count)]);
+                                if report.skipped > 0 {
+                                    let skipped = report.skipped.to_string();
+                                    message = format!(
+                                        "{message} · {}",
+                                        tr.t("canvas-import-skipped", &[("count", &skipped)])
+                                    );
+                                }
+                                (ToastKind::Success, message)
                             }
                             Err(e) => (
                                 ToastKind::Error,

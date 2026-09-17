@@ -116,6 +116,7 @@ impl CanvasDocument {
                         stroke_width: 2.0,
                         fill_color: Some([0.18, 0.22, 0.32]),
                         text: text.clone(),
+                        text_color: None,
                     });
                     cur_y += height + 35.0;
                 }
@@ -503,6 +504,7 @@ mod tests {
             stroke_width: 2.0,
             fill_color: None,
             text: "Database PostgreSQL".to_string(),
+            text_color: None,
         });
 
         let md_body = canvas.to_markdown_body();

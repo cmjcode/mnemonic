@@ -56,6 +56,23 @@ impl Viewport {
         self.add_pan_vec(screen_delta / self.zoom);
     }
 
+    /// Zoom and pan so `world_rect` fills a screen area of `screen_size`, with a margin.
+    pub fn fit_rect(&mut self, world_rect: Rect, screen_size: Vec2) {
+        if !world_rect.is_positive() || screen_size.x <= 0.0 || screen_size.y <= 0.0 {
+            return;
+        }
+        const MARGIN: f32 = 0.9;
+        let zoom = (screen_size.x / world_rect.width())
+            .min(screen_size.y / world_rect.height())
+            * MARGIN;
+        self.zoom = zoom.clamp(Self::MIN_ZOOM, Self::MAX_ZOOM);
+        let center = world_rect.center();
+        self.pan = [
+            screen_size.x / (2.0 * self.zoom) - center.x,
+            screen_size.y / (2.0 * self.zoom) - center.y,
+        ];
+    }
+
     /// Convert screen coordinates (pixels on window) to world coordinates.
     pub fn screen_to_world(&self, screen_pos: Pos2, screen_origin: Pos2) -> Pos2 {
         let relative_screen = screen_pos - screen_origin;

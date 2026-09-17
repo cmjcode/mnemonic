@@ -61,6 +61,9 @@ pub enum CanvasElement {
         stroke_width: f32,
         fill_color: Option<[f32; 3]>,
         text: String,
+        /// Explicit label color; `None` picks a color that contrasts with the fill.
+        #[serde(default)]
+        text_color: Option<[f32; 3]>,
     },
     Connector {
         id: CanvasElementId,
@@ -73,6 +76,9 @@ pub enum CanvasElement {
         stroke_width: f32,
         label: String,
         arrow_end: bool,
+        /// Intermediate bend points between `from_pos` and `to_pos`.
+        #[serde(default)]
+        waypoints: Vec<[f32; 2]>,
     },
     DocCard {
         id: CanvasElementId,
@@ -121,12 +127,21 @@ impl CanvasElement {
             CanvasElement::DocCard { pos, size, .. } => {
                 Rect::from_min_size(Pos2::new(pos[0], pos[1]), Vec2::new(size[0], size[1]))
             }
-            CanvasElement::Connector { from_pos, to_pos, .. } => {
-                let min_x = from_pos[0].min(to_pos[0]) - 5.0;
-                let min_y = from_pos[1].min(to_pos[1]) - 5.0;
-                let max_x = from_pos[0].max(to_pos[0]) + 5.0;
-                let max_y = from_pos[1].max(to_pos[1]) + 5.0;
-                Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
+            CanvasElement::Connector { from_pos, to_pos, waypoints, .. } => {
+                let mut min_x = from_pos[0].min(to_pos[0]);
+                let mut min_y = from_pos[1].min(to_pos[1]);
+                let mut max_x = from_pos[0].max(to_pos[0]);
+                let mut max_y = from_pos[1].max(to_pos[1]);
+                for pt in waypoints {
+                    min_x = min_x.min(pt[0]);
+                    min_y = min_y.min(pt[1]);
+                    max_x = max_x.max(pt[0]);
+                    max_y = max_y.max(pt[1]);
+                }
+                Rect::from_min_max(
+                    Pos2::new(min_x - 5.0, min_y - 5.0),
+                    Pos2::new(max_x + 5.0, max_y + 5.0),
+                )
             }
             CanvasElement::FreehandStroke { points, width, .. } => {
                 if points.is_empty() {
@@ -164,11 +179,15 @@ impl CanvasElement {
                 rect[2] += delta.x;
                 rect[3] += delta.y;
             }
-            CanvasElement::Connector { from_pos, to_pos, .. } => {
+            CanvasElement::Connector { from_pos, to_pos, waypoints, .. } => {
                 from_pos[0] += delta.x;
                 from_pos[1] += delta.y;
                 to_pos[0] += delta.x;
                 to_pos[1] += delta.y;
+                for pt in waypoints {
+                    pt[0] += delta.x;
+                    pt[1] += delta.y;
+                }
             }
             CanvasElement::FreehandStroke { points, .. } => {
                 for pt in points {

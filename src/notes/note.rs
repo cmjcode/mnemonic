@@ -114,6 +114,7 @@ impl Note {
             stroke_width: 2.0,
             fill_color: Some([0.15, 0.20, 0.35]),
             text: "🚀 Mulai / Start".to_string(),
+            text_color: None,
         });
 
         let decision_id = canvas.add_element(crate::canvas::CanvasElement::Shape {
@@ -124,6 +125,7 @@ impl Note {
             stroke_width: 2.0,
             fill_color: Some([0.28, 0.22, 0.10]),
             text: "Validasi?\nValid?".to_string(),
+            text_color: None,
         });
 
         let process_id = canvas.add_element(crate::canvas::CanvasElement::Shape {
@@ -134,6 +136,7 @@ impl Note {
             stroke_width: 2.0,
             fill_color: Some([0.10, 0.25, 0.16]),
             text: "Proses Data".to_string(),
+            text_color: None,
         });
 
         canvas.add_element(crate::canvas::CanvasElement::Connector {
@@ -147,6 +150,7 @@ impl Note {
             stroke_width: 2.0,
             label: "".to_string(),
             arrow_end: true,
+            waypoints: Vec::new(),
         });
 
         canvas.add_element(crate::canvas::CanvasElement::Connector {
@@ -160,6 +164,7 @@ impl Note {
             stroke_width: 2.0,
             label: "Ya".to_string(),
             arrow_end: true,
+            waypoints: Vec::new(),
         });
 
         let xml = canvas.to_drawio_xml();

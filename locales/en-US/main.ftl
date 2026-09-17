@@ -209,7 +209,17 @@ canvas-tool-pen = Pen
 canvas-tool-eraser = Eraser
 canvas-import-drawio = Import from Draw.io
 canvas-export-drawio = Export to Draw.io
-canvas-import-success = Diagram imported
+canvas-import-success =
+    { $count ->
+        [one] Imported { $count } element
+       *[other] Imported { $count } elements
+    }
+canvas-import-skipped =
+    { $count ->
+        [one] { $count } item couldn't be shown
+       *[other] { $count } items couldn't be shown
+    }
+canvas-import-empty = No diagram content found in this file
 canvas-import-failed = Couldn't import the diagram
 canvas-export-success = Diagram exported
 canvas-export-failed = Couldn't export the diagram

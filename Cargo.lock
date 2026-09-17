@@ -3693,6 +3693,7 @@ name = "mnemonic"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "candle-core",
  "candle-nn",
  "candle-transformers",
@@ -3707,6 +3708,7 @@ dependencies = [
  "env_logger",
  "fastembed",
  "filetime",
+ "flate2",
  "fluent-bundle",
  "fluent-syntax",
  "hf-hub",
@@ -3716,6 +3718,7 @@ dependencies = [
  "notify",
  "pdf-extract",
  "pdfium-render",
+ "percent-encoding",
  "quick-xml",
  "rfd",
  "rusqlite",
