@@ -531,3 +531,5 @@ error-context-open-sheet = open the sheet
 error-context-save-sheet = save the sheet
 error-context-export-sheet = export the sheet
 error-context-import-sheet = import the spreadsheet
+toast-link-sheet-missing = Sheet "{ $name }" isn't in the vault
+graph-kind-sheet = Sheet

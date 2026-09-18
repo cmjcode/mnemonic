@@ -1,0 +1,276 @@
+{
+  "nodes": [
+    {
+      "id": "81c1fab8-9521-4c5e-ae4b-46b8d547ec7e",
+      "type": "file",
+      "x": 80,
+      "y": 60,
+      "width": 495,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^sgeysr",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#66A6FF",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 0
+      }
+    },
+    {
+      "id": "0efa5ad6-1096-4f46-afe1-6d35a8a6534e",
+      "type": "file",
+      "x": 110,
+      "y": 146,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^0u1tfv",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 1
+      }
+    },
+    {
+      "id": "04f12576-6c2d-4b36-aae4-b8cf98d063e1",
+      "type": "file",
+      "x": 80,
+      "y": 250,
+      "width": 240,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^8hzvg7",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 2
+      }
+    },
+    {
+      "id": "83ed89b5-0472-477c-a29f-3ae0aa8dce6c",
+      "type": "file",
+      "x": 110,
+      "y": 336,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^5wdr68",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 3
+      }
+    },
+    {
+      "id": "d85e7a9d-ca37-43da-841f-bce3477411bc",
+      "type": "file",
+      "x": 80,
+      "y": 440,
+      "width": 240,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^byy4d9",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 4
+      }
+    },
+    {
+      "id": "80426a63-2c25-4cd8-b462-17b637c75b73",
+      "type": "file",
+      "x": 80,
+      "y": 526,
+      "width": 407,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^hinida",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 5
+      }
+    },
+    {
+      "id": "41842fa8-209a-49d8-8f1c-21468ad968dd",
+      "type": "file",
+      "x": 80,
+      "y": 612,
+      "width": 319,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^5dzmey",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 6
+      }
+    },
+    {
+      "id": "b8e41c07-9065-48eb-988c-663366fe24e5",
+      "type": "file",
+      "x": 80,
+      "y": 698,
+      "width": 240,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^kiav5p",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 7
+      }
+    },
+    {
+      "id": "3478cacf-9697-496e-86e8-0e014305c8b7",
+      "type": "file",
+      "x": 80,
+      "y": 784,
+      "width": 352,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^e32ehx",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 8
+      }
+    },
+    {
+      "id": "0206aa13-1edf-4c40-9368-d33211ff73f4",
+      "type": "file",
+      "x": 110,
+      "y": 870,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^q5927v",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 9
+      }
+    },
+    {
+      "id": "0f3b2b3a-c410-4ebd-95e9-1f9a8c7be801",
+      "type": "file",
+      "x": 110,
+      "y": 974,
+      "width": 280,
+      "height": 100,
+      "color": "#FFF08C",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^vdlgwc",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 10
+      }
+    },
+    {
+      "id": "f7e69de2-9121-4136-8fcd-af23cae4f70e",
+      "type": "file",
+      "x": 110,
+      "y": 1098,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^3cv8nf",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 11
+      }
+    },
+    {
+      "id": "f696c043-5d17-4d97-80f1-7e94dd5063a8",
+      "type": "file",
+      "x": 110,
+      "y": 1202,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^zpd9lp",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 12
+      }
+    },
+    {
+      "id": "96882db0-0ebf-40b8-a73e-da5a9de82873",
+      "type": "file",
+      "x": 110,
+      "y": 1306,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^sfs2vz",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 13
+      }
+    },
+    {
+      "id": "85d72a93-289a-475d-998d-77dfe3ee4870",
+      "type": "file",
+      "x": 110,
+      "y": 1410,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^k8z3u0",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 14
+      }
+    }
+  ],
+  "edges": [],
+  "mnemonic": {
+    "id": "dfe9084b-efaf-4441-9980-715918fea657",
+    "viewport": {
+      "pan": [
+        281.0617,
+        19.444458
+      ],
+      "zoom": 0.5204895
+    }
+  }
+}

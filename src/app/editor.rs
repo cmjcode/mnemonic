@@ -497,6 +497,7 @@ impl MnemonicApp {
             .chain(
                 self.pdf_documents
                     .iter()
+                    .chain(&self.derived.sheets)
                     .filter_map(|p| p.file_name().map(|n| title_key(&n.to_string_lossy()))),
             )
             .collect();
@@ -542,6 +543,7 @@ impl MnemonicApp {
             .chain(
                 self.pdf_documents
                     .iter()
+                    .chain(&self.derived.sheets)
                     .filter_map(|p| p.file_name().map(|n| title_key(&n.to_string_lossy()))),
             )
             .collect();
@@ -666,6 +668,9 @@ fn resolve_embed_target(
         .flatten()
         .find(|e| e.file_type().is_file() && e.file_name().to_string_lossy().eq_ignore_ascii_case(wanted))
         .map(|e| e.path().to_path_buf())?;
+    if crate::sheet::is_sheet_path(&found) {
+        return Some(EmbedContent::Sheet(found));
+    }
     Some(EmbedContent::Image(found))
 }
 

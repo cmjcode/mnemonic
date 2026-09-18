@@ -73,8 +73,69 @@ enum Command {
         #[command(subcommand)]
         action: DiagramAction,
     },
+    /// List, read, query or edit CSV/XLSX sheets (§3.8; XLSX is read-only).
+    Sheets {
+        #[command(subcommand)]
+        action: SheetsAction,
+    },
     /// Run as an MCP server over stdio (JSON-RPC 2.0, newline-delimited).
     Mcp,
+}
+
+#[derive(Subcommand)]
+enum SheetsAction {
+    /// Every CSV/TSV/XLSX/… file in the vault.
+    List,
+    /// Headers, a page of rows and per-column stats.
+    Read {
+        /// Vault-relative path or unambiguous file name/stem.
+        r#ref: String,
+        /// Worksheet name or 0-based index.
+        #[arg(long)]
+        sheet: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Filter + sort rows; stats cover every matched row.
+    Query {
+        r#ref: String,
+        #[arg(long)]
+        sheet: Option<String>,
+        /// Condition COLUMN:OP:VALUE (repeatable, all must hold). OP: eq, ne,
+        /// contains, not_contains, gt, gte, lt, lte, empty, not_empty.
+        #[arg(long = "where", value_name = "COLUMN:OP:VALUE")]
+        filters: Vec<String>,
+        /// Columns to show (repeatable).
+        #[arg(long = "column")]
+        columns: Vec<String>,
+        #[arg(long)]
+        sort: Option<String>,
+        #[arg(long)]
+        desc: bool,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Set one cell of a CSV (ROW is 1-based, COLUMN a name or index).
+    Set {
+        r#ref: String,
+        row: usize,
+        column: String,
+        value: String,
+    },
+    /// Append rows given as JSON arrays or objects (repeatable).
+    Append {
+        r#ref: String,
+        #[arg(long = "row", value_name = "JSON", required = true)]
+        rows: Vec<String>,
+    },
+    /// Create a new CSV/TSV with the given headers.
+    Create {
+        path: String,
+        #[arg(long = "header", required = true)]
+        headers: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -360,7 +421,11 @@ fn run(cli: Cli) -> Result<()> {
                 }
                 for (i, h) in res.hits.iter().enumerate() {
                     let score = h.score.map(|s| format!(" score={s:.3}")).unwrap_or_default();
-                    let page = h.page.map(|p| format!(" p.{p}")).unwrap_or_default();
+                    let page = h
+                        .page
+                        .map(|p| format!(" p.{p}"))
+                        .or_else(|| h.row.map(|r| format!(" row {r}")))
+                        .unwrap_or_default();
                     out.push(format!("{}. {} — {}{page} [{}]{score}", i + 1, h.title, h.path, h.kind));
                     let preview = h.snippet.clone().unwrap_or_else(|| first_line(&h.text));
                     out.push(format!("   {}", preview.replace('\n', " ")));
@@ -414,11 +479,13 @@ fn run(cli: Cli) -> Result<()> {
             let report = svc.reindex(ReindexOptions { full, keyword_only })?;
             emit(json, &report, |out| {
                 out.push(format!(
-                    "indexed {} notes: {} chunked, {} up to date, {} pruned ({})",
+                    "indexed {} notes: {} chunked, {} up to date, {} pruned; {} sheets, {} chunked ({})",
                     report.notes_indexed,
                     report.chunked,
                     report.skipped,
                     report.pruned,
+                    report.sheets_indexed,
+                    report.sheets_chunked,
                     if report.semantic { "with embeddings" } else { "keyword-only" }
                 ));
                 out.extend(report.warnings.iter().map(|w| format!("warning: {w}")));
@@ -434,13 +501,18 @@ fn run(cli: Cli) -> Result<()> {
                     out.push(String::new());
                     out.push("sources:".into());
                     for c in &res.citations {
-                        let page = c.page.map(|p| format!(" (page {p})")).unwrap_or_default();
+                        let page = c
+                            .page
+                            .map(|p| format!(" (page {p})"))
+                            .or_else(|| c.row.map(|r| format!(" (row {r})")))
+                            .unwrap_or_default();
                         out.push(format!("  - {} — {}{page}", c.title, c.path));
                     }
                 }
             })
         }
         Command::Diagram { action } => run_diagram(json, &action, Some(&svc)),
+        Command::Sheets { action } => run_sheets(json, action, &mut svc),
         Command::Mcp => {
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();
@@ -519,6 +591,92 @@ fn run_diagram(json: bool, action: &DiagramAction, svc: Option<&VaultService>) -
                 Ok(())
             }
         }
+    }
+}
+
+/// `sheets …`.
+fn run_sheets(json: bool, action: SheetsAction, svc: &mut VaultService) -> Result<()> {
+    match action {
+        SheetsAction::List => {
+            let sheets = svc.list_sheets();
+            emit(json, &sheets, |out| {
+                for s in &sheets {
+                    let ro = if s.editable { "" } else { "  (read-only)" };
+                    out.push(format!("{}\t{}\t{} B{ro}", s.path, s.kind, s.size_bytes));
+                }
+                if sheets.is_empty() {
+                    out.push("(no sheets)".into());
+                }
+            })
+        }
+        SheetsAction::Read { r#ref, sheet, offset, limit } => {
+            let data = svc.read_sheet(&SheetReadRequest { r#ref, sheet, offset, limit })?;
+            emit(json, &data, |out| {
+                out.push(format!("{} [{}] — {} rows", data.path, data.sheet, data.total_rows));
+                table_lines(out, &data.headers, &data.rows, &data.columns);
+            })
+        }
+        SheetsAction::Query { r#ref, sheet, filters, columns, sort, desc, limit } => {
+            let filters = filters
+                .iter()
+                .map(|f| {
+                    let mut parts = f.splitn(3, ':');
+                    let column = parts.next().unwrap_or_default().to_string();
+                    let op = parts.next().context("--where needs COLUMN:OP[:VALUE]")?.to_string();
+                    let value = parts.next().unwrap_or_default().to_string();
+                    Ok(SheetFilter { column, op, value })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let res = svc.query_sheet(&SheetQueryRequest {
+                r#ref,
+                sheet,
+                filters,
+                columns: (!columns.is_empty()).then_some(columns),
+                sort_by: sort,
+                descending: desc,
+                limit,
+            })?;
+            emit(json, &res, |out| {
+                out.push(format!("{} [{}] — {} matched", res.path, res.sheet, res.matched));
+                table_lines(out, &res.headers, &res.rows, &res.columns);
+            })
+        }
+        SheetsAction::Set { r#ref, row, column, value } => {
+            let res = svc.set_sheet_cell(&SheetSetCellRequest { r#ref, row, column, value })?;
+            emit(json, &res, |out| out.push(format!("{}: {} cell(s) changed", res.path, res.changed)))
+        }
+        SheetsAction::Append { r#ref, rows } => {
+            let rows = rows
+                .iter()
+                .map(|r| serde_json::from_str(r).with_context(|| format!("--row is not JSON: {r}")))
+                .collect::<Result<Vec<_>>>()?;
+            let res = svc.append_sheet_rows(&SheetAppendRequest { r#ref, rows })?;
+            emit(json, &res, |out| out.push(format!("{}: now {} rows", res.path, res.rows)))
+        }
+        SheetsAction::Create { path, headers } => {
+            let res = svc.create_sheet(&SheetCreateRequest { path, headers, rows: Vec::new() })?;
+            emit(json, &res, |out| out.push(format!("created {}", res.path)))
+        }
+    }
+}
+
+/// `row | a | b` lines plus a stats line per numeric column.
+fn table_lines(out: &mut Vec<String>, headers: &[String], rows: &[SheetRowOut], cols: &[SheetColumnOut]) {
+    out.push(format!("#\t{}", headers.join("\t")));
+    for r in rows {
+        out.push(format!("{}\t{}", r.row, r.cells.join("\t")));
+    }
+    for c in cols.iter().filter(|c| c.numeric) {
+        let n = |v: Option<f64>| v.map(mnemonic::sheet::model::format_number).unwrap_or_default();
+        out.push(format!(
+            "{}: count {} · sum {} · avg {} · min {} · max {}",
+            c.name,
+            c.count,
+            n(c.sum),
+            n(c.avg),
+            n(c.min),
+            n(c.max)
+        ));
     }
 }
 

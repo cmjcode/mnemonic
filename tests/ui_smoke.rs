@@ -70,6 +70,26 @@ fn seed_vault(vault: &Path) {
     .unwrap();
     Note::create_canvas(vault, "Diagram Arsitektur").unwrap();
 
+    // Sheets (§3.8): an editable CSV and a read-only two-tab workbook.
+    std::fs::write(
+        vault.join("Kas Rumah.csv"),
+        "Item;Jumlah\nKopi;Rp 12.000\nTeh;8000\n",
+    )
+    .unwrap();
+    let mut book = rust_xlsxwriter::Workbook::new();
+    for (name, value) in [("Q1", 10.0), ("Q2", 20.0)] {
+        let ws = book.add_worksheet();
+        ws.set_name(name).unwrap();
+        ws.write_string(0, 0, "Bulan").unwrap();
+        ws.write_number(1, 0, value).unwrap();
+    }
+    book.save(vault.join("Laporan.xlsx")).unwrap();
+    std::fs::write(
+        vault.join("Anggaran 2027.md"),
+        "---\ntitle: Anggaran 2027\n---\nRingkasan kas:\n\n![[Kas Rumah.csv]]\n",
+    )
+    .unwrap();
+
     // Something in the trash, so the Trash view has content.
     let old = Note::create(vault, "Draft Lama", "tidak dipakai").unwrap();
     old.move_to_trash(vault).unwrap();
@@ -187,6 +207,37 @@ fn walk_screens(prefix: &str, vault: &Path) {
     press(&mut h, Key::Escape);
     press(&mut h, Key::Escape);
 
+    // A CSV sheet from the palette: select a cell, type to replace it,
+    // Enter commits, ⌘S saves.
+    cmd(&mut h, Key::K);
+    type_text(&mut h, "Kas Rumah");
+    press(&mut h, Key::Enter);
+    step(&mut h);
+    snapshot(&mut h, &format!("{prefix}-12-sheet"));
+    press(&mut h, Key::ArrowDown);
+    type_text(&mut h, "Beras");
+    press(&mut h, Key::Enter);
+    cmd(&mut h, Key::S);
+    snapshot(&mut h, &format!("{prefix}-12b-sheet-edited"));
+    press(&mut h, Key::Escape);
+
+    // A workbook opens read-only with one tab per worksheet.
+    cmd(&mut h, Key::K);
+    type_text(&mut h, "Laporan");
+    press(&mut h, Key::Enter);
+    step(&mut h);
+    snapshot(&mut h, &format!("{prefix}-13-workbook"));
+    press(&mut h, Key::Escape);
+
+    // A note embedding the CSV renders a preview table in Reading mode.
+    cmd(&mut h, Key::K);
+    type_text(&mut h, "Anggaran 2027");
+    press(&mut h, Key::Enter);
+    cmd(&mut h, Key::E);
+    step(&mut h);
+    snapshot(&mut h, &format!("{prefix}-14-sheet-embed"));
+    press(&mut h, Key::Escape);
+
     // Narrow window: layout must still hold together.
     h.set_size(egui::vec2(820.0, 600.0));
     step(&mut h);
@@ -206,6 +257,13 @@ fn walk_screens(prefix: &str, vault: &Path) {
     assert!(titled, "typed title should be saved after pressing Esc");
     // Obsidian convention: the file is named after the title.
     assert!(vault.join("Belanja Mingguan.md").exists(), "note file should be named after its title");
+    // The sheet edit was written back in place, keeping the `;` delimiter.
+    let csv = std::fs::read_to_string(vault.join("Kas Rumah.csv")).unwrap();
+    assert_eq!(csv, "Item;Jumlah\nBeras;Rp 12.000\nTeh;8000\n", "sheet edit should be saved");
+    assert!(
+        std::fs::read(vault.join("Laporan.xlsx")).is_ok_and(|b| !b.is_empty()),
+        "workbook must be left untouched"
+    );
     // The canvas note keeps its diagram in a JSON Canvas sidecar.
     assert!(vault.join("Diagram Arsitektur.canvas").exists(), "canvas sidecar should exist");
 }

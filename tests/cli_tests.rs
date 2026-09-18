@@ -272,6 +272,41 @@ fn diagram_list_reads_note_fences() {
 }
 
 #[test]
+fn sheets_query_edit_and_index() {
+    let dir = vault();
+    let v = dir.path();
+    write(v, "Data/Kas.csv", "Item;Jumlah\nKopi;Rp 12.000\nTeh;8000\n");
+
+    let list = run_json(v, &["sheets", "list"]);
+    assert_eq!(list[0]["path"], "Data/Kas.csv");
+    assert_eq!(list[0]["editable"], true);
+
+    let q = run_json(v, &["sheets", "query", "Kas", "--where", "Jumlah:gte:10000"]);
+    assert_eq!(q["matched"], 1);
+    assert_eq!(q["rows"][0]["cells"][0], "Kopi");
+    assert_eq!(q["columns"][1]["sum"], 12000.0);
+
+    run_ok(v, &["sheets", "set", "Kas", "2", "Jumlah", "9000"]);
+    run_ok(v, &["sheets", "append", "Kas", "--row", r#"{"Item":"Susu","Jumlah":5000}"#]);
+    let text = std::fs::read_to_string(v.join("Data/Kas.csv")).unwrap();
+    assert_eq!(text, "Item;Jumlah\nKopi;Rp 12.000\nTeh;9000\nSusu;5000\n");
+
+    let report = run_json(v, &["index", "--keyword-only"]);
+    assert_eq!(report["sheets_indexed"], 1);
+    let res = run_json(v, &["search", "Susu", "--keyword-only"]);
+    let hit = res["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["path"] == "Data/Kas.csv")
+        .expect("sheet hit");
+    assert_eq!(hit["row"], 1);
+
+    let err = run(v, &["sheets", "query", "Kas", "--where", "Jumlah:like:1"]);
+    assert!(!err.status.success());
+}
+
+#[test]
 fn no_vault_is_an_error() {
     let out = bin()
         .env("HOME", tempdir().unwrap().path())

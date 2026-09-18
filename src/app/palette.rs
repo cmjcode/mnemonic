@@ -8,7 +8,7 @@ use egui_icons::icons::{
     ICON_DESCRIPTION, ICON_DRAW, ICON_FOLDER_OPEN, ICON_HUB, ICON_INVENTORY_2, ICON_KEYBOARD,
     ICON_LABEL,
     ICON_LANGUAGE, ICON_LEFT_PANEL_CLOSE, ICON_NOTE_ADD, ICON_PICTURE_AS_PDF, ICON_SEARCH,
-    ICON_UPLOAD_FILE,
+    ICON_TABLE_CHART, ICON_UPLOAD_FILE,
 };
 
 use super::MnemonicApp;
@@ -46,10 +46,22 @@ impl MnemonicApp {
                 t("sidebar-new-folder"),
             ),
             PaletteCommand::new(
+                "new_sheet",
+                &actions,
+                ICON_TABLE_CHART.codepoint,
+                t("sidebar-new-sheet"),
+            ),
+            PaletteCommand::new(
                 "import_pdf",
                 &actions,
                 ICON_UPLOAD_FILE.codepoint,
                 t("pdf-import"),
+            ),
+            PaletteCommand::new(
+                "import_sheet",
+                &actions,
+                ICON_UPLOAD_FILE.codepoint,
+                t("sheet-import"),
             ),
             PaletteCommand::new(
                 "search",
@@ -205,6 +217,26 @@ impl MnemonicApp {
                     .unwrap_or_default(),
             ));
         }
+        let sheets = self
+            .derived
+            .sheets
+            .iter()
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().to_lowercase().contains(&query))
+            })
+            .take(MAX_DOCUMENT_RESULTS);
+        for sheet in sheets {
+            cmds.push(PaletteCommand::new(
+                format!("open:{}", sheet.display()),
+                &docs,
+                ICON_TABLE_CHART.codepoint,
+                sheet
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            ));
+        }
         // Templates (`<vault>/Templates/*.md`) insert into the open note.
         if self.editor.is_some()
             && let Some(root) = self.vault.as_ref().map(|v| v.root.clone())
@@ -253,6 +285,8 @@ impl MnemonicApp {
                 }
             }
             "import_pdf" => self.import_pdf_dialog(),
+            "new_sheet" => self.create_sheet(None),
+            "import_sheet" => self.import_sheet_dialog(),
             "search" => {
                 self.close_document();
                 self.focus_search = true;

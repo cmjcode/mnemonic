@@ -1,0 +1,787 @@
+{
+  "nodes": [
+    {
+      "id": "3ccfea13-1e57-4ef8-8077-8e67effb1f23",
+      "type": "file",
+      "x": 80,
+      "y": 60,
+      "width": 264,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^8a6jg2",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#66A6FF",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 0
+      }
+    },
+    {
+      "id": "f01bdde0-23b2-45d3-8502-50b5fdd63962",
+      "type": "file",
+      "x": 80,
+      "y": 146,
+      "width": 242,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^v7ydyj",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 1
+      }
+    },
+    {
+      "id": "b81ca728-737a-46b7-84cb-25ec54af6edc",
+      "type": "file",
+      "x": 110,
+      "y": 232,
+      "width": 280,
+      "height": 140,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^ringkasan",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 2
+      }
+    },
+    {
+      "id": "a65215b2-dd4b-43be-aed1-cc53ee451e5c",
+      "type": "file",
+      "x": 110,
+      "y": 396,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^mls19l",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 3
+      }
+    },
+    {
+      "id": "d2a86dda-265f-40a0-a531-dcb1a7250fe6",
+      "type": "file",
+      "x": 110,
+      "y": 500,
+      "width": 280,
+      "height": 100,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^0102o8",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 4
+      }
+    },
+    {
+      "id": "c2fd1999-5987-437a-9c15-2ed2d9e49d25",
+      "type": "file",
+      "x": 110,
+      "y": 624,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^ufatux",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 5
+      }
+    },
+    {
+      "id": "52f093d2-17fb-40e3-b937-834db9d40711",
+      "type": "file",
+      "x": 80,
+      "y": 728,
+      "width": 240,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^3gvoss",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 6
+      }
+    },
+    {
+      "id": "6c031e20-e234-45b4-b079-40f344a5e17f",
+      "type": "file",
+      "x": 110,
+      "y": 814,
+      "width": 280,
+      "height": 300,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^cjy45m",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 7
+      }
+    },
+    {
+      "id": "75a50fbc-0f82-48da-9556-cb8759815ea8",
+      "type": "file",
+      "x": 80,
+      "y": 1138,
+      "width": 240,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^21e3c3",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 8
+      }
+    },
+    {
+      "id": "63b85459-8f37-4718-90fd-c2ee7313b133",
+      "type": "file",
+      "x": 110,
+      "y": 1224,
+      "width": 280,
+      "height": 180,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^visi",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 9
+      }
+    },
+    {
+      "id": "a484795f-cc35-432c-a975-fdbe764a6518",
+      "type": "file",
+      "x": 80,
+      "y": 1428,
+      "width": 275,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^952lns",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 10
+      }
+    },
+    {
+      "id": "5b316c7e-6087-4903-8bfc-e4f40febf7b0",
+      "type": "file",
+      "x": 110,
+      "y": 1514,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^mybw3n",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 11
+      }
+    },
+    {
+      "id": "70724f81-f295-44fc-88b8-4016e04e0bc4",
+      "type": "file",
+      "x": 110,
+      "y": 1618,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^fbokd4",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 12
+      }
+    },
+    {
+      "id": "5da55b5b-5b8e-4609-a8ca-99095f24af8a",
+      "type": "file",
+      "x": 110,
+      "y": 1722,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^arczgg",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 13
+      }
+    },
+    {
+      "id": "57854020-beb9-4ddf-8b60-b54ae3481989",
+      "type": "file",
+      "x": 110,
+      "y": 1826,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^jt4fv7",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 14
+      }
+    },
+    {
+      "id": "43435360-346a-49b1-b05f-dbcd5c9edef7",
+      "type": "file",
+      "x": 110,
+      "y": 1930,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^evx8kh",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 15
+      }
+    },
+    {
+      "id": "f9e0903a-257d-4d94-9915-87d4d6083e2f",
+      "type": "file",
+      "x": 80,
+      "y": 2034,
+      "width": 240,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^iyu26s",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 16
+      }
+    },
+    {
+      "id": "7716e439-d41d-441b-9ff2-d88d97b0e16c",
+      "type": "file",
+      "x": 110,
+      "y": 2120,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^1fu7bm",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 17
+      }
+    },
+    {
+      "id": "051a1905-b37f-488f-9811-25834ee8ddc7",
+      "type": "file",
+      "x": 110,
+      "y": 2224,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^inq7rh",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 18
+      }
+    },
+    {
+      "id": "777f02ca-2773-4b24-9453-d9c9a0740d2e",
+      "type": "file",
+      "x": 110,
+      "y": 2328,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^bxx7i3",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 19
+      }
+    },
+    {
+      "id": "caf870db-4836-4f56-bcfa-e1d4c2ae0949",
+      "type": "file",
+      "x": 110,
+      "y": 2432,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^lg50qo",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 20
+      }
+    },
+    {
+      "id": "29d8ab2c-5c5c-4ab0-9fc1-ac2067902a07",
+      "type": "file",
+      "x": 110,
+      "y": 2536,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^rq9cxx",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 21
+      }
+    },
+    {
+      "id": "6dce6fee-c51f-473a-9716-4c3e9f457a9f",
+      "type": "file",
+      "x": 80,
+      "y": 2640,
+      "width": 240,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^041ar7",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 22
+      }
+    },
+    {
+      "id": "f56bb41e-fa22-4029-802c-65311e44a1f0",
+      "type": "file",
+      "x": 110,
+      "y": 2726,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^49frkf",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 23
+      }
+    },
+    {
+      "id": "1cb1906f-824c-4622-a545-95c9e52b7958",
+      "type": "file",
+      "x": 110,
+      "y": 2830,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^2eff2p",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 24
+      }
+    },
+    {
+      "id": "eda70880-c566-4e88-856d-9b1e129619c8",
+      "type": "file",
+      "x": 110,
+      "y": 2934,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^7ya3xe",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 25
+      }
+    },
+    {
+      "id": "86755942-6698-4e9a-a21b-00b07e3205d2",
+      "type": "file",
+      "x": 80,
+      "y": 3038,
+      "width": 240,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^mhm6bm",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 26
+      }
+    },
+    {
+      "id": "5560b280-6995-4710-8c18-357a54c624b0",
+      "type": "file",
+      "x": 110,
+      "y": 3124,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^xn2o5e",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 27
+      }
+    },
+    {
+      "id": "75c41d5e-bc3f-4e81-8a89-fc43d8eb20d1",
+      "type": "file",
+      "x": 110,
+      "y": 3228,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^abckqa",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 28
+      }
+    },
+    {
+      "id": "4558ea6b-dfc0-47f2-8e02-800a5dedf149",
+      "type": "file",
+      "x": 110,
+      "y": 3332,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^yd48o0",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 29
+      }
+    },
+    {
+      "id": "ad364c08-13a4-434d-98b1-c5e275e02484",
+      "type": "file",
+      "x": 80,
+      "y": 3436,
+      "width": 242,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^f6xgft",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 30
+      }
+    },
+    {
+      "id": "82501f41-0b6b-4ef2-9858-e6cfe47d5978",
+      "type": "file",
+      "x": 110,
+      "y": 3522,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^urgwp8",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 31
+      }
+    },
+    {
+      "id": "a54a365e-07d6-4beb-a22a-12a1437fa99f",
+      "type": "file",
+      "x": 110,
+      "y": 3626,
+      "width": 280,
+      "height": 300,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^5uqzxr",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 32
+      }
+    },
+    {
+      "id": "014a9247-fbe5-49e6-baba-63a6294df258",
+      "type": "file",
+      "x": 80,
+      "y": 3950,
+      "width": 240,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^9s6dnu",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 33
+      }
+    },
+    {
+      "id": "da1af9ce-e69e-4485-8c99-2530980940ba",
+      "type": "file",
+      "x": 110,
+      "y": 4036,
+      "width": 280,
+      "height": 100,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^dl3kux",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 34
+      }
+    },
+    {
+      "id": "5431d992-0c52-46fb-9c51-a1acb09ef89c",
+      "type": "file",
+      "x": 80,
+      "y": 4160,
+      "width": 240,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^euhrwz",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 35
+      }
+    },
+    {
+      "id": "95fa3463-17ee-447a-93bd-6fb14e41948e",
+      "type": "file",
+      "x": 110,
+      "y": 4246,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^321elp",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 36
+      }
+    },
+    {
+      "id": "83629bd7-0866-420c-be12-c170fa2a820f",
+      "type": "file",
+      "x": 110,
+      "y": 4350,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^41qa63",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 37
+      }
+    },
+    {
+      "id": "45407e83-55de-42e7-95c0-97d00041cbe9",
+      "type": "file",
+      "x": 110,
+      "y": 4454,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^yd5jwq",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 38
+      }
+    },
+    {
+      "id": "2e6b0ad6-293d-4a81-bd67-8361013d8c9e",
+      "type": "file",
+      "x": 110,
+      "y": 4558,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^yp149r",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 39
+      }
+    },
+    {
+      "id": "36f4186c-91be-4cb7-b086-c8961ccd218d",
+      "type": "file",
+      "x": 110,
+      "y": 4662,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^nwr46b",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 40
+      }
+    },
+    {
+      "id": "79a05e79-e6c8-4471-89e1-d12acb3872fd",
+      "type": "file",
+      "x": 110,
+      "y": 4766,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^rp2ih3",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 41
+      }
+    },
+    {
+      "id": "ba9d439b-1fcd-48d1-9efe-dc604b72955a",
+      "type": "file",
+      "x": 110,
+      "y": 4870,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^9uo6n5",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 42
+      }
+    },
+    {
+      "id": "252158e7-82a1-48f4-bd80-c83f9ad35c4a",
+      "type": "file",
+      "x": 80,
+      "y": 4974,
+      "width": 264,
+      "height": 56,
+      "color": "#2E3852",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^k2bh2i",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#D9E0F2",
+        "stroke_width": 2.0,
+        "fill_color": "#2E3852",
+        "z": 43
+      }
+    },
+    {
+      "id": "576ee41b-52ea-4e11-a7ab-e75799b6fe59",
+      "type": "file",
+      "x": 110,
+      "y": 5060,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^owa5f8",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 44
+      }
+    },
+    {
+      "id": "00b52901-4600-414e-b174-4caff969215b",
+      "type": "file",
+      "x": 110,
+      "y": 5164,
+      "width": 280,
+      "height": 80,
+      "color": "#FFF08C",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^rfzzvz",
+      "mnemonic": {
+        "kind": "sticky",
+        "color": "#FFF08C",
+        "z": 45
+      }
+    }
+  ],
+  "edges": [],
+  "mnemonic": {
+    "id": "8f80ee98-e37f-454d-871c-9f6b2f62e9ef",
+    "viewport": {
+      "pan": [
+        1876.6665,
+        104.666504
+      ],
+      "zoom": 0.15
+    }
+  }
+}

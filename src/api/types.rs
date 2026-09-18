@@ -204,6 +204,10 @@ pub struct ReindexReport {
     /// Whether vectors were produced by the embedding model (`false` =
     /// keyword-only, either requested or because the model failed to load).
     pub semantic: bool,
+    /// CSV/XLSX files found in the vault (§3.8.4).
+    pub sheets_indexed: usize,
+    /// Sheets chunked in this run (the rest were up to date).
+    pub sheets_chunked: usize,
     pub failed: Vec<ReindexFailure>,
     pub warnings: Vec<String>,
 }
@@ -234,8 +238,10 @@ pub struct SearchHitOut {
     pub path: String,
     /// Note title, or the file name for a PDF.
     pub title: String,
-    /// 1-based page for PDF chunks, `None` for notes.
+    /// 1-based page for PDF chunks, `None` for notes and sheets.
     pub page: Option<usize>,
+    /// First 1-based data row of a sheet chunk (§3.8.4), `None` otherwise.
+    pub row: Option<usize>,
     pub char_offset: usize,
     /// Cosine similarity when the semantic route found the chunk.
     pub score: Option<f32>,
@@ -276,7 +282,10 @@ pub struct Citation {
     pub doc_id: Uuid,
     pub path: String,
     pub title: String,
+    /// 1-based PDF page.
     pub page: Option<usize>,
+    /// First 1-based data row, for sheet citations.
+    pub row: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -397,4 +406,181 @@ pub fn summarize(note: &Note, rel: String) -> NoteSummary {
         trashed: fm.trashed,
         canvas: note.is_canvas(),
     }
+}
+
+// ─── Sheets (§3.8.5) ─────────────────────────────────────────────────────
+
+/// A CSV/XLSX file in the vault (`list_sheets`); contents via `read_sheet`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetSummary {
+    /// Vault-relative path, e.g. `Data/Budget.csv`.
+    pub path: String,
+    /// `csv` (editable) | `workbook` (read-only XLSX/XLS/ODS).
+    pub kind: &'static str,
+    pub editable: bool,
+    pub size_bytes: u64,
+    pub modified: Option<DateTime<Utc>>,
+}
+
+/// Aggregates over one column (all rows for `read_sheet`, the matched rows
+/// for `query_sheet`). Numbers accept `1,234.5`, `1.234,5`, `Rp 25.000`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetColumnOut {
+    pub name: String,
+    /// Most filled cells parse as numbers.
+    pub numeric: bool,
+    /// Non-empty cells.
+    pub filled: usize,
+    /// Cells that parsed as numbers; sum/avg/min/max cover only these.
+    pub count: usize,
+    pub sum: Option<f64>,
+    pub avg: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SheetReadRequest {
+    /// Vault-relative path, or a file name / stem when unambiguous.
+    #[serde(alias = "path", alias = "reference")]
+    pub r#ref: String,
+    /// Worksheet name or 0-based index (default: the first).
+    pub sheet: Option<String>,
+    /// 0-based data row to start at.
+    pub offset: usize,
+    /// Rows to return (default 100; 0 = columns and stats only).
+    pub limit: usize,
+}
+
+impl Default for SheetReadRequest {
+    fn default() -> Self {
+        SheetReadRequest {
+            r#ref: String::new(),
+            sheet: None,
+            offset: 0,
+            limit: 100,
+        }
+    }
+}
+
+/// One data row with its 1-based number (the header row is not counted).
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetRowOut {
+    pub row: usize,
+    pub cells: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetData {
+    pub path: String,
+    pub kind: &'static str,
+    pub editable: bool,
+    /// Worksheet shown.
+    pub sheet: String,
+    /// Every worksheet of the file, in tab order.
+    pub sheets: Vec<String>,
+    pub headers: Vec<String>,
+    pub total_rows: usize,
+    pub offset: usize,
+    pub rows: Vec<SheetRowOut>,
+    pub columns: Vec<SheetColumnOut>,
+}
+
+/// One `query_sheet` condition. `op`: `eq` | `ne` | `contains` |
+/// `not_contains` | `gt` | `gte` | `lt` | `lte` | `empty` | `not_empty`.
+/// Comparisons are numeric when both sides parse as numbers, otherwise
+/// case-insensitive text.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SheetFilter {
+    /// Column name (case-insensitive) or 0-based index.
+    pub column: String,
+    #[serde(default = "default_filter_op")]
+    pub op: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+fn default_filter_op() -> String {
+    "eq".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SheetQueryRequest {
+    #[serde(alias = "path", alias = "reference")]
+    pub r#ref: String,
+    pub sheet: Option<String>,
+    /// All must hold (AND).
+    pub filters: Vec<SheetFilter>,
+    /// Columns to return (default: all).
+    pub columns: Option<Vec<String>>,
+    pub sort_by: Option<String>,
+    pub descending: bool,
+    /// Rows to return (default 100); aggregates always cover every match.
+    pub limit: usize,
+}
+
+impl Default for SheetQueryRequest {
+    fn default() -> Self {
+        SheetQueryRequest {
+            r#ref: String::new(),
+            sheet: None,
+            filters: Vec::new(),
+            columns: None,
+            sort_by: None,
+            descending: false,
+            limit: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetQueryResult {
+    pub path: String,
+    pub sheet: String,
+    /// Headers of the returned columns.
+    pub headers: Vec<String>,
+    /// Rows matching every filter (before `limit`).
+    pub matched: usize,
+    pub rows: Vec<SheetRowOut>,
+    /// Aggregates of the returned columns over all matched rows.
+    pub columns: Vec<SheetColumnOut>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SheetSetCellRequest {
+    #[serde(alias = "path", alias = "reference")]
+    pub r#ref: String,
+    /// 1-based data row (as in `read_sheet` output).
+    pub row: usize,
+    /// Column name (case-insensitive) or 0-based index.
+    pub column: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SheetAppendRequest {
+    #[serde(alias = "path", alias = "reference")]
+    pub r#ref: String,
+    /// Each row is an array (positional) or an object keyed by column name.
+    pub rows: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SheetCreateRequest {
+    /// Vault-relative path ending in `.csv` or `.tsv`; must not exist.
+    pub path: String,
+    pub headers: Vec<String>,
+    #[serde(default)]
+    pub rows: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetWriteResult {
+    pub path: String,
+    pub rows: usize,
+    pub columns: usize,
+    /// Cells written (set-cell/append) or rows created.
+    pub changed: usize,
 }

@@ -44,11 +44,18 @@ stderr and exit non-zero; stdout carries only results. Logs go to stderr
 | `diagram list <REF>` | Every ```` ```mermaid ```` fence of a note: index, fence line, type, source, diagnostics. |
 | `diagram validate (--file F \| --stdin \| --note REF [--index N])` | Syntax check; exits non-zero on errors. `--file`/`--stdin` need no vault. |
 | `diagram render (--file F \| --stdin \| --note REF [--index N]) [--out F] [--dark]` | Render to SVG (stdout, or `--out`; `--json` wraps it with size and diagnostics). |
+| `sheets list` | Every CSV/TSV (editable) and XLSX/XLSM/XLSB/XLS/ODS (read-only) file in the vault. |
+| `sheets read <SHEET> [--sheet W] [--offset N] [--limit N]` | Headers, a page of rows (1-based `row` numbers) and per-column stats. `--sheet` picks a worksheet (name or 0-based index). |
+| `sheets query <SHEET> [--where COL:OP:VALUE]... [--column C]... [--sort C] [--desc] [--limit N]` | Filter (all conditions AND) + sort + project; `columns` stats cover every matched row. OP: `eq ne contains not_contains gt gte lt lte empty not_empty`. |
+| `sheets set <SHEET> <ROW> <COLUMN> <VALUE>` | Set one cell of a CSV/TSV (row 1-based, column by name or 0-based index). |
+| `sheets append <SHEET> --row JSON...` | Append rows: a JSON array (positional) or object keyed by column name. |
+| `sheets create <PATH> --header H...` | New `.csv`/`.tsv` (fails if it exists). |
 | `mcp` | Serve MCP over stdio until stdin closes. |
 
 `<REF>` resolves, in order: UUID (`id` frontmatter), then wikilink rules
 (title, file stem, alias; case-insensitive), then vault-relative path with
-or without `.md`, then bare file name.
+or without `.md`, then bare file name. `<SHEET>` is a vault-relative path
+(`Data/Budget.csv`) or a file name/stem that matches exactly one sheet.
 
 ### Search, index and models
 
@@ -78,7 +85,8 @@ structs. Field names are snake_case and stable. Highlights:
   "canvas": false }
 // notes read → NoteSummary fields + "body", "extra": {…}, "links": ["Target", …]
 // search → { "query", "semantic": bool, "hits": [ { "doc_id", "path", "title",
-//            "page": null|N, "char_offset", "score": null|f32,
+//            "page": null|N (PDF), "row": null|N (sheet, first data row),
+//            "char_offset", "score": null|f32,
 //            "kind": "semantic"|"keyword"|"both", "snippet", "text" } ], "warnings": [] }
 // backlinks → { "target": {id,title,path}, "backlinks": [ { "source_id",
 //               "source_title", "source_path", "line" (0-based), "context" } ] }
@@ -87,9 +95,19 @@ structs. Field names are snake_case and stable. Highlights:
 // graph → { "nodes": [ { "key", "label", "kind", "doc_id", "path", "tag", "degree" } ],
 //           "edges": [ { "a", "b", "kind": "link"|"semantic", "weight" } ] }
 // index → { "notes_indexed", "chunked", "skipped", "pruned", "semantic",
+//           "sheets_indexed", "sheets_chunked",
 //           "failed": [ { "path", "error" } ], "warnings": [] }
-// ask → { "question", "answer", "citations": [ { "doc_id", "path", "title", "page" } ],
-//         "semantic", "warnings" }
+// ask → { "question", "answer", "citations": [ { "doc_id", "path", "title",
+//         "page": null|N, "row": null|N } ], "semantic", "warnings" }
+// sheets list → [ { "path", "kind": "csv"|"workbook", "editable", "size_bytes",
+//                   "modified": null|"RFC3339" } ]
+// sheets read → { "path", "kind", "editable", "sheet", "sheets": [names],
+//                 "headers", "total_rows", "offset", "rows": [ { "row", "cells" } ],
+//                 "columns": [SheetColumn] }
+// sheets query → { "path", "sheet", "headers", "matched", "rows", "columns": [SheetColumn] }
+// SheetColumn = { "name", "numeric", "filled", "count", "sum", "avg", "min", "max" }
+//               (sum/avg/min/max are null when the column has no numbers)
+// sheets set/append/create → { "path", "rows", "columns", "changed" }
 ```
 
 ## MCP server
@@ -122,6 +140,12 @@ holding the same JSON the CLI prints):
 | `list_diagrams` | `ref` |
 | `validate_diagram` | `source?` or `ref` + `index?` (0) |
 | `render_diagram` | `source?` or `ref` + `index?` (0), `dark?` (false) |
+| `list_sheets` | – |
+| `read_sheet` | `ref`, `sheet?`, `offset?` (0), `limit?` (100) |
+| `query_sheet` | `ref`, `sheet?`, `filters?` (`[{column, op?, value?}]`), `columns?`, `sort_by?`, `descending?`, `limit?` (100) |
+| `set_sheet_cell` | `ref`, `row` (1-based), `column`, `value` |
+| `append_sheet_rows` | `ref`, `rows` (arrays or objects) |
+| `create_sheet` | `path`, `headers`, `rows?` |
 
 ### Claude Code
 
@@ -274,6 +298,30 @@ note) is the 1-based line in the note body. `DiagramCheck` =
 `{kind, supported, valid, diagnostics}`; `DiagramRender` adds `format`
 (`"svg"`), `width`, `height`, `svg`.
 
+
+## Sheets (CSV / XLSX)
+
+Spreadsheets live in the vault next to notes (spec §3.8). CSV/TSV files are
+the editable format and stay the source of truth; workbooks
+(`.xlsx .xlsm .xlsb .xls .ods`) are **read-only** — rewriting them would drop
+formulas, formatting and charts. The app's *Convert to CSV* makes an editable
+copy; *Export as XLSX* writes a new workbook from a CSV.
+
+- The first row is the header row. Row numbers everywhere (`row` in
+  `read`/`query` output, `set_sheet_cell`, search hits, citations) are
+  **1-based data rows**, header not counted.
+- Writes keep the file's delimiter (`,` `;` tab `|`, sniffed on read), UTF-8
+  BOM and line endings; quoting is normalized to "only when needed". Files
+  that aren't valid UTF-8 are refused for writing.
+- Numbers are parsed for sorting, comparisons and stats, never rewritten:
+  `1,234.5`, `1.234,5`, `Rp 25.000`, `$1,200`, `12%` all count.
+- For totals, averages and "rows where …" questions use `query_sheet`: the
+  arithmetic is exact and covers every matched row. `search_notes`/`ask_vault`
+  find *which* rows are relevant (sheets are chunked as `Column: value; …`
+  lines, the first 5,000 rows of files up to 64 MB) but the local LLM is not
+  reliable at adding numbers.
+- In notes, link a sheet with `[[Budget.csv]]` or embed a preview table with
+  `![[Budget.csv]]`.
 
 ## User configuration (`config.toml`)
 

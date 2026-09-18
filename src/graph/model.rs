@@ -1,7 +1,8 @@
 //! Graph data model: resolves the index's wikilink edges against the
-//! vault's notes and PDFs into nodes (notes, canvases, PDFs, and "ghost"
-//! nodes for links to notes that don't exist yet) and undirected edges,
-//! optionally adding AI-similarity edges between unlinked documents.
+//! vault's notes and files into nodes (notes, canvases, PDFs, CSV/XLSX
+//! sheets (§3.8.3), and "ghost" nodes for links to notes that don't exist
+//! yet) and undirected edges, optionally adding AI-similarity edges
+//! between unlinked documents.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -9,7 +10,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::core::LinkEdge;
-use crate::core::ingestion::pdf_doc_id;
+use crate::core::ingestion::{pdf_doc_id, sheet_doc_id};
 use crate::markdown::wikilink::title_key;
 use crate::notes::Note;
 
@@ -18,6 +19,8 @@ pub enum NodeKind {
     Note,
     Canvas,
     Pdf,
+    /// CSV/XLSX sheet (§3.8.3).
+    Sheet,
     /// Target of an unresolved `[[link]]`.
     Ghost,
 }
@@ -85,13 +88,15 @@ pub fn note_key(id: Uuid) -> String {
 }
 
 impl GraphData {
-    /// Builds the graph from non-trashed `notes`, imported `pdfs`, the
+    /// Builds the graph from non-trashed `notes`, `files` (imported PDFs
+    /// and vault sheets, told apart by extension; hidden by
+    /// `!opts.show_pdfs`), the
     /// index's `links`, and `semantic` similarity pairs `(doc, doc, sim)`
     /// (ignored unless `opts.show_semantic`; pairs that are already linked
     /// are skipped).
     pub fn build(
         notes: &[Note],
-        pdfs: &[PathBuf],
+        files: &[PathBuf],
         links: &[LinkEdge],
         semantic: &[(Uuid, Uuid, f32)],
         opts: GraphOptions,
@@ -126,20 +131,24 @@ impl GraphData {
             }
         }
         if opts.show_pdfs {
-            for pdf in pdfs {
-                let name = pdf
+            for file in files {
+                let name = file
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                let id = pdf_doc_id(pdf);
+                let (kind, prefix, id) = if crate::sheet::is_sheet_path(file) {
+                    (NodeKind::Sheet, "sheet", sheet_doc_id(file))
+                } else {
+                    (NodeKind::Pdf, "pdf", pdf_doc_id(file))
+                };
                 let idx = g.push_node(
                     &mut by_key,
                     GraphNode {
-                        key: format!("pdf:{}", pdf.display()),
+                        key: format!("{prefix}:{}", file.display()),
                         label: name.clone(),
-                        kind: NodeKind::Pdf,
+                        kind,
                         doc_id: Some(id),
-                        path: Some(pdf.clone()),
+                        path: Some(file.clone()),
                         tag: None,
                         degree: 0,
                     },
@@ -156,18 +165,25 @@ impl GraphData {
             };
             let dst = match by_title.get(&link.target_key) {
                 Some(&dst) => dst,
-                None if opts.show_ghosts && !link.target_key.ends_with(".pdf") => g.push_node(
-                    &mut by_key,
-                    GraphNode {
-                        key: format!("ghost:{}", link.target_key),
-                        label: link.target.clone(),
-                        kind: NodeKind::Ghost,
-                        doc_id: None,
-                        path: None,
-                        tag: None,
-                        degree: 0,
-                    },
-                ),
+                // Missing files never become ghost *notes* (clicking a
+                // ghost creates a note of that name).
+                None if opts.show_ghosts
+                    && !link.target_key.ends_with(".pdf")
+                    && !crate::sheet::is_sheet_path(std::path::Path::new(&link.target_key)) =>
+                {
+                    g.push_node(
+                        &mut by_key,
+                        GraphNode {
+                            key: format!("ghost:{}", link.target_key),
+                            label: link.target.clone(),
+                            kind: NodeKind::Ghost,
+                            doc_id: None,
+                            path: None,
+                            tag: None,
+                            degree: 0,
+                        },
+                    )
+                }
                 None => continue,
             };
             if src == dst {
@@ -346,6 +362,19 @@ mod tests {
         let ab = g.edges.iter().find(|e| (e.a, e.b) == (0, 1)).unwrap();
         assert_eq!(ab.weight, 3.0);
         assert_eq!(g.nodes[0].degree, 2);
+    }
+
+    #[test]
+    fn sheets_become_sheet_nodes_and_never_ghosts() {
+        let dir = tempdir().unwrap();
+        let a = Note::create(dir.path(), "A", "").unwrap();
+        let sheet = dir.path().join("Kas.csv");
+        let links = vec![link(&a, "kas.csv"), link(&a, "hilang.csv")];
+        let g = GraphData::build(&[a], std::slice::from_ref(&sheet), &links, &[], GraphOptions::default());
+        assert_eq!(labels(&g), vec!["A", "Kas.csv"]);
+        assert_eq!(g.nodes[1].kind, NodeKind::Sheet);
+        assert_eq!(g.nodes[1].doc_id, Some(sheet_doc_id(&sheet)));
+        assert_eq!(g.edges.len(), 1);
     }
 
     #[test]

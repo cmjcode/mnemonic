@@ -45,11 +45,13 @@ pub struct Heading {
 /// What happened during a `render()` call that the caller (`app.rs`) needs
 /// to act on.
 /// What an `![[embed]]` resolves to (§Fase 1.3): another note's text
-/// (transclusion) or an image file in the vault.
+/// (transclusion), an image file in the vault, or a CSV/XLSX sheet shown
+/// as a preview table (§3.8.3).
 #[derive(Debug, Clone)]
 pub enum EmbedContent {
     Note { title: String, body: String },
     Image(std::path::PathBuf),
+    Sheet(std::path::PathBuf),
 }
 
 /// Looks up `![[target]]` (title/file name, `#heading` removed by the
@@ -466,6 +468,9 @@ fn transform_note_embeds(text: &str, resolve_embed: &EmbedResolver<'_>, depth: u
                                 quoted.push('\n');
                             }
                             Some(quoted)
+                        }
+                        EmbedContent::Sheet(path) => {
+                            Some(super::sheet_embed::preview_markdown(&path, &link.target))
                         }
                         EmbedContent::Image(_) => None,
                     }
@@ -969,6 +974,18 @@ mod tests {
             "foto.png" => Some(EmbedContent::Image("/v/foto.png".into())),
             _ => None,
         }
+    }
+
+    #[test]
+    fn sheet_embeds_become_preview_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Kas.csv");
+        std::fs::write(&path, "Item,Harga\nKopi,12000\n").unwrap();
+        let resolver = |t: &str| (t == "Kas.csv").then(|| EmbedContent::Sheet(path.clone()));
+        let out = transform_note_embeds("awal\n![[Kas.csv]]\nakhir\n", &resolver, 0);
+        assert!(out.contains("| Item | Harga |\n| --- | ---: |\n| Kopi | 12000 |\n"), "{out}");
+        assert!(out.contains("*[[Kas.csv]] · 1/1 rows · 2 columns*"));
+        assert!(out.starts_with("awal\n") && out.ends_with("akhir\n"));
     }
 
     #[test]

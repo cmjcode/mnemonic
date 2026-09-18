@@ -24,7 +24,7 @@ const ASK_TOP_K: usize = 5;
 /// Prefix of a `document_hashes` entry written by a keyword-only run: the
 /// note is chunked and FTS-indexed but its vectors are zeros, so a later
 /// semantic run must redo it while a keyword-only run can skip it.
-const KEYWORD_ONLY_HASH_PREFIX: &str = "kw:";
+pub(super) const KEYWORD_ONLY_HASH_PREFIX: &str = "kw:";
 
 /// A model that is loaded on first use and, once it failed, is not
 /// retried for the lifetime of the service (loading is slow).
@@ -54,6 +54,10 @@ impl<T> Lazy<T> {
 
 pub(super) type LazyEmbedder = Lazy<EmbeddingEngine>;
 pub(super) type LazyGenerator = Lazy<CandleEngine>;
+
+fn is_sheet(path: &std::path::Path) -> bool {
+    crate::sheet::is_sheet_path(path)
+}
 
 fn kind_str(kind: MatchKind) -> &'static str {
     match kind {
@@ -95,6 +99,8 @@ impl VaultService {
             skipped: 0,
             pruned: 0,
             semantic: false,
+            sheets_indexed: 0,
+            sheets_chunked: 0,
             failed: Vec::new(),
             warnings: Vec::new(),
         };
@@ -156,7 +162,25 @@ impl VaultService {
             .index
             .prune_notes_not_in(&live_ids)
             .context("pruning stale chunks")?;
+        self.reindex_sheets(semantic, full, &mut report)?;
         Ok(report)
+    }
+
+    /// Chunk vectors for `inputs`: real embeddings when `semantic`, zero
+    /// vectors for a keyword-only pass.
+    pub(super) fn vectors_for(&mut self, inputs: &[String], semantic: bool) -> Result<Vec<Vec<f32>>> {
+        if !semantic || inputs.is_empty() {
+            return Ok(vec![vec![0.0; EMBEDDING_DIM]; inputs.len()]);
+        }
+        let embedder = self.embedder().map_err(anyhow::Error::msg)?;
+        let v = embedder.embed(inputs).context("embedding chunks")?;
+        anyhow::ensure!(
+            v.len() == inputs.len(),
+            "embedder returned {} vectors for {} chunks",
+            v.len(),
+            inputs.len()
+        );
+        Ok(v)
     }
 
     fn chunk_and_store(&mut self, i: usize, semantic: bool, hash: &str) -> Result<()> {
@@ -172,19 +196,7 @@ impl VaultService {
                 ingestion::embedding_input(&title, heading.as_deref(), &c.text_content)
             })
             .collect();
-        let vectors: Vec<Vec<f32>> = if !semantic || inputs.is_empty() {
-            vec![vec![0.0; EMBEDDING_DIM]; chunks.len()]
-        } else {
-            let embedder = self.embedder().map_err(anyhow::Error::msg)?;
-            let v = embedder.embed(&inputs).context("embedding chunks")?;
-            anyhow::ensure!(
-                v.len() == chunks.len(),
-                "embedder returned {} vectors for {} chunks",
-                v.len(),
-                chunks.len()
-            );
-            v
-        };
+        let vectors = self.vectors_for(&inputs, semantic)?;
         let pairs: Vec<_> = chunks.into_iter().zip(vectors).collect();
         self.index
             .replace_chunks(id, "note", &title, &pairs)
@@ -281,7 +293,8 @@ impl VaultService {
                 doc_id: h.chunk.doc_id,
                 path: self.rel(&h.chunk.file_path),
                 title: self.doc_title(&h.chunk),
-                page: h.chunk.page_num,
+                page: h.chunk.page_num.filter(|_| !is_sheet(&h.chunk.file_path)),
+                row: h.chunk.page_num.filter(|_| is_sheet(&h.chunk.file_path)),
                 char_offset: h.chunk.char_offset,
                 score: h.score.filter(|s| s.is_finite()),
                 kind: kind_str(h.kind),
@@ -312,7 +325,8 @@ impl VaultService {
                 doc_id: c.doc_id,
                 path: self.rel(&c.file_path),
                 title: self.doc_title(c),
-                page: c.page_num,
+                page: c.page_num.filter(|_| !is_sheet(&c.file_path)),
+                row: c.page_num.filter(|_| is_sheet(&c.file_path)),
             })
             .collect();
         let prompt = llm::build_rag_prompt(&context, &question);

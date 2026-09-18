@@ -8,6 +8,7 @@ pub mod editor;
 pub mod highlight;
 pub mod math;
 pub mod renderer;
+pub mod sheet_embed;
 pub mod wikilink;
 
 pub use editor::{EditorMode, MarkdownEditor};

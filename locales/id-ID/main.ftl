@@ -461,3 +461,5 @@ error-context-open-sheet = membuka sheet
 error-context-save-sheet = menyimpan sheet
 error-context-export-sheet = mengekspor sheet
 error-context-import-sheet = mengimpor spreadsheet
+toast-link-sheet-missing = Sheet "{ $name }" tidak ditemukan di vault
+graph-kind-sheet = Sheet

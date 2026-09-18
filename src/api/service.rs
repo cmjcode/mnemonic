@@ -361,13 +361,14 @@ impl VaultService {
         })
     }
 
-    /// The link graph over non-trashed notes, imported PDFs and ghost
-    /// targets (no semantic edges: those need every note embedded).
+    /// The link graph over non-trashed notes, imported PDFs, vault sheets
+    /// and ghost targets (no semantic edges: those need every note embedded).
     /// `GraphData::build` matches link targets by title only, so edges
     /// written via an alias or file stem are first resolved through the
     /// wikilink index to the target's title key.
     pub fn graph(&self) -> Result<GraphOut> {
-        let pdfs = self.index.list_pdf_documents().unwrap_or_default();
+        let mut files = self.index.list_pdf_documents().unwrap_or_default();
+        files.extend(crate::sheet::find_sheets(self.root()));
         let mut edges = self.index.link_edges()?;
         for edge in &mut edges {
             if let Some(path) = self.links.resolve(&edge.target)
@@ -376,7 +377,7 @@ impl VaultService {
                 edge.target_key = wikilink::title_key(&note.frontmatter.title);
             }
         }
-        let data = GraphData::build(&self.vault.notes, &pdfs, &edges, &[], GraphOptions::default());
+        let data = GraphData::build(&self.vault.notes, &files, &edges, &[], GraphOptions::default());
         Ok(GraphOut {
             nodes: data
                 .nodes
@@ -388,6 +389,7 @@ impl VaultService {
                         NodeKind::Note => "note",
                         NodeKind::Canvas => "canvas",
                         NodeKind::Pdf => "pdf",
+                        NodeKind::Sheet => "sheet",
                         NodeKind::Ghost => "ghost",
                     },
                     doc_id: n.doc_id,

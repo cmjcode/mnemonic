@@ -8,13 +8,15 @@
 //!
 //! Layout: `types` (stable serializable request/response shapes),
 //! `service` (open + note CRUD + links/graph), `index` (reindex, search,
-//! ask), `diagram` (Mermaid list/validate/render, §3.7.7), `mcp`
-//! (JSON-RPC 2.0 over stdio). Callers: `src/bin/mnemonic-cli.rs`.
+//! ask), `diagram` (Mermaid list/validate/render, §3.7.7), `sheet`
+//! (CSV/XLSX list/read/query/edit, §3.8.5), `mcp` (JSON-RPC 2.0 over
+//! stdio). Callers: `src/bin/mnemonic-cli.rs`.
 
 pub mod diagram;
 pub mod index;
 pub mod mcp;
 pub mod service;
+pub mod sheet;
 pub mod types;
 
 pub use service::VaultService;

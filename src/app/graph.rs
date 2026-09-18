@@ -414,6 +414,7 @@ fn tooltip(tr: &LocaleManager, data: &GraphData, i: usize) -> String {
         NodeKind::Note => tr.t("graph-kind-note", &[]),
         NodeKind::Canvas => tr.t("graph-kind-canvas", &[]),
         NodeKind::Pdf => tr.t("graph-kind-pdf", &[]),
+        NodeKind::Sheet => tr.t("graph-kind-sheet", &[]),
         NodeKind::Ghost => tr.t("graph-kind-ghost", &[]),
     };
     let links = tr.t("graph-node-links", &[("count", &node.degree.to_string())]);
@@ -429,6 +430,7 @@ fn node_color(kind: NodeKind, tag: Option<&str>, is_dark: bool) -> Color32 {
     let p = pal();
     match (kind, tag) {
         (NodeKind::Pdf, _) => p.pdf_icon,
+        (NodeKind::Sheet, _) => p.sheet_icon,
         (NodeKind::Canvas, _) => p.canvas_icon,
         (NodeKind::Ghost, _) => p.text_faint,
         (NodeKind::Note, Some(tag)) => {
@@ -545,6 +547,12 @@ impl MnemonicApp {
                 }
             }
         }
-        GraphData::build(&vault.notes, &self.pdf_documents, &links, &semantic, opts)
+        let files: Vec<std::path::PathBuf> = self
+            .pdf_documents
+            .iter()
+            .chain(&self.derived.sheets)
+            .cloned()
+            .collect();
+        GraphData::build(&vault.notes, &files, &links, &semantic, opts)
     }
 }

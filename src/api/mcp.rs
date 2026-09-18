@@ -2,7 +2,8 @@
 //! stdio, hand-rolled JSON-RPC 2.0 — one JSON object per line, newline
 //! delimited, no framing headers, no extra dependency. Implements
 //! `initialize`, `notifications/initialized`, `ping`, `tools/list` and
-//! `tools/call`; every tool maps 1:1 onto a `VaultService` method and
+//! `tools/call`; every tool (notes, search, diagrams, sheets) maps 1:1
+//! onto a `VaultService` method and
 //! returns its JSON as a single `text` content block. stdout carries
 //! protocol messages only — diagnostics go through `log` (stderr).
 //! Callers: `src/bin/mnemonic-cli.rs`.
@@ -86,8 +87,10 @@ fn dispatch(service: &mut VaultService, method: &str, params: Value) -> Result<V
             "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
             "instructions": format!(
                 "MNEMONIC vault at {}. Notes are Markdown files with YAML frontmatter; \
-                 refer to a note by title, alias, vault-relative path or id. Run `reindex` \
-                 before `search_notes`/`ask_vault` if results look stale.",
+                 refer to a note by title, alias, vault-relative path or id. Spreadsheets \
+                 (CSV editable, XLSX read-only) have *_sheet tools; use query_sheet for \
+                 totals and filters. Run `reindex` before `search_notes`/`ask_vault` if \
+                 results look stale.",
                 service.root().display()
             ),
         })),
@@ -134,6 +137,12 @@ const TOOL_NAMES: &[&str] = &[
     "list_diagrams",
     "validate_diagram",
     "render_diagram",
+    "list_sheets",
+    "read_sheet",
+    "query_sheet",
+    "set_sheet_cell",
+    "append_sheet_rows",
+    "create_sheet",
 ];
 
 fn parse_args<T: serde::de::DeserializeOwned>(args: Value) -> Result<T> {
@@ -162,6 +171,12 @@ fn call_tool(service: &mut VaultService, name: &str, args: Value) -> Result<Valu
         "list_diagrams" => serde_json::to_value(service.list_diagrams(&parse_args::<RefArgs>(args)?.r#ref)?)?,
         "validate_diagram" => serde_json::to_value(service.validate_diagram(&parse_args::<DiagramRequest>(args)?)?)?,
         "render_diagram" => serde_json::to_value(service.render_diagram(&parse_args::<DiagramRequest>(args)?)?)?,
+        "list_sheets" => serde_json::to_value(service.list_sheets())?,
+        "read_sheet" => serde_json::to_value(service.read_sheet(&parse_args::<SheetReadRequest>(args)?)?)?,
+        "query_sheet" => serde_json::to_value(service.query_sheet(&parse_args::<SheetQueryRequest>(args)?)?)?,
+        "set_sheet_cell" => serde_json::to_value(service.set_sheet_cell(&parse_args::<SheetSetCellRequest>(args)?)?)?,
+        "append_sheet_rows" => serde_json::to_value(service.append_sheet_rows(&parse_args::<SheetAppendRequest>(args)?)?)?,
+        "create_sheet" => serde_json::to_value(service.create_sheet(&parse_args::<SheetCreateRequest>(args)?)?)?,
         other => anyhow::bail!("unknown tool: {other}"),
     };
     Ok(out)
@@ -300,7 +315,97 @@ pub fn tool_definitions() -> Vec<Value> {
             "description": "Render a Mermaid diagram to SVG with MNEMONIC's native renderer. Returns svg, width, height and diagnostics.",
             "inputSchema": diagram_schema(true)
         }),
+        json!({
+            "name": "list_sheets",
+            "description": "List the CSV/TSV (editable) and XLSX/XLS/ODS (read-only) spreadsheet files in the vault.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "read_sheet",
+            "description": "Read a sheet page by page: headers, rows (with 1-based row numbers) and per-column stats (count/sum/avg/min/max of numeric cells). Workbooks: pick a worksheet with `sheet`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ref": sheet_ref_description(),
+                    "sheet": { "type": "string", "description": "Worksheet name or 0-based index (default: first)" },
+                    "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "0-based data row to start at" },
+                    "limit": { "type": "integer", "minimum": 0, "default": 100, "description": "Rows to return; 0 = headers and stats only" }
+                },
+                "required": ["ref"]
+            }
+        }),
+        json!({
+            "name": "query_sheet",
+            "description": "Filter, sort and aggregate a sheet deterministically — use this instead of doing arithmetic yourself. All filters must hold; `columns` aggregates (sum/avg/min/max) cover every matched row, not just the returned ones. Numbers like 1,234.5 / 1.234,5 / Rp 25.000 are understood.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ref": sheet_ref_description(),
+                    "sheet": { "type": "string" },
+                    "filters": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": { "type": "string", "description": "Column name (case-insensitive) or 0-based index" },
+                                "op": { "type": "string", "enum": ["eq", "ne", "contains", "not_contains", "gt", "gte", "lt", "lte", "empty", "not_empty"], "default": "eq" },
+                                "value": { "type": "string", "default": "" }
+                            },
+                            "required": ["column"]
+                        }
+                    },
+                    "columns": { "type": "array", "items": { "type": "string" }, "description": "Columns to return (default all)" },
+                    "sort_by": { "type": "string" },
+                    "descending": { "type": "boolean", "default": false },
+                    "limit": { "type": "integer", "minimum": 0, "default": 100 }
+                },
+                "required": ["ref"]
+            }
+        }),
+        json!({
+            "name": "set_sheet_cell",
+            "description": "Set one cell of a CSV/TSV sheet (atomic write; delimiter, BOM and line endings are kept). Workbooks are read-only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ref": sheet_ref_description(),
+                    "row": { "type": "integer", "minimum": 1, "description": "1-based data row, as returned by read_sheet" },
+                    "column": { "type": "string", "description": "Column name or 0-based index" },
+                    "value": { "type": "string" }
+                },
+                "required": ["ref", "row", "column", "value"]
+            }
+        }),
+        json!({
+            "name": "append_sheet_rows",
+            "description": "Append rows to a CSV/TSV sheet. Each row is an array (positional) or an object keyed by column name; unknown columns are rejected.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ref": sheet_ref_description(),
+                    "rows": { "type": "array", "items": { "type": ["array", "object"] } }
+                },
+                "required": ["ref", "rows"]
+            }
+        }),
+        json!({
+            "name": "create_sheet",
+            "description": "Create a new CSV/TSV sheet in the vault (fails if the file exists).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Vault-relative path ending in .csv or .tsv" },
+                    "headers": { "type": "array", "items": { "type": "string" } },
+                    "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } }
+                },
+                "required": ["path", "headers"]
+            }
+        }),
     ]
+}
+
+fn sheet_ref_description() -> Value {
+    json!({ "type": "string", "description": "Sheet: vault-relative path (e.g. Data/Budget.csv) or an unambiguous file name/stem" })
 }
 
 fn diagram_schema(render: bool) -> Value {
@@ -386,6 +491,30 @@ mod tests {
         assert_eq!(reply["error"]["code"], INVALID_PARAMS);
         let reply = handle_message(&mut svc, r#"{"jsonrpc":"2.0","id":6,"method":"ping"}"#).unwrap();
         assert!(reply["result"].is_object());
+    }
+
+    #[test]
+    fn sheet_tools_round_trip() {
+        let (d, mut svc) = service();
+        std::fs::write(d.path().join("Kas.csv"), "Item,Jumlah\nKopi,12000\nTeh,8000\n").unwrap();
+        let call = |svc: &mut VaultService, name: &str, args: Value| {
+            let msg = json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":name,"arguments":args}});
+            let reply = handle_message(svc, &msg.to_string()).unwrap();
+            assert_eq!(reply["result"]["isError"], false, "{name}: {reply}");
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap().to_string();
+            serde_json::from_str::<Value>(&text).unwrap()
+        };
+        assert_eq!(call(&mut svc, "list_sheets", json!({}))[0]["path"], "Kas.csv");
+        let q = call(&mut svc, "query_sheet", json!({"ref":"Kas","filters":[{"column":"Jumlah","op":"gt","value":"10000"}]}));
+        assert_eq!(q["matched"], 1);
+        assert_eq!(q["columns"][1]["sum"], 12000.0);
+        call(&mut svc, "append_sheet_rows", json!({"ref":"Kas","rows":[["Susu","5000"]]}));
+        call(&mut svc, "set_sheet_cell", json!({"ref":"Kas","row":1,"column":"Jumlah","value":"13000"}));
+        let r = call(&mut svc, "read_sheet", json!({"ref":"Kas.csv","limit":0}));
+        assert_eq!(r["total_rows"], 3);
+        assert_eq!(r["columns"][1]["sum"], 26000.0);
+        call(&mut svc, "create_sheet", json!({"path":"Baru.csv","headers":["A"]}));
+        assert_eq!(call(&mut svc, "list_sheets", json!({})).as_array().unwrap().len(), 2);
     }
 
     #[test]

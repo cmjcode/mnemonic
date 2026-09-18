@@ -129,6 +129,8 @@ struct Derived {
     /// Canvas note path → card preview (summary, snippet, thumbnail).
     canvas_previews: HashMap<PathBuf, CanvasPreview>,
     recent_vaults: Vec<PathBuf>,
+    /// Every CSV/XLSX file in the vault (§3.8), for link resolution.
+    sheets: Vec<PathBuf>,
 }
 
 pub struct MnemonicApp {
@@ -518,6 +520,7 @@ impl MnemonicApp {
         if let Some(vault) = &self.vault {
             derived.file_tree =
                 ui::FileTreeNode::build(&vault.root, &vault.notes, &self.pdf_documents);
+            derived.sheets = crate::sheet::find_sheets(&vault.root);
             derived.tags = tags::all_tags(&vault.notes);
             let mut c = ui::SidebarCounts::default();
             for note in &vault.notes {
@@ -1301,6 +1304,22 @@ impl MnemonicApp {
         }
         self.close_graph_view();
         let key = title_key(&link.target);
+
+        if crate::sheet::is_sheet_path(std::path::Path::new(&link.target)) {
+            let sheet = self.derived.sheets.iter().find(|p| {
+                p.file_name()
+                    .is_some_and(|n| title_key(&n.to_string_lossy()) == key)
+            });
+            match sheet.cloned() {
+                // `[[Budget.csv#row=12]]` jumps to a data row.
+                Some(path) => match link.heading.as_deref().and_then(|h| h.strip_prefix("row=")) {
+                    Some(row) => self.open_chunk_source(path, row.trim().parse().ok()),
+                    None => self.open_file_by_path(path),
+                },
+                None => self.toast(ToastKind::Error, "toast-link-sheet-missing", &[("name", &link.target)]),
+            }
+            return;
+        }
 
         if link.is_pdf() {
             let pdf = self.pdf_documents.iter().find(|p| {
