@@ -1,5 +1,6 @@
-//! Recursive multi-format ingestion (§3.3 point 1): turns a `Note` or a
-//! PDF file into ready-to-embed `DocumentChunk`s. Embedding itself
+//! Recursive multi-format ingestion (§3.3 point 1): turns a `Note`, a
+//! PDF file or a CSV/XLSX sheet (§3.8.4) into ready-to-embed
+//! `DocumentChunk`s. Embedding itself
 //! (`core::embedding::EmbeddingEngine`) is a separate step, so this module
 //! stays free of any model/network dependency and fully unit-testable.
 //! Callers: future search/RAG indexing pipeline (§3.3, §5).
@@ -30,7 +31,8 @@ pub struct DocumentChunk {
     pub doc_id: Uuid,
     pub file_path: PathBuf,
     /// `None` for Markdown notes (no page concept); `Some(1-based page)`
-    /// for PDF chunks.
+    /// for PDF chunks; `Some(first 1-based data row)` for sheet chunks
+    /// (tell them apart with `sheet::is_sheet_path(file_path)`).
     pub page_num: Option<usize>,
     pub char_offset: usize,
     pub text_content: String,

@@ -242,6 +242,7 @@ pub struct SidebarCounts {
     pub notes: usize,
     pub canvases: usize,
     pub pdfs: usize,
+    pub sheets: usize,
     pub archived: usize,
     pub trashed: usize,
 }

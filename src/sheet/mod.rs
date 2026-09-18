@@ -4,8 +4,9 @@
 //! overwritten. `model` is the pure table + edits, `history` the undoable
 //! editing session, `csv_io`/`xlsx_io` the file formats, `ingest` turns a
 //! sheet into indexable text. Pure, no egui.
-//! Callers: `app::sheet`, `app` (file routing), `api::sheet`,
-//! `core::indexer`, `markdown::sheet_embed`, `ui::sidebar`.
+//! Callers: `app::sheet`, `app` (file routing, links, palette),
+//! `api::sheet`, `core::ingestion`, `markdown::sheet_embed`, `graph::model`,
+//! `llm::prompt`, `ui::sidebar`.
 
 pub mod csv_io;
 pub mod history;

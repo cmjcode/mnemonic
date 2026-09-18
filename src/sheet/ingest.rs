@@ -3,8 +3,8 @@
 //! `Item: Kopi; Qty: 3; Harga: 12000`, and consecutive rows are grouped
 //! into chunks of at most `CHUNK_CHARS` characters. Every chunk remembers
 //! its worksheet and 1-based data-row range so citations can jump back to
-//! the exact rows. Pure, no model dependency. Callers: `core::indexer`,
-//! `api::sheet`.
+//! the exact rows. Pure, no model dependency. Callers: `core::ingestion`
+//! (`chunk_sheet`), `app::sheet` and `api::sheet` (size limits).
 
 use super::{Sheet, SheetFile};
 

@@ -125,7 +125,8 @@ struct Derived {
     file_tree: Option<ui::FileTreeNode>,
     tags: Vec<(String, usize)>,
     counts: ui::SidebarCounts,
-    pdf_sizes: HashMap<PathBuf, u64>,
+    /// PDF and sheet path → file size, for their grid cards.
+    file_sizes: HashMap<PathBuf, u64>,
     /// Canvas note path → card preview (summary, snippet, thumbnail).
     canvas_previews: HashMap<PathBuf, CanvasPreview>,
     recent_vaults: Vec<PathBuf>,
@@ -549,11 +550,12 @@ impl MnemonicApp {
                 }
             }
             c.pdfs = self.pdf_documents.len();
-            c.all = c.notes + c.canvases + c.pdfs;
+            c.sheets = derived.sheets.len();
+            c.all = c.notes + c.canvases + c.pdfs + c.sheets;
             derived.counts = c;
-            for pdf in &self.pdf_documents {
-                if let Ok(meta) = std::fs::metadata(pdf) {
-                    derived.pdf_sizes.insert(pdf.clone(), meta.len());
+            for file in self.pdf_documents.iter().chain(&derived.sheets) {
+                if let Ok(meta) = std::fs::metadata(file) {
+                    derived.file_sizes.insert(file.clone(), meta.len());
                 }
             }
         }

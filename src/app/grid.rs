@@ -46,7 +46,8 @@ pub(super) enum GridAction {
     BatchArchive(Vec<Uuid>),
     BatchTrash(Vec<PathBuf>),
     OpenHit(SearchHit),
-    TrashPdf(PathBuf),
+    /// Trash a non-note file card (PDF or sheet).
+    TrashFile(PathBuf),
     NewNote,
     ImportPdf,
     ClearSearch,
@@ -109,21 +110,22 @@ impl MnemonicApp {
         }
         query::sort_notes(&mut visible_notes, self.sort_mode);
 
-        let show_pdfs = matches!(filter, SidebarDocFilter::All | SidebarDocFilter::PdfsOnly);
         let search_lower = search.to_lowercase();
-        let visible_pdfs: Vec<&PathBuf> = if show_pdfs {
-            self.pdf_documents
-                .iter()
-                .filter(|p| {
-                    search.is_empty()
-                        || p.file_name().is_some_and(|n| {
-                            n.to_string_lossy().to_lowercase().contains(&search_lower)
-                        })
+        let name_matches = |p: &&PathBuf| {
+            search.is_empty()
+                || p.file_name().is_some_and(|n| {
+                    n.to_string_lossy().to_lowercase().contains(&search_lower)
                 })
-                .collect()
-        } else {
-            Vec::new()
         };
+        let show_pdfs = matches!(filter, SidebarDocFilter::All | SidebarDocFilter::PdfsOnly);
+        let mut visible_files: Vec<&PathBuf> = Vec::new();
+        if show_pdfs {
+            visible_files.extend(self.pdf_documents.iter().filter(name_matches));
+        }
+        // Sheets (§3.8) have no filter of their own; they show under "All".
+        if filter == SidebarDocFilter::All {
+            visible_files.extend(self.derived.sheets.iter().filter(name_matches));
+        }
 
         // Semantic hits for documents the keyword filter didn't already show.
         let shown_ids: HashSet<Uuid> = visible_notes.iter().map(|n| n.frontmatter.id).collect();
@@ -146,7 +148,7 @@ impl MnemonicApp {
                 .collect()
         };
 
-        let total = visible_notes.len() + visible_pdfs.len();
+        let total = visible_notes.len() + visible_files.len();
         let in_trash = filter == SidebarDocFilter::Trashed;
         let vault_empty = self.derived.counts.all == 0 && self.derived.counts.archived == 0;
 
@@ -392,13 +394,13 @@ impl MnemonicApp {
                                                 }
                                             }
                                             let offset = visible_notes.len();
-                                            for (i, path) in visible_pdfs.iter().enumerate() {
+                                            for (i, path) in visible_files.iter().enumerate() {
                                                 if (i + offset) % columns == col {
-                                                    pdf_card(
+                                                    file_card(
                                                         ui,
                                                         tr,
                                                         path,
-                                                        derived.pdf_sizes.get(*path).copied(),
+                                                        derived.file_sizes.get(*path).copied(),
                                                         &mut actions,
                                                     );
                                                 }
@@ -500,7 +502,7 @@ impl MnemonicApp {
             GridAction::OpenHit(hit) => {
                 self.open_chunk_source(hit.chunk.file_path, hit.chunk.page_num);
             }
-            GridAction::TrashPdf(path) => {
+            GridAction::TrashFile(path) => {
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -1053,7 +1055,8 @@ fn color_menu(ui: &mut egui::Ui, tr: &LocaleManager, note: &Note, actions: &mut 
     });
 }
 
-fn pdf_card(
+/// Card for a non-note vault file: an imported PDF or a CSV/XLSX sheet.
+fn file_card(
     ui: &mut egui::Ui,
     tr: &LocaleManager,
     path: &Path,
@@ -1065,16 +1068,21 @@ fn pdf_card(
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Document.pdf".to_string());
-    let card_id = Id::new(("pdf_card", path));
+        .unwrap_or_else(|| "Document".to_string());
+    let (icon, icon_color, kind) = if crate::sheet::is_sheet_path(path) {
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_uppercase())
+            .unwrap_or_default();
+        (ICON_TABLE_CHART.codepoint, p.sheet_icon, ext)
+    } else {
+        (ICON_PICTURE_AS_PDF.codepoint, p.pdf_icon, "PDF".to_string())
+    };
+    let card_id = Id::new(("file_card", path));
 
     let (bg, menu_open) = card_shell(ui, card_id, p.card, false, |ui, hovered| {
         ui.horizontal_top(|ui| {
-            ui.label(
-                RichText::new(ICON_PICTURE_AS_PDF.codepoint)
-                    .size(16.0)
-                    .color(p.pdf_icon),
-            );
+            ui.label(RichText::new(icon).size(16.0).color(icon_color));
             ui.add_space(2.0);
             let mut job = egui::text::LayoutJob::single_section(
                 name.clone(),
@@ -1095,10 +1103,10 @@ fn pdf_card(
             ui.set_height(26.0);
             let size_text = match size {
                 Some(bytes) if bytes >= 1_048_576 => {
-                    format!("PDF · {:.1} MB", bytes as f64 / 1_048_576.0)
+                    format!("{kind} · {:.1} MB", bytes as f64 / 1_048_576.0)
                 }
-                Some(bytes) => format!("PDF · {:.0} KB", (bytes as f64 / 1024.0).max(1.0)),
-                None => "PDF".to_string(),
+                Some(bytes) => format!("{kind} · {:.0} KB", (bytes as f64 / 1024.0).max(1.0)),
+                None => kind.clone(),
             };
             ui.label(
                 RichText::new(size_text)
@@ -1117,7 +1125,7 @@ fn pdf_card(
                     )
                     .clicked()
                     {
-                        actions.push(GridAction::TrashPdf(path.to_path_buf()));
+                        actions.push(GridAction::TrashFile(path.to_path_buf()));
                     }
                 });
             }
@@ -1139,7 +1147,7 @@ fn pdf_card(
             if widgets::menu_item_colored(ui, ICON_DELETE.codepoint, &t("card-trash"), None, p.danger)
                 .clicked()
             {
-                actions.push(GridAction::TrashPdf(path.to_path_buf()));
+                actions.push(GridAction::TrashFile(path.to_path_buf()));
                 ui.close();
             }
         });

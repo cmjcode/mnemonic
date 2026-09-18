@@ -3,7 +3,7 @@ id: d4e5f6a7-b8c9-0123-defa-456789012345
 title: Arsitektur Microservice
 type: note
 created: 2026-08-15T03:00:00+00:00
-modified: 2026-09-18T16:50:34.740291+00:00
+modified: 2026-09-18T17:29:45.881962+00:00
 pinned: false
 color: teal
 tags:

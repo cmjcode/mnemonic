@@ -2,11 +2,10 @@
 //! truth, so this module works hard to write back what it read: the
 //! detected delimiter, UTF-8 BOM and line ending are kept in a
 //! `CsvFormat` and reused on save (quoting is normalized to "only when
-//! needed"), and saves go through the same
-//! temp-file + rename as notes (`notes::note::write_atomic`). A file that
-//! isn't valid UTF-8 loads lossily and is flagged so it's never saved
-//! back over the original. Callers: `sheet::load`, `app::sheet`,
-//! `api::sheet`.
+//! needed"), and saves go through the same temp-file + rename as notes
+//! (`notes::note::write_atomic`). A file that isn't valid UTF-8 loads
+//! lossily and is flagged so it's never saved back over the original.
+//! Callers: `sheet::load`, `app::sheet`, `api::sheet`.
 
 use std::path::Path;
 
