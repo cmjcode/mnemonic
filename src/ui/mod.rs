@@ -30,8 +30,8 @@ pub use command_palette::{CommandPalette, PaletteCommand};
 pub use left_toolbar::{LeftToolbar, LeftToolbarEvent};
 pub use logo::{load_app_icon_arc, load_app_icon_data, load_logo_color_image, logo_texture};
 pub use modal::{
-    ConfirmModal, LabelManagerEvent, LabelManagerModal, MoveChoice, MoveFolderModal,
-    PromptInputModal, ShortcutsModal,
+    ConfirmModal, ConflictChoice, ConflictModal, LabelManagerEvent, LabelManagerModal, MoveChoice,
+    MoveFolderModal, PromptInputModal, ShortcutsModal,
 };
 pub use sidebar::{
     FileTreeNode, SidebarCounts, SidebarDocFilter, SidebarDrawer, SidebarEvent, SidebarState,

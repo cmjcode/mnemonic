@@ -11,8 +11,10 @@ pub mod ingestion;
 pub mod search;
 pub mod storage;
 
-pub use embedding::{EmbeddingEngine, cosine_similarity, top_k};
+pub use embedding::{
+    EMBEDDING_DIM, EMBEDDING_MODEL_ID, EmbeddingEngine, RerankEngine, cosine_similarity, top_k,
+};
 pub use indexer::{DocType, IndexJob, IndexResult, IndexingWorker};
 pub use ingestion::DocumentChunk;
-pub use search::{SearchHit, keyword_search, merge_results, semantic_search};
-pub use storage::{IndexStore, StoredChunk};
+pub use search::{HybridOptions, MatchKind, SearchHit, hybrid_rank, keyword_search};
+pub use storage::{Backlink, IndexStore, KeywordChunk, LinkEdge, StoredChunk};

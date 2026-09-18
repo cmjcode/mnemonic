@@ -4,13 +4,16 @@
 //! and vector painters for a 2D spatial canvas that unifies with Markdown documents.
 
 pub mod drawio;
+pub mod thumb;
 pub mod element;
+pub mod jsoncanvas;
 pub mod painter;
 pub mod tools;
 pub mod viewport;
 
 pub use drawio::{DrawioExporter, DrawioImporter};
-pub use element::{CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
+pub use element::{BlockBinding, CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
+pub use jsoncanvas::{from_json_canvas, to_json_canvas, JsonCanvas};
 pub use painter::draw_element;
 pub use tools::{CanvasTool, InteractionState};
 pub use viewport::Viewport;
@@ -89,6 +92,55 @@ impl CanvasDocument {
             .collect()
     }
 
+    /// One bound node per anchored Markdown block, stacked top to bottom
+    /// (§Fase 3 "auto-bind"): headings become rounded shapes, everything
+    /// else a sticky note. Text is derived from the blocks, never stored.
+    pub fn from_bound_blocks(title: &str, anchors: &[crate::markdown::blocks::BlockAnchor]) -> Self {
+        let mut canvas = CanvasDocument::new(title);
+        let left_x = 80.0;
+        let mut cur_y = 60.0;
+        for anchor in anchors {
+            let text = anchor.text.clone();
+            let first = text.lines().next().unwrap_or("").trim_start();
+            let hashes = first.chars().take_while(|c| *c == '#').count();
+            let is_heading = (1..=6).contains(&hashes) && first[hashes..].starts_with(' ');
+            let binding = Some(element::BlockBinding::local(anchor.id.clone()));
+            if is_heading {
+                let width = ((first.len() as f32) * 11.0).clamp(240.0, 520.0);
+                canvas.add_element(CanvasElement::Shape {
+                    id: CanvasElementId::new(),
+                    kind: ShapeKind::RoundedRect,
+                    rect: [left_x, cur_y, left_x + width, cur_y + 56.0],
+                    stroke_color: if hashes == 1 {
+                        tools::PALETTE_PRIMARY_ACCENT
+                    } else {
+                        tools::PALETTE_STROKE_LIGHT
+                    },
+                    stroke_width: 2.0,
+                    fill_color: Some([0.18, 0.22, 0.32]),
+                    text,
+                    text_color: None,
+                    binding,
+                });
+                cur_y += 56.0 + 30.0;
+            } else {
+                let lines = text.lines().count().max(1) as f32;
+                let chars = text.chars().count() as f32;
+                let height = (40.0 + lines.max(chars / 34.0).ceil() * 20.0).clamp(80.0, 320.0);
+                canvas.add_element(CanvasElement::StickyNote {
+                    id: CanvasElementId::new(),
+                    pos: [left_x + 30.0, cur_y],
+                    size: [280.0, height],
+                    text,
+                    color: tools::PALETTE_STICKY_YELLOW,
+                    binding,
+                });
+                cur_y += height + 24.0;
+            }
+        }
+        canvas
+    }
+
     /// Automatically projects a `BlockTree` from Page Mode into a clean 2D layout on the whiteboard!
     pub fn from_block_tree(title: &str, tree: &BlockTree) -> Self {
         let mut canvas = CanvasDocument::new(title);
@@ -117,6 +169,7 @@ impl CanvasDocument {
                         fill_color: Some([0.18, 0.22, 0.32]),
                         text: text.clone(),
                         text_color: None,
+                        binding: None,
                     });
                     cur_y += height + 35.0;
                 }
@@ -132,6 +185,7 @@ impl CanvasDocument {
                         } else {
                             tools::PALETTE_STICKY_YELLOW
                         },
+                        binding: None,
                     });
                     cur_y += 130.0;
                 }
@@ -142,6 +196,7 @@ impl CanvasDocument {
                         size: [260.0, 140.0],
                         text: format!("[{}]\n{}", kind.to_uppercase(), text),
                         color: tools::PALETTE_STICKY_ORANGE,
+                        binding: None,
                     });
                     cur_y += 160.0;
                 }
@@ -153,6 +208,7 @@ impl CanvasDocument {
                             size: [240.0, 130.0],
                             text: text.clone(),
                             color: tools::PALETTE_STICKY_BLUE,
+                            binding: None,
                         });
                         cur_y += 150.0;
                     }
@@ -434,6 +490,7 @@ mod tests {
             size: [200.0, 150.0],
             text: "Hello Rust".to_string(),
             color: tools::PALETTE_STICKY_YELLOW,
+            binding: None,
         });
 
         assert_eq!(canvas.elements.len(), 1);
@@ -463,6 +520,7 @@ mod tests {
             size: [100.0, 100.0],
             text: "Note 1".to_string(),
             color: tools::PALETTE_STICKY_BLUE,
+            binding: None,
         });
 
         let elem2 = canvas.add_element(CanvasElement::StickyNote {
@@ -471,6 +529,7 @@ mod tests {
             size: [100.0, 100.0],
             text: "Note 2".to_string(),
             color: tools::PALETTE_STICKY_GREEN,
+            binding: None,
         });
 
         let in_rect = canvas.elements_in_rect(egui::Rect::from_min_max(
@@ -495,6 +554,7 @@ mod tests {
             size: [200.0, 120.0],
             text: "Backend API".to_string(),
             color: tools::PALETTE_STICKY_YELLOW,
+            binding: None,
         });
         canvas.add_element(CanvasElement::Shape {
             id: CanvasElementId::new(),
@@ -505,6 +565,7 @@ mod tests {
             fill_color: None,
             text: "Database PostgreSQL".to_string(),
             text_color: None,
+            binding: None,
         });
 
         let md_body = canvas.to_markdown_body();

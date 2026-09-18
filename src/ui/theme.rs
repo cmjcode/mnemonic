@@ -76,6 +76,8 @@ pub struct Palette {
     pub note_icon: Color32,
     pub canvas_icon: Color32,
     pub pdf_icon: Color32,
+    /// CSV/XLSX sheets (§3.8): spreadsheet green.
+    pub sheet_icon: Color32,
     pub folder_icon: Color32,
     pub shadow: Color32,
 }
@@ -102,6 +104,7 @@ pub const DARK: Palette = Palette {
     note_icon: Color32::from_rgb(120, 165, 255),
     canvas_icon: Color32::from_rgb(232, 169, 58),
     pdf_icon: Color32::from_rgb(240, 97, 109),
+    sheet_icon: Color32::from_rgb(63, 185, 123),
     folder_icon: Color32::from_rgb(140, 145, 158),
     shadow: Color32::from_black_alpha(90),
 };
@@ -128,6 +131,7 @@ pub const LIGHT: Palette = Palette {
     note_icon: Color32::from_rgb(47, 111, 235),
     canvas_icon: Color32::from_rgb(200, 128, 10),
     pdf_icon: Color32::from_rgb(214, 58, 74),
+    sheet_icon: Color32::from_rgb(30, 140, 84),
     folder_icon: Color32::from_rgb(120, 124, 134),
     shadow: Color32::from_black_alpha(28),
 };

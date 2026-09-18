@@ -7,25 +7,31 @@
 //! `welcome`, `grid`, `editor`, `pdf`, `palette`. Callers: `main.rs`.
 
 mod editor;
+mod graph;
 mod grid;
+pub mod hotkeys;
 mod palette;
 mod pdf;
+mod sheet;
+mod sheet_grid;
 mod welcome;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use egui::{Key, KeyboardShortcut, Modifiers};
+use egui::{Key, KeyboardShortcut};
 use egui_commonmark::CommonMarkCache;
 use uuid::Uuid;
 
 use crate::canvas::CanvasDocument;
 use crate::core::ingestion::pdf_doc_id;
-use crate::core::search::{self, SearchHit};
-use crate::core::{DocumentChunk, IndexStore, IndexingWorker};
+use crate::core::search::{self, HybridOptions, SearchHit};
+use crate::core::{EMBEDDING_DIM, EMBEDDING_MODEL_ID, IndexStore, IndexingWorker};
 use crate::i18n::LocaleManager;
 use crate::llm::{self, GenerationEvent, GenerationWorker};
+use crate::markdown::wikilink::{self, WikiLink, title_key};
+use crate::markdown::editor::SaveError;
 use crate::markdown::{EditorMode, MarkdownEditor};
 use crate::notes::query::{self, SortMode};
 use crate::notes::{Note, Vault, VaultWatcher, tags, trash};
@@ -33,13 +39,22 @@ use crate::settings::{self, AppSettings};
 use crate::ui::{self, SidebarDocFilter, ToastKind, theme};
 
 use editor::EditorUi;
+use graph::GraphView;
 use pdf::{PdfRendererState, PdfViewerState};
+use sheet::SheetViewerState;
 
 /// How many top-ranked chunks to retrieve for search / chat respectively
 /// (§Fase 7). Search shows more candidates since a human skims them, while
 /// chat feeds a token-bounded LLM prompt.
 const SEARCH_TOP_K: usize = 10;
 const CHAT_TOP_K: usize = 5;
+/// Candidates fetched from each retrieval route (vector KNN, FTS5) before
+/// Reciprocal Rank Fusion narrows them down to the top-K.
+const RETRIEVAL_CANDIDATES: usize = 30;
+/// How many related documents the editor panel lists.
+const RELATED_LIMIT: usize = 6;
+/// Nearest neighbors per document considered for graph AI edges.
+const SEMANTIC_NEIGHBORS: usize = 3;
 
 /// Pause after the last keystroke in the search box before running the
 /// (comparatively expensive) semantic half of search.
@@ -90,6 +105,16 @@ enum ToastAction {
         pdfs: Vec<PathBuf>,
     },
     ToggleArchived(Uuid),
+    /// Restores note bodies rewritten when a renamed note's links were
+    /// updated: `(path, previous body)`.
+    RestoreBodies(Vec<(PathBuf, String)>),
+}
+
+/// What a diagram note's grid card shows besides its title.
+pub(super) struct CanvasPreview {
+    pub(super) summary: String,
+    pub(super) snippet: String,
+    pub(super) thumb: crate::canvas::thumb::CanvasThumb,
 }
 
 /// Data derived from the vault that used to be recomputed every frame
@@ -101,8 +126,8 @@ struct Derived {
     tags: Vec<(String, usize)>,
     counts: ui::SidebarCounts,
     pdf_sizes: HashMap<PathBuf, u64>,
-    /// Canvas note path → (element summary, text snippet) for grid cards.
-    canvas_previews: HashMap<PathBuf, (String, String)>,
+    /// Canvas note path → card preview (summary, snippet, thumbnail).
+    canvas_previews: HashMap<PathBuf, CanvasPreview>,
     recent_vaults: Vec<PathBuf>,
 }
 
@@ -125,7 +150,15 @@ pub struct MnemonicApp {
     indexer: Option<IndexingWorker>,
     generator: Option<GenerationWorker>,
     index_jobs_pending: usize,
+    /// Bumped whenever the index's notes, links or vectors change, so
+    /// panels derived from it (backlinks, related, local graph) refresh.
+    index_generation: u64,
     derived: Derived,
+
+    /// Full-screen vault graph, when open.
+    graph: Option<GraphView>,
+    /// The index changed while the graph was open; rebuild its data.
+    graph_dirty: bool,
 
     editor: Option<MarkdownEditor>,
     editor_ui: EditorUi,
@@ -134,12 +167,15 @@ pub struct MnemonicApp {
     pdf_renderer: PdfRendererState,
     pdf_documents: Vec<PathBuf>,
     pdf_viewer: Option<PdfViewerState>,
+    /// Open CSV/XLSX sheet (§3.8), when a sheet is the current document.
+    sheet_viewer: Option<SheetViewerState>,
 
     doc_filter: SidebarDocFilter,
     sort_mode: SortMode,
     search_text: String,
     search_changed_at: Option<Instant>,
     search_pending_id: Option<Uuid>,
+    search_rerank_id: Option<Uuid>,
     search_results: Vec<SearchHit>,
     selection_mode: bool,
     selected: HashSet<Uuid>,
@@ -159,6 +195,11 @@ pub struct MnemonicApp {
     confirm_empty_trash: bool,
     prompt_modal: Option<PromptModalState>,
     move_modal: Option<MoveModalState>,
+    /// A background indexing/embedding error was already shown this session.
+    index_error_shown: bool,
+    /// Open while the note in the editor changed on disk and has unsaved
+    /// edits; autosave pauses until the user picks a resolution.
+    conflict_modal: bool,
     show_shortcuts: bool,
     command_palette: ui::CommandPalette,
     toasts: ui::Toasts<ToastAction>,
@@ -196,18 +237,23 @@ impl MnemonicApp {
             indexer: Some(IndexingWorker::spawn()),
             generator: Some(GenerationWorker::spawn()),
             index_jobs_pending: 0,
+            index_generation: 0,
             derived: Derived::default(),
+            graph: None,
+            graph_dirty: false,
             editor: None,
             editor_ui: EditorUi::default(),
             markdown_cache: CommonMarkCache::default(),
             pdf_renderer: PdfRendererState::Uninit,
             pdf_documents: Vec::new(),
             pdf_viewer: None,
+            sheet_viewer: None,
             doc_filter: SidebarDocFilter::All,
             sort_mode: SortMode::Modified,
             search_text: String::new(),
             search_changed_at: None,
             search_pending_id: None,
+            search_rerank_id: None,
             search_results: Vec::new(),
             selection_mode: false,
             selected: HashSet::new(),
@@ -222,6 +268,8 @@ impl MnemonicApp {
             confirm_delete: None,
             confirm_empty_trash: false,
             prompt_modal: None,
+            index_error_shown: false,
+            conflict_modal: false,
             move_modal: None,
             show_shortcuts: false,
             command_palette: ui::CommandPalette::default(),
@@ -282,6 +330,7 @@ impl MnemonicApp {
 
     fn activate_vault(&mut self, vault: Vault) {
         self.close_document();
+        self.close_graph_view();
         self.doc_filter = SidebarDocFilter::All;
         self.expanded_folders.clear();
         self.search_text.clear();
@@ -295,20 +344,35 @@ impl MnemonicApp {
             log::warn!("app: trash purge failed: {e}");
         }
 
+        // Set when the vector cache was built by another embedding model
+        // (or is new): PDFs must then be re-embedded too, not just notes.
+        let mut reindex_pdfs = false;
         match IndexStore::open(&vault.root) {
             Ok(mut index) => {
+                match index.ensure_embedding_model(EMBEDDING_MODEL_ID, EMBEDDING_DIM) {
+                    Ok(reset) => reindex_pdfs = reset,
+                    Err(e) => log::warn!("app: preparing vector index failed: {e:#}"),
+                }
                 if let Err(e) = index.rebuild(&vault.notes) {
                     log::warn!("app: index rebuild failed: {e}");
                 }
                 self.index = Some(index);
             }
-            Err(e) => log::warn!("app: failed to open index store: {e}"),
+            Err(e) => log::warn!("app: failed to open index store: {e:#}"),
         }
 
-        // Populate the chunk cache for search/RAG once per vault open;
-        // later edits resubmit only the changed note.
+        // Populate the chunk cache for search/RAG: only notes whose text
+        // changed since they were last embedded (incremental, §Fase 2), so
+        // reopening a big vault is instant.
         self.index_jobs_pending = 0;
-        for note in vault.notes.iter().filter(|n| !n.frontmatter.trashed) {
+        let stale: Vec<Note> = vault
+            .notes
+            .iter()
+            .filter(|n| !n.frontmatter.trashed)
+            .filter(|n| self.note_needs_reindex(n))
+            .cloned()
+            .collect();
+        for note in &stale {
             self.reindex_note(note);
         }
 
@@ -324,6 +388,12 @@ impl MnemonicApp {
         self.persist_settings();
         self.vault = Some(vault);
         self.refresh_pdf_documents();
+        if reindex_pdfs {
+            for pdf in self.pdf_documents.clone() {
+                self.submit_pdf_for_indexing(pdf);
+            }
+        }
+        self.reindex_changed_sheets();
     }
 
     fn open_vault_at(&mut self, folder: PathBuf) {
@@ -386,8 +456,40 @@ impl MnemonicApp {
         {
             log::warn!("app: index rebuild after rescan failed: {e}");
         }
+        self.index_changed();
+        self.reindex_changed_notes();
+        self.reindex_changed_sheets();
+        self.reload_editor_if_changed_on_disk();
         self.sync_editor_frontmatter();
         self.refresh_derived();
+    }
+
+    /// An open note that was edited outside the app (another editor, a
+    /// sync client, an AI agent writing to the vault) is re-read from disk
+    /// as long as the editor holds no unsaved changes of its own — the
+    /// same live behavior Obsidian has. With unsaved edits the next save
+    /// raises a conflict instead (see `save_editor_now`).
+    fn reload_editor_if_changed_on_disk(&mut self) {
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        if editor.is_dirty() || self.conflict_modal || !editor.has_external_change() {
+            return;
+        }
+        match editor.reload_from_disk() {
+            Ok(()) => {
+                let title = editor.note.frontmatter.title.clone();
+                self.editor_ui.title_buffer = title.clone();
+                self.toast(ToastKind::Info, "toast-note-reloaded", &[("title", &title)]);
+            }
+            Err(e) => log::warn!("app: reloading externally changed note failed: {e:#}"),
+        }
+    }
+
+    /// Marks everything derived from the index as stale.
+    fn index_changed(&mut self) {
+        self.index_generation = self.index_generation.wrapping_add(1);
+        self.graph_dirty = self.graph.is_some();
     }
 
     /// Copies metadata changed elsewhere (tags, pin, color, archive) from
@@ -425,13 +527,14 @@ impl MnemonicApp {
                     continue;
                 }
                 if note.is_canvas() {
-                    let doc = CanvasDocument::from_markdown_body(&fm.title, &note.body);
+                    let doc = load_canvas_for_preview(note);
                     derived.canvas_previews.insert(
                         note.path.clone(),
-                        (
-                            canvas_summary(&self.locales, &doc),
-                            query::snippet(&doc.extract_searchable_text(), 160),
-                        ),
+                        CanvasPreview {
+                            summary: canvas_summary(&self.locales, &doc),
+                            snippet: query::snippet(&doc.extract_searchable_text(), 160),
+                            thumb: crate::canvas::thumb::CanvasThumb::from_doc(&doc),
+                        },
                     );
                 }
                 if fm.archived {
@@ -461,6 +564,46 @@ impl MnemonicApp {
         if let Some(indexer) = &self.indexer {
             indexer.submit_note(note.clone());
             self.index_jobs_pending += 1;
+        }
+    }
+
+    /// `true` unless the index already holds chunks for exactly this text.
+    fn note_needs_reindex(&self, note: &Note) -> bool {
+        let Some(index) = self.index.as_ref() else {
+            return true;
+        };
+        let hash = crate::core::ingestion::note_content_hash(note);
+        index.needs_reindex(note.frontmatter.id, &hash).unwrap_or(true)
+    }
+
+    /// After a rescan: (re)embeds every non-trashed note whose text differs
+    /// from what the index holds — this is what makes edits made by an
+    /// external editor or an AI agent searchable without a restart — and
+    /// prunes chunks of notes that vanished.
+    fn reindex_changed_notes(&mut self) {
+        let Some(vault) = self.vault.as_ref() else {
+            return;
+        };
+        let live: HashSet<Uuid> = vault
+            .notes
+            .iter()
+            .filter(|n| !n.frontmatter.trashed)
+            .map(|n| n.frontmatter.id)
+            .collect();
+        let stale: Vec<Note> = vault
+            .notes
+            .iter()
+            .filter(|n| !n.frontmatter.trashed)
+            .filter(|n| self.note_needs_reindex(n))
+            .cloned()
+            .collect();
+        if let Some(index) = self.index.as_ref()
+            && let Err(e) = index.prune_notes_not_in(&live)
+        {
+            log::warn!("app: pruning stale chunks failed: {e:#}");
+        }
+        for note in &stale {
+            self.reindex_note(note);
         }
     }
 
@@ -506,6 +649,7 @@ impl MnemonicApp {
         // schedule a wake-up for when the debounce window elapses.
         if let Some(editor) = self.editor.as_ref()
             && editor.is_dirty()
+            && !self.conflict_modal
         {
             if editor.should_autosave() {
                 self.save_editor_now();
@@ -537,24 +681,51 @@ impl MnemonicApp {
             return;
         }
         self.index_jobs_pending = self.index_jobs_pending.saturating_sub(results.len());
+        self.index_generation = self.index_generation.wrapping_add(1);
+        let mut index_error: Option<String> = None;
         let Some(index) = self.index.as_mut() else {
             return;
         };
         for result in results {
             match result {
                 Ok(r) => {
-                    if let Err(e) = index.replace_chunks(r.doc_id, r.doc_type.as_str(), &r.chunks) {
-                        log::warn!("app: failed to store indexed chunks: {e}");
+                    match index.replace_chunks(r.doc_id, r.doc_type.as_str(), &r.title, &r.chunks)
+                    {
+                        Ok(()) if !r.content_hash.is_empty() => {
+                            if let Err(e) = index.set_document_hash(r.doc_id, &r.content_hash) {
+                                log::warn!("app: failed to record document hash: {e:#}");
+                            }
+                        }
+                        Ok(()) => {}
+                        Err(e) => {
+                            log::warn!("app: failed to store indexed chunks: {e:#}");
+                            index_error = Some(format!("{e:#}"));
+                        }
                     }
                 }
-                Err(e) => log::warn!("app: background indexing failed: {e}"),
+                Err(e) => {
+                    log::warn!("app: background indexing failed: {e}");
+                    index_error = Some(e.to_string());
+                }
             }
+        }
+        // Surface background failures once per vault session instead of
+        // leaving them in the log only (§Fase 2.6).
+        if let Some(msg) = index_error
+            && !self.index_error_shown
+        {
+            self.index_error_shown = true;
+            self.report_error("error-context-indexing", msg);
         }
     }
 
     fn poll_search_and_chat(&mut self, ctx: &egui::Context) {
-        if let Some(indexer) = &self.indexer {
-            for (id, result) in indexer.poll_query_results() {
+        let (query_results, rerank_results) = match &self.indexer {
+            Some(indexer) => (indexer.poll_query_results(), indexer.poll_rerank_results()),
+            None => (Vec::new(), Vec::new()),
+        };
+        {
+            for (id, result) in query_results {
                 if self.search_pending_id == Some(id) {
                     self.search_pending_id = None;
                     match result {
@@ -575,6 +746,23 @@ impl MnemonicApp {
                     ctx.request_repaint();
                 }
             }
+            for (id, result) in rerank_results {
+                if self.search_rerank_id != Some(id) {
+                    continue;
+                }
+                self.search_rerank_id = None;
+                match result {
+                    Ok(scores) => {
+                        let hits = std::mem::take(&mut self.search_results);
+                        self.search_results = search::apply_rerank(hits, &scores);
+                    }
+                    Err(e) => log::warn!("app: reranking search results failed: {e:#}"),
+                }
+                ctx.request_repaint();
+            }
+        }
+        if self.search_pending_id.is_some() || self.search_rerank_id.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
 
         if let Some(generator) = &self.generator {
@@ -604,35 +792,96 @@ impl MnemonicApp {
         }
     }
 
-    /// Kicks off query embedding for the semantic half of search; the grid
-    /// already shows keyword matches instantly while this runs.
+    /// Shows full-text (FTS5) results right away, then kicks off query
+    /// embedding; `apply_semantic_search` fuses in the semantic half when
+    /// the vector arrives.
     fn run_semantic_search(&mut self) {
         let query_text = self.search_text.trim().to_string();
+        self.search_rerank_id = None;
         if query_text.is_empty() {
             self.search_results.clear();
             self.search_pending_id = None;
             return;
         }
-        if let Some(indexer) = &self.indexer {
-            self.search_pending_id = Some(indexer.submit_query(query_text));
+        self.search_results = self.hybrid_search(&query_text, None, SEARCH_TOP_K, true);
+        let embed_text = search::ParsedQuery::parse(&query_text).text();
+        if !embed_text.is_empty()
+            && let Some(indexer) = &self.indexer
+        {
+            self.search_pending_id = Some(indexer.submit_query(embed_text));
         }
     }
 
     fn apply_semantic_search(&mut self, embedding: &[f32]) {
-        let Some(index) = self.index.as_ref() else {
+        let query_text = self.search_text.trim().to_string();
+        if query_text.is_empty() {
             return;
-        };
-        match index.all_chunks() {
-            Ok(chunks) => {
-                self.search_results = search::semantic_search(
-                    embedding,
-                    &chunks,
-                    SEARCH_TOP_K,
-                    llm::SIMILARITY_THRESHOLD,
-                );
-            }
-            Err(e) => log::warn!("app: loading chunks for search failed: {e:#}"),
         }
+        self.search_results = self.hybrid_search(&query_text, Some(embedding), SEARCH_TOP_K, true);
+        if self.settings.rerank_search
+            && self.search_results.len() > 1
+            && let Some(indexer) = &self.indexer
+        {
+            self.search_rerank_id = Some(indexer.submit_rerank(
+                query_text,
+                search::rerank_documents(&self.search_results),
+            ));
+        }
+    }
+
+    /// Hybrid retrieval: vector KNN (when `embedding` is known) + FTS5,
+    /// fused with Reciprocal Rank Fusion. Failures degrade to whichever
+    /// half still works.
+    fn hybrid_search(
+        &self,
+        text: &str,
+        embedding: Option<&[f32]>,
+        k: usize,
+        one_per_doc: bool,
+    ) -> Vec<SearchHit> {
+        let Some(index) = self.index.as_ref() else {
+            return Vec::new();
+        };
+        // Obsidian-style operators (`tag:`, `path:`, `file:`, `-x`) narrow
+        // the candidate set; the free text drives retrieval.
+        let parsed = search::ParsedQuery::parse(text);
+        let notes_by_path: HashMap<&Path, &Note> = self
+            .vault
+            .as_ref()
+            .map(|v| v.notes.iter().map(|n| (n.path.as_path(), n)).collect())
+            .unwrap_or_default();
+        let passes = |chunk: &crate::core::DocumentChunk| {
+            !parsed.has_filters()
+                || notes_by_path
+                    .get(chunk.file_path.as_path())
+                    .is_some_and(|n| parsed.filters_match(n))
+        };
+        let fetch = if parsed.has_filters() { RETRIEVAL_CANDIDATES * 4 } else { RETRIEVAL_CANDIDATES };
+        let mut semantic = match embedding.map(|e| index.knn_chunks(e, fetch)) {
+            Some(Ok(hits)) => hits,
+            Some(Err(e)) => {
+                log::warn!("app: vector search failed: {e:#}");
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        semantic.retain(|(chunk, _)| passes(chunk));
+        let mut keyword = index
+            .keyword_chunks(text, fetch)
+            .unwrap_or_else(|e| {
+                log::warn!("app: keyword search failed: {e:#}");
+                Vec::new()
+            });
+        keyword.retain(|hit| passes(&hit.chunk));
+        search::hybrid_rank(
+            semantic,
+            keyword,
+            HybridOptions {
+                k,
+                min_similarity: llm::SIMILARITY_THRESHOLD,
+                one_per_doc,
+            },
+        )
     }
 
     fn send_chat_message(&mut self, text: String) {
@@ -660,19 +909,8 @@ impl MnemonicApp {
             .map(|m| m.text.clone())
             .unwrap_or_default();
 
-        let context = match self.index.as_ref().map(|i| i.all_chunks()) {
-            Some(Ok(chunks)) => {
-                let vectors: Vec<Vec<f32>> = chunks.iter().map(|c| c.embedding.clone()).collect();
-                let scored = crate::core::top_k(embedding, &vectors, CHAT_TOP_K);
-                let all_chunks: Vec<DocumentChunk> = chunks.into_iter().map(|c| c.chunk).collect();
-                llm::select_context(&scored, &all_chunks, llm::SIMILARITY_THRESHOLD)
-            }
-            Some(Err(e)) => {
-                log::warn!("app: failed to load chunks for chat retrieval: {e}");
-                Vec::new()
-            }
-            None => Vec::new(),
-        };
+        let hits = self.hybrid_search(&question, Some(embedding), CHAT_TOP_K, false);
+        let context = llm::select_context(&hits, llm::SIMILARITY_THRESHOLD);
         let citations: Vec<Citation> = context
             .iter()
             .map(|c| Citation {
@@ -704,6 +942,10 @@ impl MnemonicApp {
                     .unwrap_or_else(|| path.display().to_string())
             });
         match page {
+            Some(row) if crate::sheet::is_sheet_path(path) => self.t_args(
+                "chat-citation-row",
+                &[("name", &name), ("row", &row.to_string())],
+            ),
             Some(p) => self.t_args(
                 "chat-citation-page",
                 &[("name", &name), ("page", &p.to_string())],
@@ -722,27 +964,57 @@ impl MnemonicApp {
         if !editor.is_dirty() {
             return true;
         }
+        let path_before = editor.note.path.clone();
         match editor.autosave() {
             Ok(()) => {
                 self.editor_ui.save_failed = false;
                 self.ignore_watcher_until = Some(Instant::now() + SELF_WRITE_GRACE);
                 let saved = editor.note.clone();
-                let mut title_changed = false;
+                let path_changed = saved.path != path_before;
+                let mut old_title = None;
                 if let Some(vault) = self.vault.as_mut() {
-                    match vault.notes.iter_mut().find(|n| n.path == saved.path) {
+                    match vault
+                        .notes
+                        .iter_mut()
+                        .find(|n| n.frontmatter.id == saved.frontmatter.id || n.path == path_before)
+                    {
                         Some(existing) => {
-                            title_changed = existing.frontmatter.title != saved.frontmatter.title;
-                            *existing = saved;
+                            if existing.frontmatter.title != saved.frontmatter.title {
+                                old_title = Some(existing.frontmatter.title.clone());
+                            }
+                            *existing = saved.clone();
                         }
-                        None => vault.notes.push(saved),
+                        None => vault.notes.push(saved.clone()),
                     }
                 }
-                if title_changed {
+                if path_changed {
+                    // The file tree shows file names; keep it in step with
+                    // the rename.
                     self.refresh_derived();
+                }
+                // Keep backlinks/graph current without a full rescan.
+                if let Some(index) = self.index.as_mut()
+                    && let Err(e) = index.upsert_note(&saved)
+                {
+                    log::warn!("app: updating note in index failed: {e:#}");
+                }
+                self.index_changed();
+                if let Some(old) = old_title {
+                    self.refresh_derived();
+                    self.propagate_rename(
+                        saved.frontmatter.id,
+                        &old,
+                        &saved.frontmatter.title,
+                    );
                 }
                 true
             }
-            Err(e) => {
+            Err(SaveError::Conflict) => {
+                editor.postpone_autosave();
+                self.conflict_modal = true;
+                false
+            }
+            Err(SaveError::Io(e)) => {
                 editor.postpone_autosave();
                 if !self.editor_ui.save_failed {
                     self.editor_ui.save_failed = true;
@@ -750,6 +1022,162 @@ impl MnemonicApp {
                 }
                 false
             }
+        }
+    }
+
+    /// Applies the user's answer to the "changed on disk" dialog.
+    fn resolve_conflict(&mut self, choice: ui::ConflictChoice) {
+        self.conflict_modal = false;
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        match choice {
+            ui::ConflictChoice::Cancel => editor.postpone_autosave(),
+            ui::ConflictChoice::Reload => {
+                if let Err(e) = editor.reload_from_disk() {
+                    self.report_error("error-context-autosave", e);
+                    return;
+                }
+                self.editor_ui.title_buffer = editor.note.frontmatter.title.clone();
+                self.rescan_and_reindex();
+            }
+            ui::ConflictChoice::Overwrite => {
+                match editor.force_save() {
+                    Ok(()) => {
+                        self.ignore_watcher_until = Some(Instant::now() + SELF_WRITE_GRACE);
+                        let note = editor.note.clone();
+                        self.reindex_note(&note);
+                        self.rescan_and_reindex();
+                    }
+                    Err(e) => self.report_error("error-context-autosave", e),
+                }
+            }
+            ui::ConflictChoice::SaveCopy => match editor.save_conflict_copy() {
+                Ok(copy) => {
+                    self.ignore_watcher_until = Some(Instant::now() + SELF_WRITE_GRACE);
+                    let title = copy.frontmatter.title.clone();
+                    self.rescan_and_reindex();
+                    self.toast(ToastKind::Success, "toast-conflict-copy-saved", &[("title", &title)]);
+                }
+                Err(e) => self.report_error("error-context-save-note", e),
+            },
+        }
+    }
+
+    /// Opens today's daily note (`Daily/YYYY-MM-DD.md`), creating it from
+    /// `Templates/Daily.md` when it doesn't exist yet (Obsidian's Daily
+    /// notes, §Fase 1.5). ⌘D / palette.
+    fn open_daily_note(&mut self) {
+        let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
+            return;
+        };
+        let now = chrono::Local::now();
+        let path = crate::notes::templates::daily_note_path(&root, now);
+        if let Some(note) = self.note_by_path(&path).or_else(|| Note::load(&path).ok()) {
+            self.open_note(note);
+            return;
+        }
+        self.close_document();
+        if self.editor.is_some() {
+            return;
+        }
+        let title = crate::notes::templates::daily_note_title(now);
+        let body = crate::notes::templates::daily_note_body(&root, now);
+        let dir = root.join(crate::notes::templates::DAILY_DIR);
+        match Note::create(&dir, &title, &body) {
+            Ok(note) => {
+                self.expanded_folders.insert(dir);
+                self.rescan_and_reindex();
+                self.open_note(note);
+            }
+            Err(e) => self.report_error("error-context-create-note", e),
+        }
+    }
+
+    /// Inserts the template at `path` (placeholders expanded) at the end
+    /// of the open note (Obsidian's Templates, §Fase 1.5).
+    fn insert_template(&mut self, path: &Path) {
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        let raw = match std::fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(e) => {
+                self.report_error("error-context-open-vault", e);
+                return;
+            }
+        };
+        let (_, template_body) = crate::notes::frontmatter::parse(&raw);
+        let expanded = crate::notes::templates::expand(
+            &template_body,
+            &editor.note.frontmatter.title,
+            chrono::Local::now(),
+        );
+        let mut body = editor.note.body.clone();
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(&expanded);
+        editor.set_body(body);
+        if editor.mode == EditorMode::Reading {
+            editor.mode = EditorMode::Source;
+        }
+    }
+
+    /// Renames every legacy `<uuid>.md` note file after its title
+    /// (Obsidian's file-name-is-note-name convention). Links are title
+    /// based, so nothing else needs rewriting. Palette command.
+    fn migrate_uuid_file_names(&mut self) {
+        self.close_document();
+        if self.editor.is_some() {
+            return;
+        }
+        let Some(vault) = self.vault.as_mut() else {
+            return;
+        };
+        let mut renamed = 0usize;
+        let mut first_error = None;
+        for note in vault.notes.iter_mut() {
+            if !note.has_uuid_file_name() || note.frontmatter.trashed {
+                continue;
+            }
+            match note.sync_file_name_with_title() {
+                Ok(Some(_)) => renamed += 1,
+                Ok(None) => {}
+                Err(e) => {
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
+                }
+            }
+        }
+        if let Some(e) = first_error {
+            self.report_error("error-context-move-file", e);
+        }
+        self.ignore_watcher_until = Some(Instant::now() + SELF_WRITE_GRACE);
+        self.rescan_and_reindex();
+        self.toast(
+            ToastKind::Success,
+            "toast-filenames-migrated",
+            &[("count", &renamed.to_string())],
+        );
+    }
+
+    /// Applies the title typed into the top bar / inline title to the open
+    /// note (renaming its file and updating links via the save path).
+    fn commit_title_buffer(&mut self) {
+        let title = self.editor_ui.title_buffer.trim().to_string();
+        let mut changed = false;
+        if let Some(editor) = self.editor.as_mut() {
+            if title.is_empty() {
+                self.editor_ui.title_buffer = editor.note.frontmatter.title.clone();
+            } else if title != editor.note.frontmatter.title {
+                editor.set_title(title);
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_editor_now();
         }
     }
 
@@ -770,6 +1198,16 @@ impl MnemonicApp {
             self.rescan_and_reindex();
         }
         self.pdf_viewer = None;
+        // A sheet that fails to save stays open so its edits aren't lost.
+        if self.sheet_viewer.is_some() && self.save_sheet_now() {
+            self.sheet_viewer = None;
+        }
+    }
+
+    /// Whether a sheet or note document is open (PDFs and the graph don't
+    /// hold unsaved edits).
+    fn document_open(&self) -> bool {
+        self.editor.is_some() || self.pdf_viewer.is_some() || self.sheet_viewer.is_some()
     }
 
     fn open_note(&mut self, note: Note) {
@@ -781,15 +1219,26 @@ impl MnemonicApp {
             return;
         }
         self.close_document();
-        if self.editor.is_some() {
-            return; // current note failed to save; stay on it
+        if self.editor.is_some() || self.sheet_viewer.is_some() {
+            return; // current document failed to save; stay on it
         }
         self.editor_ui = EditorUi::for_title(&note.frontmatter.title);
-        self.editor = Some(MarkdownEditor::open(note));
+        let root = self.vault.as_ref().map(|v| v.root.clone());
+        self.editor = Some(MarkdownEditor::open_in(note, root.as_deref()));
     }
 
-    /// Opens any file (note, canvas, PDF) by path.
+    /// Opens any file (note, canvas, PDF, sheet) by path.
     fn open_file_by_path(&mut self, path: PathBuf) {
+        if crate::sheet::is_sheet_path(&path) {
+            if self.sheet_viewer.as_ref().is_some_and(|v| v.path == path) {
+                return;
+            }
+            self.close_document();
+            if self.editor.is_none() && self.sheet_viewer.is_none() {
+                self.open_sheet(path);
+            }
+            return;
+        }
         if path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
@@ -842,18 +1291,60 @@ impl MnemonicApp {
         }
     }
 
-    /// Resolves a clicked `[[wikilink]]`, creating the note if it doesn't
-    /// exist yet (§3.2.2).
-    fn navigate_wikilink(&mut self, title: &str) {
+    /// Follows a clicked `[[wikilink]]` reference (`Title`, `Title#Heading`
+    /// or `file.pdf#page=N`), creating the note if it doesn't exist yet —
+    /// Obsidian's click-to-create (§3.2.2).
+    fn navigate_wikilink(&mut self, reference: &str) {
+        let link = WikiLink::parse(reference);
+        if link.target.is_empty() {
+            return;
+        }
+        self.close_graph_view();
+        let key = title_key(&link.target);
+
+        if link.is_pdf() {
+            let pdf = self.pdf_documents.iter().find(|p| {
+                p.file_name()
+                    .is_some_and(|n| title_key(&n.to_string_lossy()) == key)
+            });
+            match pdf.cloned() {
+                Some(path) => {
+                    self.close_document();
+                    if self.editor.is_none() {
+                        match link.page() {
+                            Some(page) => self.open_pdf_at_page(path, page - 1),
+                            None => self.open_pdf(path),
+                        }
+                    }
+                }
+                None => self.toast(ToastKind::Error, "toast-link-pdf-missing", &[("name", &link.target)]),
+            }
+            return;
+        }
+
         let existing = self.vault.as_ref().and_then(|vault| {
             vault
                 .notes
                 .iter()
-                .find(|n| !n.frontmatter.trashed && n.frontmatter.title.eq_ignore_ascii_case(title))
+                .find(|n| !n.frontmatter.trashed && title_key(&n.frontmatter.title) == key)
                 .cloned()
         });
         if let Some(note) = existing {
             self.open_note(note);
+            if let (Some(heading), Some(editor)) = (&link.heading, self.editor.as_mut()) {
+                // Headings and `^block` anchors are scrolled to in the
+                // rendered view.
+                if editor.mode == EditorMode::Source {
+                    editor.mode = EditorMode::Reading;
+                }
+                if let Some(block_id) = heading.strip_prefix('^') {
+                    editor.scroll_to_block(block_id);
+                } else {
+                    self.markdown_cache
+                        .scroll_to_id_target_mut()
+                        .replace(crate::markdown::renderer::slugify(heading));
+                }
+            }
             return;
         }
         let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
@@ -863,13 +1354,92 @@ impl MnemonicApp {
         if self.editor.is_some() {
             return;
         }
-        match Note::create(&root, title, "") {
+        match Note::create(&root, &link.target, "") {
             Ok(note) => {
                 self.rescan_and_reindex();
                 self.open_note(note);
             }
             Err(e) => self.report_error("error-context-create-note", e),
         }
+    }
+
+    /// After note `renamed_id` changed title from `old_title` to
+    /// `new_title`, rewrites `[[old_title…]]` links in every other note
+    /// (Obsidian's "update internal links"), with an undo toast.
+    fn propagate_rename(&mut self, renamed_id: Uuid, old_title: &str, new_title: &str) {
+        if title_key(old_title) == title_key(new_title) && old_title.trim() == new_title.trim() {
+            return;
+        }
+        let open_path = self.editor.as_ref().map(|e| e.note.path.clone());
+        let Some(vault) = self.vault.as_mut() else {
+            return;
+        };
+        let mut previous: Vec<(PathBuf, String)> = Vec::new();
+        let mut save_error = None;
+        let mut editor_body = None;
+        for note in vault.notes.iter_mut() {
+            if note.frontmatter.id == renamed_id || note.frontmatter.trashed {
+                continue;
+            }
+            let Some(body) = wikilink::rewrite_link_target(&note.body, old_title, new_title) else {
+                continue;
+            };
+            if open_path.as_ref() == Some(&note.path) {
+                // The open editor owns this body; update it there so its
+                // autosave doesn't write the old links back.
+                editor_body = Some(body);
+                continue;
+            }
+            let old_body = std::mem::replace(&mut note.body, body);
+            match note.save() {
+                Ok(()) => previous.push((note.path.clone(), old_body)),
+                Err(e) => {
+                    note.body = old_body;
+                    save_error = Some(e);
+                }
+            }
+        }
+        let mut updated = previous.len();
+        if let (Some(body), Some(editor)) = (editor_body, self.editor.as_mut()) {
+            previous.push((editor.note.path.clone(), editor.note.body.clone()));
+            editor.set_body(body);
+            updated += 1;
+        }
+        if let Some(e) = save_error {
+            self.report_error("error-context-save-note", e);
+        }
+        if updated == 0 {
+            return;
+        }
+        self.ignore_watcher_until = Some(Instant::now() + SELF_WRITE_GRACE);
+        let changed: Vec<Note> = self
+            .vault
+            .as_ref()
+            .map(|v| {
+                v.notes
+                    .iter()
+                    .filter(|n| previous.iter().any(|(p, _)| *p == n.path))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for note in &changed {
+            if let Some(index) = self.index.as_mut()
+                && let Err(e) = index.upsert_note(note)
+            {
+                log::warn!("app: updating links in index failed: {e:#}");
+            }
+            self.reindex_note(note);
+        }
+        self.index_changed();
+        let msg = self.t_args("toast-links-updated", &[("count", &updated.to_string())]);
+        let undo = self.t("toast-undo");
+        self.toasts.push_with_action(
+            ToastKind::Success,
+            msg,
+            undo,
+            ToastAction::RestoreBodies(previous),
+        );
     }
 
     // ─── File operations (with undo) ─────────────────────────────────────
@@ -974,6 +1544,15 @@ impl MnemonicApp {
         {
             self.pdf_viewer = None;
         }
+        if self
+            .sheet_viewer
+            .as_ref()
+            .is_some_and(|v| v.path.starts_with(path))
+        {
+            // Unsaved edits of a sheet being trashed go with it; the file
+            // is restorable from Trash.
+            self.sheet_viewer = None;
+        }
 
         let pdfs: Vec<PathBuf> = self
             .pdf_documents
@@ -1074,6 +1653,26 @@ impl MnemonicApp {
             ToastAction::ToggleArchived(id) => {
                 self.mutate_note(id, |n| n.frontmatter.archived = !n.frontmatter.archived);
             }
+            ToastAction::RestoreBodies(bodies) => {
+                for (path, body) in bodies {
+                    if let Some(editor) = self.editor.as_mut()
+                        && editor.note.path == path
+                    {
+                        editor.set_body(body);
+                        continue;
+                    }
+                    if let Some(mut note) = self.note_by_path(&path) {
+                        note.body = body;
+                        if let Err(e) = note.save() {
+                            self.report_error("error-context-save-note", e);
+                            continue;
+                        }
+                        self.reindex_note(&note);
+                    }
+                }
+                self.ignore_watcher_until = Some(Instant::now() + SELF_WRITE_GRACE);
+                self.rescan_and_reindex();
+            }
         }
     }
 
@@ -1107,6 +1706,7 @@ impl MnemonicApp {
             };
         }
         self.relocate_pdfs(&src_path, &target_path);
+        self.relocate_open_sheet(&src_path, &target_path);
         let is_root = self.vault.as_ref().is_some_and(|v| v.root == dest_dir);
         if !is_root {
             self.expanded_folders.insert(dest_dir.clone());
@@ -1195,12 +1795,16 @@ impl MnemonicApp {
                 self.editor_ui.title_buffer = new_name;
                 self.save_editor_now();
             } else {
-                note.frontmatter.title = new_name;
+                let old_title = std::mem::replace(&mut note.frontmatter.title, new_name);
                 if let Err(e) = note.save() {
                     self.report_error("error-context-save-note", e);
                     return;
                 }
+                if let Err(e) = note.sync_file_name_with_title() {
+                    self.report_error("error-context-move-file", e);
+                }
                 self.reindex_note(&note);
+                self.propagate_rename(note.frontmatter.id, &old_title, &note.frontmatter.title);
             }
             self.rescan_and_reindex();
             return;
@@ -1233,6 +1837,7 @@ impl MnemonicApp {
             return;
         }
         self.relocate_pdfs(&path, &new_path);
+        self.relocate_open_sheet(&path, &new_path);
         self.rescan_and_reindex();
     }
 
@@ -1286,6 +1891,7 @@ impl MnemonicApp {
 
     fn modal_open(&self) -> bool {
         self.prompt_modal.is_some()
+            || self.conflict_modal
             || self.move_modal.is_some()
             || self.confirm_delete.is_some()
             || self.confirm_empty_trash
@@ -1298,21 +1904,40 @@ impl MnemonicApp {
                 .is_some_and(|v| v.has_dialog_open())
     }
 
+    /// The chord bound to `action` (`config.toml` `[hotkeys]`, else the
+    /// default), parsed; an unparseable user chord logs once per frame and
+    /// falls back to the default.
+    fn hotkey(&self, action: &str) -> Option<KeyboardShortcut> {
+        let default = hotkeys::default_chord(action)?;
+        let chord = self.settings.chord(action, default);
+        hotkeys::parse_chord(chord).or_else(|| {
+            log::warn!("hotkeys: cannot parse `{chord}` for `{action}`, using `{default}`");
+            hotkeys::parse_chord(default)
+        })
+    }
+
+    /// Display glyphs for `action`'s chord (`⌘K`), for hints and the
+    /// cheat sheet.
+    pub(super) fn hotkey_label(&self, action: &str) -> String {
+        let default = hotkeys::default_chord(action).unwrap_or("");
+        hotkeys::display(self.settings.chord(action, default))
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let cmd = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
-        let (palette, new_note, find, save, toggle_read, sidebar, ai, shortcuts) =
-            ctx.input_mut(|i| {
-                (
-                    i.consume_shortcut(&cmd(Key::K)),
-                    i.consume_shortcut(&cmd(Key::N)),
-                    i.consume_shortcut(&cmd(Key::F)),
-                    i.consume_shortcut(&cmd(Key::S)),
-                    i.consume_shortcut(&cmd(Key::E)),
-                    i.consume_shortcut(&cmd(Key::Backslash)),
-                    i.consume_shortcut(&cmd(Key::J)),
-                    i.consume_shortcut(&cmd(Key::Slash)),
-                )
-            });
+        let pressed = |app: &Self, action: &str| {
+            app.hotkey(action)
+                .is_some_and(|s| ctx.input_mut(|i| i.consume_shortcut(&s)))
+        };
+        let palette = pressed(self, "palette");
+        let new_note = pressed(self, "new_note");
+        let find = pressed(self, "search");
+        let save = pressed(self, "save");
+        let toggle_read = pressed(self, "toggle_read");
+        let sidebar = pressed(self, "sidebar");
+        let ai = pressed(self, "ai");
+        let shortcuts = pressed(self, "shortcuts");
+        let graph = pressed(self, "graph");
+        let daily = pressed(self, "daily");
 
         if palette && self.vault.is_some() {
             self.command_palette.toggle();
@@ -1326,18 +1951,32 @@ impl MnemonicApp {
         if new_note {
             self.create_note(None, false);
         }
+        if daily {
+            self.open_daily_note();
+        }
         if find {
             self.close_document();
+            self.close_graph_view();
             self.focus_search = true;
         }
+        if graph {
+            if self.graph.is_some() && !self.document_open() {
+                self.close_graph_view();
+            } else {
+                self.open_graph_view();
+            }
+        }
         if save && self.editor.is_some() && self.save_editor_now() {
+            self.toast(ToastKind::Success, "editor-saved", &[]);
+        }
+        if save && self.sheet_viewer.is_some() && self.save_sheet_now() {
             self.toast(ToastKind::Success, "editor-saved", &[]);
         }
         if toggle_read && let Some(editor) = self.editor.as_mut() {
             editor.mode = match editor.mode {
                 EditorMode::Source => EditorMode::Reading,
                 EditorMode::Reading => EditorMode::Source,
-                EditorMode::Edgeless => EditorMode::Edgeless,
+                other => other,
             };
         }
         if sidebar {
@@ -1358,14 +1997,23 @@ impl MnemonicApp {
             .editor
             .as_ref()
             .is_some_and(|e| e.canvas_interaction.editing_text_elem.is_some());
-        if (self.editor.is_some() || self.pdf_viewer.is_some())
+        if (self.document_open() || self.graph.is_some())
             && !ctx.egui_wants_keyboard_input()
             && !egui::Popup::is_any_open(ctx)
             && !self.editor_ui.popup_visible
             && !editing_canvas_text
             && ctx.input(|i| i.key_pressed(Key::Escape))
         {
+            self.go_back();
+        }
+    }
+
+    /// Steps back one level: document → graph (if it was open) → home.
+    fn go_back(&mut self) {
+        if self.document_open() {
             self.close_document();
+        } else {
+            self.close_graph_view();
         }
     }
 
@@ -1373,12 +2021,19 @@ impl MnemonicApp {
 
     fn show_top_bar(&mut self, ui: &mut egui::Ui) {
         let vault_open = self.vault.is_some();
-        let pdf_title = self.pdf_viewer.as_ref().map(|v| {
-            v.path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default()
-        });
+        let graph_open = self.graph.is_some() && !self.document_open();
+        let pdf_title = self
+            .pdf_viewer
+            .as_ref()
+            .map(|v| sheet::file_name(&v.path))
+            .or_else(|| {
+                // Sheets reuse the plain document title bar; `•` marks
+                // unsaved edits.
+                self.sheet_viewer.as_ref().map(|v| {
+                    let dirty = if v.is_dirty() { " •" } else { "" };
+                    format!("{}{dirty}", sheet::file_name(&v.path))
+                })
+            });
         let context = if !vault_open {
             ui::TopBarContext::Welcome
         } else if let Some(editor) = self.editor.as_ref() {
@@ -1388,6 +2043,7 @@ impl MnemonicApp {
                     EditorMode::Source => ui::EditorModeTab::Write,
                     EditorMode::Reading => ui::EditorModeTab::Read,
                     EditorMode::Edgeless => ui::EditorModeTab::Canvas,
+                    EditorMode::Split => ui::EditorModeTab::Split,
                 },
                 save_state: if self.editor_ui.save_failed {
                     ui::SaveState::Failed
@@ -1402,6 +2058,10 @@ impl MnemonicApp {
             }
         } else if let Some(title) = pdf_title {
             ui::TopBarContext::Pdf { title }
+        } else if self.graph.is_some() {
+            ui::TopBarContext::Pdf {
+                title: self.t("graph-title"),
+            }
         } else {
             ui::TopBarContext::Home {
                 search: &mut self.search_text,
@@ -1412,6 +2072,7 @@ impl MnemonicApp {
             vault_open,
             sidebar_open: self.sidebar_open,
             chat_open: self.chat_sidebar_open,
+            graph_open,
             theme_mode: self.theme_mode,
             indexing_jobs: self.index_jobs_pending,
         };
@@ -1443,25 +2104,18 @@ impl MnemonicApp {
                         self.search_results.clear();
                     }
                 }
-                ui::TopBarEvent::Back => self.close_document(),
-                ui::TopBarEvent::CommitTitle => {
-                    let title = self.editor_ui.title_buffer.trim().to_string();
-                    let mut changed = false;
-                    if let Some(editor) = self.editor.as_mut() {
-                        if title.is_empty() {
-                            self.editor_ui.title_buffer = editor.note.frontmatter.title.clone();
-                        } else if title != editor.note.frontmatter.title {
-                            editor.set_title(title);
-                            changed = true;
-                        }
-                    }
-                    if changed {
-                        self.save_editor_now();
+                ui::TopBarEvent::Back => self.go_back(),
+                ui::TopBarEvent::ToggleGraph => {
+                    if self.graph.is_some() && !self.document_open() {
+                        self.close_graph_view();
+                    } else {
+                        self.open_graph_view();
                     }
                 }
+                ui::TopBarEvent::CommitTitle => self.commit_title_buffer(),
                 ui::TopBarEvent::SetEditorMode(tab) => {
                     if let Some(editor) = self.editor.as_mut() {
-                        if editor.mode == EditorMode::Edgeless {
+                        if editor.mode.shows_canvas() {
                             editor.sync_canvas_to_body();
                         }
                         editor.mode = match tab {
@@ -1470,6 +2124,10 @@ impl MnemonicApp {
                             ui::EditorModeTab::Canvas => {
                                 editor.ensure_canvas();
                                 EditorMode::Edgeless
+                            }
+                            ui::EditorModeTab::Split => {
+                                editor.ensure_canvas();
+                                EditorMode::Split
                             }
                         };
                     }
@@ -1527,7 +2185,8 @@ impl MnemonicApp {
             .editor
             .as_ref()
             .map(|e| e.note.path.as_path())
-            .or_else(|| self.pdf_viewer.as_ref().map(|p| p.path.as_path()));
+            .or_else(|| self.pdf_viewer.as_ref().map(|p| p.path.as_path()))
+            .or_else(|| self.sheet_viewer.as_ref().map(|s| s.path.as_path()));
         let state = ui::SidebarState {
             vault_root: &vault.root,
             vault_name: &vault_name,
@@ -1536,7 +2195,7 @@ impl MnemonicApp {
             expanded_folders: &self.expanded_folders,
             file_tree: self.derived.file_tree.as_ref(),
             current_filter: &self.doc_filter,
-            home_active: self.editor.is_none() && self.pdf_viewer.is_none(),
+            home_active: !self.document_open(),
             all_tags: &self.derived.tags,
             counts: self.derived.counts,
         };
@@ -1555,6 +2214,7 @@ impl MnemonicApp {
         match event {
             E::SelectFilter(filter) => {
                 self.close_document();
+                self.close_graph_view();
                 self.doc_filter = filter;
                 self.selected.clear();
                 self.selection_mode = false;
@@ -1571,6 +2231,8 @@ impl MnemonicApp {
             }
             E::CreateNote { parent_dir } => self.create_note(parent_dir, false),
             E::NewCanvas { parent_dir } => self.create_note(parent_dir, true),
+            E::NewSheet { parent_dir } => self.create_sheet(parent_dir),
+            E::ImportSheet => self.import_sheet_dialog(),
             E::CreateFolder { parent_dir } => {
                 self.prompt_modal = Some(PromptModalState {
                     kind: PromptKind::CreateFolder { parent_dir },
@@ -1640,20 +2302,26 @@ impl MnemonicApp {
             ui::ChatSidebarEvent::SendMessage(text) => self.send_chat_message(text),
             ui::ChatSidebarEvent::ClearHistory => self.chat_messages.clear(),
             ui::ChatSidebarEvent::Close => self.chat_sidebar_open = false,
-            ui::ChatSidebarEvent::OpenCitation(citation) => match citation.page_index {
-                Some(page_index) => {
-                    self.close_document();
-                    if self.editor.is_none() {
-                        self.open_pdf_at_page(citation.file_path, page_index);
-                    }
-                }
-                None => self.open_file_by_path(citation.file_path),
-            },
+            ui::ChatSidebarEvent::OpenCitation(citation) => {
+                let page = citation.page_index.map(|p| p + 1);
+                self.open_chunk_source(citation.file_path, page);
+            }
         }
     }
 
     fn show_modals(&mut self, ctx: &egui::Context) {
         let cancel = self.t("confirm-cancel");
+
+        if self.conflict_modal {
+            let name = self
+                .editor
+                .as_ref()
+                .and_then(|e| e.note.path.file_name().map(|n| n.to_string_lossy().to_string()))
+                .unwrap_or_default();
+            if let Some(choice) = ui::ConflictModal::show(ctx, &self.locales, &name) {
+                self.resolve_conflict(choice);
+            }
+        }
 
         if let Some(mut modal) = self.prompt_modal.take() {
             match ui::PromptInputModal::show(
@@ -1791,8 +2459,14 @@ impl MnemonicApp {
             }
         }
 
-        if self.show_shortcuts && ui::ShortcutsModal::show(ctx, &self.locales) {
-            self.show_shortcuts = false;
+        if self.show_shortcuts {
+            let chords: Vec<(String, &str)> = hotkeys::ACTION_LABELS
+                .iter()
+                .map(|(action, label)| (self.hotkey_label(action), *label))
+                .collect();
+            if ui::ShortcutsModal::show(ctx, &self.locales, &chords) {
+                self.show_shortcuts = false;
+            }
         }
     }
 
@@ -1884,7 +2558,9 @@ impl eframe::App for MnemonicApp {
 
         // Never lose edits on quit: flush the open note before the window
         // closes (works regardless of which eframe backend is compiled in).
-        if ctx.input(|i| i.viewport().close_requested()) && !self.save_editor_now() {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !(self.save_editor_now() & self.save_sheet_now())
+        {
             if self.close_blocked_once {
                 log::error!("app: closing with unsaved changes after a failed save");
             } else {
@@ -1912,8 +2588,12 @@ impl eframe::App for MnemonicApp {
                     self.show_welcome(ui);
                 } else if self.editor.is_some() {
                     self.show_editor(ui);
+                } else if self.sheet_viewer.is_some() {
+                    self.show_sheet_viewer(ui);
                 } else if self.pdf_viewer.is_some() {
                     self.show_pdf_viewer(ui);
+                } else if self.graph.is_some() {
+                    self.show_graph(ui);
                 } else {
                     self.show_grid(ui);
                 }
@@ -1941,6 +2621,24 @@ fn locales_dir() -> PathBuf {
         }
     }
     PathBuf::from("locales")
+}
+
+/// The diagram of a canvas note for its card: the `.canvas` sidecar when
+/// there is one (bound text resolved from the body), else the legacy
+/// in-body formats.
+fn load_canvas_for_preview(note: &Note) -> CanvasDocument {
+    if note.has_sidecar
+        && let Ok(json) = std::fs::read_to_string(note.sidecar_path())
+        && let Ok(doc) = CanvasDocument::from_json_canvas_str(
+            &json,
+            &note.frontmatter.title,
+            None,
+            &|b| crate::markdown::blocks::block_text(&note.body, &b.block_id),
+        )
+    {
+        return doc;
+    }
+    CanvasDocument::from_markdown_body(&note.frontmatter.title, &note.body)
 }
 
 /// Localized "3 sticky notes · 2 shapes" line for canvas cards.

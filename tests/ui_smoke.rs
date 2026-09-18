@@ -43,7 +43,8 @@ fn seed_vault(vault: &Path) {
     let mut plan = Note::create(
         &projects,
         "Rencana Peluncuran Q4",
-        "Target rilis akhir Oktober.\n\n- [x] Riset\n- [x] Desain\n- [ ] Uji coba\n",
+        "Target rilis akhir Oktober. Lihat [[Catatan Kuliah — Struktur Data#Hash Table]] \
+         dan [[Anggaran 2027]].\n\n- [x] Riset\n- [x] Desain\n- [ ] Uji coba\n",
     )
     .unwrap();
     plan.frontmatter.pinned = true;
@@ -64,7 +65,7 @@ fn seed_vault(vault: &Path) {
     Note::create(
         vault,
         "Catatan Kuliah — Struktur Data",
-        "# Pohon Biner\nSetiap node punya dua anak.\n\n# Hash Table\nRata-rata O(1).",
+        "# Pohon Biner\nSetiap node punya dua anak, tinggi $h = \\log_2 n$.\n\n# Hash Table\nRata-rata O(1). #struktur-data\n\n$$\\sum_{i=1}^{n} \\frac{1}{i} \\approx \\ln n$$\n",
     )
     .unwrap();
     Note::create_canvas(vault, "Diagram Arsitektur").unwrap();
@@ -159,6 +160,33 @@ fn walk_screens(prefix: &str, vault: &Path) {
     press(&mut h, Key::Escape);
     snapshot(&mut h, &format!("{prefix}-07-home-after-edit"));
 
+    // Relationship graph: opens with ⌘G, Esc returns home.
+    cmd(&mut h, Key::G);
+    step(&mut h);
+    snapshot(&mut h, &format!("{prefix}-09-graph"));
+    press(&mut h, Key::Escape);
+
+    // A linked note shows backlinks, related notes and the local graph.
+    cmd(&mut h, Key::K);
+    type_text(&mut h, "Struktur Data");
+    press(&mut h, Key::Enter);
+    step(&mut h);
+    snapshot(&mut h, &format!("{prefix}-10-note-links-panel"));
+    // Reading mode renders math and tags.
+    cmd(&mut h, Key::E);
+    step(&mut h);
+    snapshot(&mut h, &format!("{prefix}-10b-note-reading"));
+    press(&mut h, Key::Escape);
+
+    // A diagram-bound note opens in Split mode: Markdown left, canvas right.
+    cmd(&mut h, Key::K);
+    type_text(&mut h, "Diagram Arsitektur");
+    press(&mut h, Key::Enter);
+    step(&mut h);
+    snapshot(&mut h, &format!("{prefix}-11-split-diagram"));
+    press(&mut h, Key::Escape);
+    press(&mut h, Key::Escape);
+
     // Narrow window: layout must still hold together.
     h.set_size(egui::vec2(820.0, 600.0));
     step(&mut h);
@@ -176,6 +204,10 @@ fn walk_screens(prefix: &str, vault: &Path) {
         .filter_map(|e| Note::load(e.path()).ok())
         .any(|n| n.frontmatter.title == "Belanja Mingguan");
     assert!(titled, "typed title should be saved after pressing Esc");
+    // Obsidian convention: the file is named after the title.
+    assert!(vault.join("Belanja Mingguan.md").exists(), "note file should be named after its title");
+    // The canvas note keeps its diagram in a JSON Canvas sidecar.
+    assert!(vault.join("Diagram Arsitektur.canvas").exists(), "canvas sidecar should exist");
 }
 
 #[test]

@@ -6,16 +6,84 @@
 
 use super::Note;
 
-/// Distinct tags across non-trashed notes, with how many notes use each,
-/// sorted alphabetically (case-insensitive) — backs the sidebar's
-/// "Berlabel" section and the label manager.
+/// Inline `#tag`s in a note body (Obsidian §Fase 1.2): a `#` at the start
+/// of a line or after whitespace/punctuation, followed by letters, digits,
+/// `_`, `-` or `/` (nested tags) with at least one non-digit character,
+/// outside fenced code and inline code. Order of first appearance,
+/// case-insensitively deduplicated, without the `#`.
+pub fn inline_tags(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_fence = false;
+    for line in body.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || t.starts_with('#') && t.chars().find(|c| *c != '#') == Some(' ') {
+            // Fenced code, or a markdown heading.
+            continue;
+        }
+        let mut in_code = false;
+        let mut prev: Option<char> = None;
+        let mut chars = line.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if c == '`' {
+                in_code = !in_code;
+                prev = Some(c);
+                continue;
+            }
+            if in_code || c != '#' {
+                prev = Some(c);
+                continue;
+            }
+            let boundary = prev.is_none_or(|p| p.is_whitespace() || "([{\"'".contains(p));
+            if !boundary {
+                prev = Some(c);
+                continue;
+            }
+            let rest = &line[i + 1..];
+            let len = rest
+                .chars()
+                .take_while(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '/'))
+                .map(char::len_utf8)
+                .sum::<usize>();
+            let tag = rest[..len].trim_matches('/');
+            if !tag.is_empty() && tag.chars().any(|ch| !ch.is_ascii_digit()) {
+                if !out.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                    out.push(tag.to_string());
+                }
+                for _ in 0..rest[..len].chars().count() {
+                    chars.next();
+                }
+            }
+            prev = Some(c);
+        }
+    }
+    out
+}
+
+/// `true` when `tag` is `filter` or nested under it (`projek/web` matches
+/// `projek`), case-insensitively.
+pub fn matches_tag(tag: &str, filter: &str) -> bool {
+    let tag = tag.trim_matches('/');
+    let filter = filter.trim_matches('/');
+    tag.eq_ignore_ascii_case(filter)
+        || (tag.len() > filter.len()
+            && tag[..filter.len()].eq_ignore_ascii_case(filter)
+            && tag[filter.len()..].starts_with('/'))
+}
+
+/// Distinct tags across non-trashed notes (frontmatter and inline), with
+/// how many notes use each, sorted alphabetically (case-insensitive) —
+/// backs the sidebar's "Berlabel" section and the label manager.
 pub fn all_tags(notes: &[Note]) -> Vec<(String, usize)> {
     let mut counts: std::collections::HashMap<String, (String, usize)> = std::collections::HashMap::new();
     for note in notes {
         if note.frontmatter.trashed {
             continue;
         }
-        for tag in &note.frontmatter.tags {
+        for tag in &note.effective_tags() {
             let entry = counts
                 .entry(tag.to_lowercase())
                 .or_insert_with(|| (tag.clone(), 0));
@@ -79,6 +147,30 @@ fn dedupe_case_insensitive(tags: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_tags_finds_hashtags_outside_code_and_headings() {
+        let body = "# Heading bukan tag
+Catatan #projek/web dan #Rumah, lagi #projek/web
+`#kode` bukan
+```
+#fence bukan
+```
+angka #2024 bukan, tapi #q1-2024 ya (#dalam-kurung)";
+        assert_eq!(
+            inline_tags(body),
+            vec!["projek/web", "Rumah", "q1-2024", "dalam-kurung"]
+        );
+    }
+
+    #[test]
+    fn matches_tag_understands_nesting() {
+        assert!(matches_tag("projek/web", "projek"));
+        assert!(matches_tag("Projek", "projek"));
+        assert!(!matches_tag("projekan", "projek"));
+        assert!(!matches_tag("projek", "projek/web"));
+    }
+
     use tempfile::tempdir;
 
     fn note_with_tags(dir: &std::path::Path, title: &str, tags: &[&str]) -> Note {

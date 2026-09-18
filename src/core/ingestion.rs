@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use uuid::Uuid;
 
 use super::chunker::{self, DEFAULT_CHUNK_TOKENS, DEFAULT_OVERLAP_TOKENS};
+use crate::canvas::CanvasDocument;
 use crate::notes::Note;
 use crate::pdf;
 
@@ -43,12 +44,77 @@ pub fn pdf_doc_id(path: &Path) -> Uuid {
     Uuid::new_v5(&PDF_DOC_NAMESPACE, path.to_string_lossy().as_bytes())
 }
 
-/// Chunks a note's body — the same retrieval pipeline that PDFs feed also
-/// covers the vault's own `.md` files (§3.3 point 1). `doc_id` reuses the
-/// note's own frontmatter id, so re-chunking after an edit keeps it
-/// stable.
+/// The text of a note that is worth indexing: the Markdown body, or for a
+/// canvas note the text on its stickies/shapes/connectors (its body is a
+/// serialized diagram that would only add noise).
+/// Fingerprint of everything that feeds a note's chunks (title + body):
+/// when it matches `IndexStore::document_hash`, re-embedding is skipped.
+pub fn note_content_hash(note: &Note) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    note.frontmatter.title.hash(&mut h);
+    note.body.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+pub fn note_index_text(note: &Note) -> String {
+    if note.is_canvas() {
+        CanvasDocument::from_markdown_body(&note.frontmatter.title, &note.body)
+            .extract_searchable_text()
+    } else {
+        note.body.clone()
+    }
+}
+
+/// The nearest Markdown heading at or above byte `offset` in `body`
+/// (fence-aware), without its `#` markers.
+pub fn heading_at(body: &str, offset: usize) -> Option<String> {
+    let mut heading = None;
+    let mut in_fence = false;
+    let mut pos = 0;
+    for line in body.split_inclusive('\n') {
+        if pos > offset {
+            break;
+        }
+        pos += line.len();
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+        if (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ') {
+            heading = Some(trimmed[hashes..].trim().to_string());
+        }
+    }
+    heading
+}
+
+/// What actually gets embedded for a chunk: the document title and the
+/// section heading give short chunks the context they lack on their own
+/// ("Bahan: 2 butir telur" means little without "Resep Nasi Goreng").
+pub fn embedding_input(title: &str, heading: Option<&str>, text: &str) -> String {
+    match (title.trim(), heading.map(str::trim).filter(|h| !h.is_empty())) {
+        ("", None) => text.to_string(),
+        ("", Some(h)) => format!("{h}\n{text}"),
+        (t, None) => format!("{t}\n{text}"),
+        (t, Some(h)) => format!("{t} › {h}\n{text}"),
+    }
+}
+
+/// Chunks a note's indexable text (`note_index_text`) — the same retrieval
+/// pipeline that PDFs feed also covers the vault's own `.md` files (§3.3
+/// point 1). `doc_id` reuses the note's own frontmatter id, so re-chunking
+/// after an edit keeps it stable.
 pub fn chunk_note(note: &Note) -> Vec<DocumentChunk> {
-    chunker::chunk_text(&note.body, DEFAULT_CHUNK_TOKENS, DEFAULT_OVERLAP_TOKENS)
+    chunker::chunk_text(
+        &note_index_text(note),
+        DEFAULT_CHUNK_TOKENS,
+        DEFAULT_OVERLAP_TOKENS,
+    )
         .into_iter()
         .map(|c| DocumentChunk {
             doc_id: note.frontmatter.id,
@@ -88,11 +154,83 @@ pub fn chunk_pdf(path: &Path) -> Result<Vec<DocumentChunk>> {
     Ok(chunks)
 }
 
+/// Namespace for sheet `doc_id`s (UUID v5 of the path), like
+/// `PDF_DOC_NAMESPACE` — sheets have no frontmatter id of their own.
+const SHEET_DOC_NAMESPACE: Uuid = Uuid::from_bytes([
+    0x6d, 0x6e, 0x65, 0x6d, 0x2d, 0x73, 0x68, 0x65, 0x65, 0x74, 0x2d, 0x64, 0x6f, 0x63, 0x00, 0x00,
+]);
+
+/// Stable `doc_id` of the sheet file at `path` (§3.8.4).
+pub fn sheet_doc_id(path: &Path) -> Uuid {
+    Uuid::new_v5(&SHEET_DOC_NAMESPACE, path.to_string_lossy().as_bytes())
+}
+
+/// Cheap change stamp (mtime + size) recorded as a sheet's content hash,
+/// so a rescan can skip unchanged sheets without parsing them. `None`
+/// when the file can't be stat'ed.
+pub fn sheet_file_stamp(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(format!("sheet:{modified}:{}", meta.len()))
+}
+
+/// Loads and chunks a CSV/XLSX sheet (§3.8.4): each chunk is a group of
+/// rows rendered as `Column: value; …`, with `page_num` holding the
+/// chunk's first 1-based data row so citations can jump to it (worksheet
+/// names are folded into the text for multi-sheet workbooks).
+pub fn chunk_sheet(path: &Path) -> Result<Vec<DocumentChunk>> {
+    let file = crate::sheet::load(path)
+        .with_context(|| format!("ingesting sheet {}", path.display()))?;
+    let doc_id = sheet_doc_id(path);
+    Ok(crate::sheet::ingest::chunk_sheet_file(&file)
+        .into_iter()
+        .map(|c| DocumentChunk {
+            doc_id,
+            file_path: path.to_path_buf(),
+            page_num: Some(c.first_row.max(1)),
+            char_offset: 0,
+            text_content: match &c.sheet {
+                Some(name) => format!("Sheet: {name}\n{}", c.text),
+                None => c.text,
+            },
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use lopdf::{Document, Object, Stream, content::Content, content::Operation, dictionary};
     use tempfile::tempdir;
+
+    #[test]
+    fn heading_at_finds_the_nearest_heading_above_and_skips_fences() {
+        let body = "intro\n# Resep\nbahan\n```\n# bukan\n```\n## Langkah\naduk";
+        assert_eq!(heading_at(body, 0), None);
+        assert_eq!(heading_at(body, body.find("bahan").unwrap()).as_deref(), Some("Resep"));
+        assert_eq!(heading_at(body, body.find("aduk").unwrap()).as_deref(), Some("Langkah"));
+        assert_eq!(heading_at("#tag bukan heading\nx", 20), None);
+    }
+
+    #[test]
+    fn embedding_input_prefixes_title_and_heading() {
+        assert_eq!(embedding_input("Resep", Some("Bahan"), "telur"), "Resep › Bahan\ntelur");
+        assert_eq!(embedding_input("Resep", None, "telur"), "Resep\ntelur");
+        assert_eq!(embedding_input(" ", Some(" "), "telur"), "telur");
+    }
+
+    #[test]
+    fn canvas_notes_index_their_element_text_not_the_serialized_body() {
+        let dir = tempdir().unwrap();
+        let note = Note::create_canvas(dir.path(), "Papan").unwrap();
+        let text = note_index_text(&note);
+        assert!(!text.contains("```"));
+    }
 
     fn write_test_pdf(path: &Path, pages_text: &[&str]) {
         let mut doc = Document::with_version("1.5");
@@ -223,5 +361,19 @@ mod tests {
     fn chunk_pdf_propagates_extraction_errors() {
         let missing = Path::new("/nonexistent/missing.pdf");
         assert!(chunk_pdf(missing).is_err());
+    }
+
+    #[test]
+    fn chunk_sheet_labels_rows_and_records_first_row() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("Belanja.csv");
+        std::fs::write(&path, "Item;Harga\nKopi;12000\nTeh;8000\n").unwrap();
+        let chunks = chunk_sheet(&path).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].page_num, Some(1));
+        assert_eq!(chunks[0].doc_id, sheet_doc_id(&path));
+        assert!(chunks[0].text_content.contains("Item: Teh; Harga: 8000"));
+        assert!(sheet_file_stamp(&path).unwrap().starts_with("sheet:"));
+        assert!(chunk_sheet(&dir.path().join("missing.csv")).is_err());
     }
 }

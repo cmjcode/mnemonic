@@ -11,12 +11,19 @@ use egui_icons::icons::{
     ICON_AUTO_AWESOME, ICON_CHECK, ICON_CHECK_CIRCLE, ICON_CIRCLE, ICON_CLOSE, ICON_DELETE,
     ICON_DELETE_FOREVER, ICON_DESCRIPTION, ICON_DRAW, ICON_INVENTORY_2, ICON_KEEP, ICON_MORE_HORIZ,
     ICON_NOTE_ADD, ICON_OPEN_IN_NEW, ICON_PALETTE, ICON_PICTURE_AS_PDF, ICON_PUSH_PIN,
-    ICON_RESTORE_FROM_TRASH, ICON_SEARCH, ICON_SELECT_ALL, ICON_SORT, ICON_UPLOAD_FILE,
+    ICON_RESTORE_FROM_TRASH, ICON_SEARCH, ICON_SELECT_ALL, ICON_SORT, ICON_TABLE_CHART, ICON_UPLOAD_FILE,
 };
 use uuid::Uuid;
 
 use super::{MnemonicApp, ToastAction};
-use crate::core::search::SearchHit;
+use crate::core::search::{MatchKind, SearchHit};
+use crate::core::storage::{HIGHLIGHT_END, HIGHLIGHT_START};
+
+/// Most AI search results listed under the keyword-filtered grid.
+/// Height of the diagram thumbnail on a canvas card.
+const CANVAS_THUMB_HEIGHT: f32 = 110.0;
+
+const SEARCH_HITS_SHOWN: usize = 8;
 use crate::i18n::LocaleManager;
 use crate::notes::query::{self, GridFilter, SortMode};
 use crate::notes::{Note, Vault};
@@ -135,7 +142,7 @@ impl MnemonicApp {
                         .is_none_or(|n| !n.frontmatter.trashed)
                 })
                 .filter(|h| seen_docs.insert(h.chunk.doc_id))
-                .take(5)
+                .take(SEARCH_HITS_SHOWN)
                 .collect()
         };
 
@@ -490,15 +497,9 @@ impl MnemonicApp {
                 self.selected.clear();
                 self.selection_mode = false;
             }
-            GridAction::OpenHit(hit) => match hit.chunk.page_num {
-                Some(page) => {
-                    self.close_document();
-                    if self.editor.is_none() {
-                        self.open_pdf_at_page(hit.chunk.file_path, page.saturating_sub(1));
-                    }
-                }
-                None => self.open_file_by_path(hit.chunk.file_path),
-            },
+            GridAction::OpenHit(hit) => {
+                self.open_chunk_source(hit.chunk.file_path, hit.chunk.page_num);
+            }
             GridAction::TrashPdf(path) => {
                 let name = path
                     .file_name()
@@ -628,13 +629,16 @@ fn card_shell(
     fill: egui::Color32,
     highlighted: bool,
     add_contents: impl FnOnce(&mut egui::Ui, bool),
-) -> Option<egui::Response> {
+) -> (Option<egui::Response>, bool) {
     let p = pal();
     let prev_rect: Option<Rect> = ui.ctx().data(|d| d.get_temp(id));
     let bg = prev_rect.map(|r| ui.interact(r, id.with("bg"), Sense::click()));
-    let menu_open = bg
-        .as_ref()
-        .is_some_and(|r| egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(r)));
+    let bg_popup_id = id.with("bg").with("popup");
+    let more_popup_id = id.with("more").with("popup");
+    let palette_popup_id = id.with("palette").with("popup");
+    let menu_open = egui::Popup::is_id_open(ui.ctx(), bg_popup_id)
+        || egui::Popup::is_id_open(ui.ctx(), more_popup_id)
+        || egui::Popup::is_id_open(ui.ctx(), palette_popup_id);
     let hovered = prev_rect.is_some_and(|r| ui.rect_contains_pointer(r)) || menu_open;
 
     let stroke_color = if highlighted {
@@ -656,7 +660,8 @@ fn card_shell(
         })
         .response;
     ui.ctx().data_mut(|d| d.insert_temp(id, resp.rect));
-    bg.map(|r| r.on_hover_cursor(egui::CursorIcon::PointingHand))
+    let bg_resp = bg.map(|r| r.on_hover_cursor(egui::CursorIcon::PointingHand));
+    (bg_resp, menu_open)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -664,7 +669,7 @@ fn note_card(
     ui: &mut egui::Ui,
     tr: &LocaleManager,
     note: &Note,
-    canvas_preview: Option<&(String, String)>,
+    canvas_preview: Option<&super::CanvasPreview>,
     selection_mode: bool,
     selected: &mut HashSet<Uuid>,
     in_trash: bool,
@@ -679,7 +684,7 @@ fn note_card(
     let fill = theme::note_tint(fm.color.as_deref()).unwrap_or(p.card);
     let card_id = Id::new(("note_card", id));
 
-    let bg = card_shell(ui, card_id, fill, is_selected, |ui, hovered| {
+    let (bg, menu_open) = card_shell(ui, card_id, fill, is_selected, |ui, hovered| {
         // Title row
         ui.horizontal_top(|ui| {
             let (icon, color) = if note.is_canvas() {
@@ -736,13 +741,30 @@ fn note_card(
 
         // Snippet
         let snippet = match canvas_preview {
-            Some((summary, text)) => {
+            Some(preview) => {
+                // Diagram thumbnail (§Fase 3.8): a small vector sketch of
+                // the canvas, then the element summary.
+                if !preview.thumb.is_empty() {
+                    let (rect, _) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), CANVAS_THUMB_HEIGHT),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect(
+                        rect,
+                        theme::RADIUS_SM,
+                        if p.is_dark { p.bg } else { p.surface },
+                        egui::Stroke::new(1.0, p.border),
+                        egui::StrokeKind::Inside,
+                    );
+                    preview.thumb.paint(ui.painter(), rect, p.is_dark);
+                    ui.add_space(4.0);
+                }
                 ui.label(
-                    RichText::new(summary)
+                    RichText::new(&preview.summary)
                         .size(theme::TEXT_XS)
                         .color(p.canvas_icon),
                 );
-                text.clone()
+                preview.snippet.clone()
             }
             None => query::snippet(&note.body, 180),
         };
@@ -784,12 +806,13 @@ fn note_card(
             });
         }
 
-        // Tags
-        if !fm.tags.is_empty() {
+        // Tags (frontmatter + inline `#tag`s)
+        let tags = note.effective_tags();
+        if !tags.is_empty() {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
-                for tag in &fm.tags {
+                for tag in &tags {
                     theme::tag_chip_frame(theme::tag_color(tag)).show(ui, |ui| {
                         ui.label(
                             RichText::new(format!("#{tag}"))
@@ -851,24 +874,30 @@ fn note_card(
                 if !hovered {
                     return;
                 }
-                let more = widgets::icon_button_sized(
+                let more = widgets::icon_button_sized_id(
                     ui,
+                    card_id.with("more"),
                     ICON_MORE_HORIZ.codepoint,
                     &t("sidebar-more-actions"),
                     false,
                     26.0,
                     16.0,
                 );
-                egui::Popup::menu(&more).show(|ui| card_menu(ui, tr, note, actions));
-                let palette = widgets::icon_button_sized(
+                egui::Popup::menu(&more)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| card_menu(ui, tr, note, actions));
+                let palette = widgets::icon_button_sized_id(
                     ui,
+                    card_id.with("palette"),
                     ICON_PALETTE.codepoint,
                     &t("card-color"),
                     false,
                     26.0,
                     16.0,
                 );
-                egui::Popup::menu(&palette).show(|ui| color_menu(ui, tr, note, actions));
+                egui::Popup::menu(&palette)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| color_menu(ui, tr, note, actions));
                 let (pin_icon, pin_tip) = if fm.pinned {
                     (ICON_KEEP.codepoint, t("notes-unpin"))
                 } else {
@@ -884,7 +913,7 @@ fn note_card(
     });
 
     let Some(bg) = bg else { return };
-    if bg.clicked() {
+    if !menu_open && bg.clicked() {
         if selection_mode {
             if !selected.remove(&id) {
                 selected.insert(id);
@@ -894,36 +923,38 @@ fn note_card(
         }
     }
     if !selection_mode {
-        egui::Popup::context_menu(&bg).show(|ui| {
-            if in_trash {
-                ui.set_min_width(220.0);
-                if widgets::menu_item(
-                    ui,
-                    ICON_RESTORE_FROM_TRASH.codepoint,
-                    &t("card-restore"),
-                    None,
-                )
-                .clicked()
-                {
-                    actions.push(GridAction::Restore(note.path.clone()));
-                    ui.close();
+        egui::Popup::context_menu(&bg)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                if in_trash {
+                    ui.set_min_width(220.0);
+                    if widgets::menu_item(
+                        ui,
+                        ICON_RESTORE_FROM_TRASH.codepoint,
+                        &t("card-restore"),
+                        None,
+                    )
+                    .clicked()
+                    {
+                        actions.push(GridAction::Restore(note.path.clone()));
+                        ui.close();
+                    }
+                    if widgets::menu_item_colored(
+                        ui,
+                        ICON_DELETE_FOREVER.codepoint,
+                        &t("card-delete-permanent"),
+                        None,
+                        p.danger,
+                    )
+                    .clicked()
+                    {
+                        actions.push(GridAction::ConfirmDelete(id));
+                        ui.close();
+                    }
+                } else {
+                    card_menu(ui, tr, note, actions);
                 }
-                if widgets::menu_item_colored(
-                    ui,
-                    ICON_DELETE_FOREVER.codepoint,
-                    &t("card-delete-permanent"),
-                    None,
-                    p.danger,
-                )
-                .clicked()
-                {
-                    actions.push(GridAction::ConfirmDelete(id));
-                    ui.close();
-                }
-            } else {
-                card_menu(ui, tr, note, actions);
-            }
-        });
+            });
     }
 }
 
@@ -975,6 +1006,7 @@ fn color_menu(ui: &mut egui::Ui, tr: &LocaleManager, note: &Note, actions: &mut 
         let current = note.frontmatter.color.as_deref();
 
         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
         ui.painter().circle(
             rect.center(),
             9.0,
@@ -991,6 +1023,9 @@ fn color_menu(ui: &mut egui::Ui, tr: &LocaleManager, note: &Note, actions: &mut 
         if current.is_none() {
             ui.painter()
                 .circle_stroke(rect.center(), 11.5, Stroke::new(1.5, p.accent));
+        } else if resp.hovered() {
+            ui.painter()
+                .circle_stroke(rect.center(), 11.5, Stroke::new(1.0, p.border_strong));
         }
         if resp.on_hover_text(tr.t("card-color-none", &[])).clicked() {
             actions.push(GridAction::SetColor(note.frontmatter.id, None));
@@ -998,10 +1033,14 @@ fn color_menu(ui: &mut egui::Ui, tr: &LocaleManager, note: &Note, actions: &mut 
         }
         for (name, color) in theme::PALETTE_SOLID {
             let (rect, resp) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
             ui.painter().circle_filled(rect.center(), 9.0, *color);
             if current == Some(*name) {
                 ui.painter()
                     .circle_stroke(rect.center(), 11.5, Stroke::new(1.5, p.accent));
+            } else if resp.hovered() {
+                ui.painter()
+                    .circle_stroke(rect.center(), 11.5, Stroke::new(1.0, p.border_strong));
             }
             if resp.clicked() {
                 actions.push(GridAction::SetColor(
@@ -1029,7 +1068,7 @@ fn pdf_card(
         .unwrap_or_else(|| "Document.pdf".to_string());
     let card_id = Id::new(("pdf_card", path));
 
-    let bg = card_shell(ui, card_id, p.card, false, |ui, hovered| {
+    let (bg, menu_open) = card_shell(ui, card_id, p.card, false, |ui, hovered| {
         ui.horizontal_top(|ui| {
             ui.label(
                 RichText::new(ICON_PICTURE_AS_PDF.codepoint)
@@ -1086,22 +1125,24 @@ fn pdf_card(
     });
 
     let Some(bg) = bg else { return };
-    if bg.clicked() {
+    if !menu_open && bg.clicked() {
         actions.push(GridAction::Open(path.to_path_buf()));
     }
-    egui::Popup::context_menu(&bg).show(|ui| {
-        ui.set_min_width(200.0);
-        if widgets::menu_item(ui, ICON_OPEN_IN_NEW.codepoint, &t("sidebar-open"), None).clicked() {
-            actions.push(GridAction::Open(path.to_path_buf()));
-            ui.close();
-        }
-        if widgets::menu_item_colored(ui, ICON_DELETE.codepoint, &t("card-trash"), None, p.danger)
-            .clicked()
-        {
-            actions.push(GridAction::TrashPdf(path.to_path_buf()));
-            ui.close();
-        }
-    });
+    egui::Popup::context_menu(&bg)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(200.0);
+            if widgets::menu_item(ui, ICON_OPEN_IN_NEW.codepoint, &t("sidebar-open"), None).clicked() {
+                actions.push(GridAction::Open(path.to_path_buf()));
+                ui.close();
+            }
+            if widgets::menu_item_colored(ui, ICON_DELETE.codepoint, &t("card-trash"), None, p.danger)
+                .clicked()
+            {
+                actions.push(GridAction::TrashPdf(path.to_path_buf()));
+                ui.close();
+            }
+        });
 }
 
 fn semantic_row(
@@ -1113,23 +1154,26 @@ fn semantic_row(
 ) {
     let p = pal();
     let chunk = &hit.chunk;
+    let file_name = chunk
+        .file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     let (icon, color, title) = match chunk.page_num {
+        Some(row) if crate::sheet::is_sheet_path(&chunk.file_path) => (
+            ICON_TABLE_CHART.codepoint,
+            p.sheet_icon,
+            tr.t(
+                "chat-citation-row",
+                &[("name", &file_name), ("row", &row.to_string())],
+            ),
+        ),
         Some(page) => (
             ICON_PICTURE_AS_PDF.codepoint,
             p.pdf_icon,
             tr.t(
                 "chat-citation-page",
-                &[
-                    (
-                        "name",
-                        &chunk
-                            .file_path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default(),
-                    ),
-                    ("page", &page.to_string()),
-                ],
+                &[("name", &file_name), ("page", &page.to_string())],
             ),
         ),
         None => (
@@ -1158,24 +1202,30 @@ fn semantic_row(
                         .font(theme::semibold(theme::TEXT_SM + 0.5))
                         .color(p.text),
                 );
-                if let Some(score) = hit.score {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(tr.t(
-                                "grid-semantic-match",
-                                &[("percent", &format!("{:.0}", score * 100.0))],
-                            ))
-                            .size(theme::TEXT_XS)
-                            .color(p.text_faint),
-                        );
-                    });
-                }
+                let percent = hit.score.map(|s| format!("{:.0}", s * 100.0));
+                let badge = match (hit.kind, percent) {
+                    (MatchKind::Both, Some(pct)) => tr.t("grid-match-both", &[("percent", &pct)]),
+                    (MatchKind::Semantic, Some(pct)) => {
+                        tr.t("grid-semantic-match", &[("percent", &pct)])
+                    }
+                    _ => tr.t("grid-match-keyword", &[]),
+                };
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(badge).size(theme::TEXT_XS).color(p.text_faint));
+                });
             });
-            ui.label(
-                RichText::new(query::snippet(&chunk.text_content, 200))
-                    .size(theme::TEXT_SM)
-                    .color(p.text_dim),
-            );
+            match &hit.snippet {
+                Some(snippet) => {
+                    ui.label(highlighted_snippet(snippet, p.text_dim, p.accent));
+                }
+                None => {
+                    ui.label(
+                        RichText::new(query::snippet(&chunk.text_content, 200))
+                            .size(theme::TEXT_SM)
+                            .color(p.text_dim),
+                    );
+                }
+            }
         })
         .response
         .interact(Sense::click())
@@ -1186,10 +1236,44 @@ fn semantic_row(
     ui.add_space(6.0);
 }
 
+/// Lays out an FTS snippet with the matched terms (between
+/// `HIGHLIGHT_START`/`HIGHLIGHT_END`) emphasized.
+fn highlighted_snippet(snippet: &str, text: egui::Color32, accent: egui::Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let normal = egui::TextFormat {
+        font_id: egui::FontId::proportional(theme::TEXT_SM),
+        color: text,
+        ..Default::default()
+    };
+    let strong = egui::TextFormat {
+        font_id: theme::semibold(theme::TEXT_SM),
+        color: accent,
+        ..Default::default()
+    };
+    let flat = snippet.replace(['\n', '\r'], " ");
+    let mut highlighted = false;
+    for part in flat.split([HIGHLIGHT_START, HIGHLIGHT_END]) {
+        if !part.is_empty() {
+            job.append(part, 0.0, if highlighted { strong.clone() } else { normal.clone() });
+        }
+        highlighted = !highlighted;
+    }
+    job
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    #[test]
+    fn highlighted_snippet_emphasizes_marked_terms() {
+        let snippet = format!("resep {HIGHLIGHT_START}nasi{HIGHLIGHT_END} goreng");
+        let job = highlighted_snippet(&snippet, egui::Color32::GRAY, egui::Color32::RED);
+        assert_eq!(job.text, "resep nasi goreng");
+        assert_eq!(job.sections.len(), 3);
+        assert_eq!(job.sections[1].format.color, egui::Color32::RED);
+    }
 
     fn locales() -> LocaleManager {
         LocaleManager::load(Path::new("/nonexistent-dir-uses-embedded"))

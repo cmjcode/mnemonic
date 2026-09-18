@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use egui::{Align, CornerRadius, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, Vec2};
 use egui_icons::icons::{
     ICON_ARROW_UPWARD, ICON_AUTO_AWESOME, ICON_CLOSE, ICON_DESCRIPTION, ICON_PICTURE_AS_PDF,
-    ICON_RESTART_ALT,
+    ICON_RESTART_ALT, ICON_TABLE_CHART,
 };
 
 use crate::i18n::LocaleManager;
@@ -300,7 +300,9 @@ impl ChatSidebarDrawer {
                                 .color(p.text_faint),
                         );
                         for citation in &msg.citations {
-                            let (icon, color) = if citation.page_index.is_some() {
+                            let (icon, color) = if crate::sheet::is_sheet_path(&citation.file_path) {
+                                (ICON_TABLE_CHART.codepoint, p.sheet_icon)
+                            } else if citation.page_index.is_some() {
                                 (ICON_PICTURE_AS_PDF.codepoint, p.pdf_icon)
                             } else {
                                 (ICON_DESCRIPTION.codepoint, p.note_icon)

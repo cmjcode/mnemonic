@@ -283,17 +283,22 @@ pub fn draw_element(
                 StrokeKind::Middle,
             );
 
-            // Text inside sticky note
+            // Text inside sticky note: wrapped to the card and clipped, so
+            // long bound paragraphs never spill past the edge.
             let text_rect = screen_rect.shrink(10.0 * viewport.zoom);
             let text_color = Color32::from_rgb(35, 38, 45);
             let font_size = quantize_font_size((13.0 * viewport.zoom).clamp(8.0, 20.0));
-            painter.text(
-                text_rect.min,
-                Align2::LEFT_TOP,
-                text,
-                FontId::proportional(font_size),
-                text_color,
-            );
+            if font_size >= MIN_READABLE_FONT && text_rect.width() > 2.0 && text_rect.height() > 2.0 {
+                let galley = painter.layout(
+                    text.to_owned(),
+                    FontId::proportional(font_size),
+                    text_color,
+                    text_rect.width(),
+                );
+                painter
+                    .with_clip_rect(text_rect.intersect(painter.clip_rect()))
+                    .galley(text_rect.min, galley, text_color);
+            }
         }
 
         CanvasElement::DocCard {

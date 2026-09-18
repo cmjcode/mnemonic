@@ -3,7 +3,10 @@
 //! heading outline, and syntax-highlighted, Obsidian-style callout
 //! rendering via `egui_commonmark`. Callers: `app.rs`.
 
+pub mod blocks;
 pub mod editor;
+pub mod highlight;
+pub mod math;
 pub mod renderer;
 pub mod wikilink;
 

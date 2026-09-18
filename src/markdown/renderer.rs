@@ -25,9 +25,11 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::sync::Arc;
 
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
+use super::blocks;
 use super::wikilink;
 
 /// A heading extracted from a note body, with a slug suitable for
@@ -42,13 +44,34 @@ pub struct Heading {
 
 /// What happened during a `render()` call that the caller (`app.rs`) needs
 /// to act on.
+/// What an `![[embed]]` resolves to (§Fase 1.3): another note's text
+/// (transclusion) or an image file in the vault.
+#[derive(Debug, Clone)]
+pub enum EmbedContent {
+    Note { title: String, body: String },
+    Image(std::path::PathBuf),
+}
+
+/// Looks up `![[target]]` (title/file name, `#heading` removed by the
+/// caller if wanted). `None` = unresolved.
+pub type EmbedResolver<'a> = dyn Fn(&str) -> Option<EmbedContent> + 'a;
+
+/// Nesting depth allowed for note transclusion.
+const MAX_EMBED_DEPTH: usize = 3;
+
 #[derive(Debug, Default)]
 pub struct RenderOutcome {
     /// A checklist checkbox was toggled; this is the note body with that
     /// line's `[ ]`/`[x]` marker flipped.
     pub updated_body: Option<String>,
-    /// The user clicked a `[[wikilink]]`; this is the target title.
+    /// The user clicked a `[[wikilink]]`; this is its reference
+    /// (`Title` or `Title#Heading`, alias removed).
     pub clicked_wikilink: Option<String>,
+    /// The user clicked an inline `#tag` (without the `#`).
+    pub clicked_tag: Option<String>,
+    /// The user clicked a Mermaid node without a link: its 0-based line
+    /// in the note body (for jumping to the diagram source).
+    pub clicked_source_line: Option<usize>,
 }
 
 /// Render `body` into `ui`, always fully (no memoization, no
@@ -59,7 +82,7 @@ pub struct RenderOutcome {
 /// frames actually benefit from the memoization (§Fase 10).
 pub fn render(ui: &mut egui::Ui, cache: &mut CommonMarkCache, body: &str) -> RenderOutcome {
     let mut index = RenderCache::default();
-    render_cached(ui, cache, &mut index, body, egui::Rect::EVERYTHING)
+    render_cached(ui, cache, &mut index, body, egui::Rect::EVERYTHING, &|_| true, &|_| None)
 }
 
 /// Extra content-space padding rendered above/below the visible viewport
@@ -76,10 +99,20 @@ pub struct RenderCache {
     body_hash: Option<u64>,
     segments: Vec<Segment>,
     wikilink_targets: Vec<String>,
+    /// Inline `#tag`s, for click hooks.
+    tag_targets: Vec<String>,
+    /// A block id (`^id`) the rendered view should scroll to on the next
+    /// frame that draws it — set by `MarkdownEditor::scroll_to_block`.
+    pub scroll_to_block: Option<String>,
+    /// Decoded image embeds, by file path (`None` = failed to decode).
+    textures: HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
     /// One estimated-then-measured height per segment, content-space
     /// pixels, parallel to `segments`. Drives `visible_segment_range`.
     heights: Vec<f32>,
     outline: Vec<Heading>,
+    /// Laid-out Mermaid diagrams keyed by `diagram_key(source, dark)`:
+    /// parse + layout run once per distinct source, not per frame (§3.7).
+    diagrams: HashMap<u64, Arc<crate::mermaid::Rendered>>,
 }
 
 impl RenderCache {
@@ -100,9 +133,27 @@ impl RenderCache {
             return;
         }
         self.segments = segment_lines(body);
-        self.wikilink_targets = wikilink::extract_wikilinks(body);
+        let mut references: Vec<String> = wikilink::parse_wikilinks(body)
+            .into_iter()
+            .map(|o| o.link.reference())
+            .collect();
+        references.sort_unstable();
+        references.dedup();
+        self.wikilink_targets = references;
+        self.tag_targets = crate::notes::tags::inline_tags(body);
         self.heights = self.segments.iter().map(estimate_height).collect();
         self.outline = headings(body);
+        // Keep only diagrams still present (either theme).
+        let live: Vec<u64> = self
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Mermaid { source, .. } => Some([diagram_key(source, false), diagram_key(source, true)]),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        self.diagrams.retain(|k, _| live.contains(k));
         self.body_hash = Some(hash);
     }
 
@@ -112,6 +163,13 @@ impl RenderCache {
         self.ensure_fresh(body);
         &self.outline
     }
+}
+
+fn diagram_key(source: &str, dark: bool) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    dark.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn hash_body(body: &str) -> u64 {
@@ -131,6 +189,7 @@ fn estimate_height(segment: &Segment) -> f32 {
     let lines = match segment {
         Segment::Markdown(text) => text.lines().count().max(1),
         Segment::Checklist { .. } => 1,
+        Segment::Mermaid { .. } => return 320.0,
     };
     lines as f32 * LINE_HEIGHT
 }
@@ -164,13 +223,17 @@ fn visible_segment_range(heights: &[f32], viewport_top: f32, viewport_bottom: f3
 /// space instead of paying for a full markdown parse+layout (§Fase 10, §6
 /// risk 5). Returns any checklist toggle or wikilink click that occurred
 /// this frame so the caller can persist/navigate — identical contract to
-/// `render`.
+/// `render`. `is_resolved(target)` tells whether a link target exists;
+/// unresolved links render in italics (clicking one creates the note).
+#[allow(clippy::too_many_arguments)]
 pub fn render_cached(
     ui: &mut egui::Ui,
     cache: &mut CommonMarkCache,
     index: &mut RenderCache,
     body: &str,
     viewport: egui::Rect,
+    is_resolved: &dyn Fn(&str) -> bool,
+    resolve_embed: &EmbedResolver<'_>,
 ) -> RenderOutcome {
     index.ensure_fresh(body);
     let mut outcome = RenderOutcome::default();
@@ -184,6 +247,10 @@ pub fn render_cached(
     for title in &index.wikilink_targets {
         cache.add_link_hook(wikilink_destination(title));
     }
+    for tag in &index.tag_targets {
+        cache.add_link_hook(tag_destination(tag));
+    }
+    let scroll_target = index.scroll_to_block.take();
 
     let visible = visible_segment_range(&index.heights, viewport.top(), viewport.bottom(), VIRTUALIZATION_BUFFER);
 
@@ -193,22 +260,35 @@ pub fn render_cached(
             match &index.segments[i] {
                 Segment::Markdown(text) => {
                     let canvas_processed = transform_canvas_code_blocks(text);
-                    let transformed = transform_wikilinks(&canvas_processed);
-                    CommonMarkViewer::new()
-                        .enable_scroll_to_heading(true)
-                        .show(ui, cache, &transformed);
+                    let embedded = transform_note_embeds(&canvas_processed, resolve_embed, 0);
+                    let transformed = transform_inline(&embedded, is_resolved);
+                    render_with_images(ui, cache, index, &transformed, resolve_embed);
+                }
+                Segment::Mermaid { line_idx, source } => {
+                    let (line_idx, source) = (*line_idx, source.clone());
+                    let dark = ui.visuals().dark_mode;
+                    let rendered = Arc::clone(index.diagrams.entry(diagram_key(&source, dark)).or_insert_with(|| {
+                        let glyphs = crate::mermaid::paint::glyph_table(ui.ctx(), &source);
+                        Arc::new(crate::mermaid::render(
+                            &source,
+                            &crate::mermaid::RenderOptions { dark, measure: &glyphs },
+                        ))
+                    }));
+                    render_mermaid(ui, cache, &rendered, &source, line_idx, &mut outcome);
                 }
                 Segment::Checklist { line_idx, checked, text } => {
                     let line_idx = *line_idx;
                     let is_checked_initially = *checked;
                     let canvas_processed = transform_canvas_code_blocks(text);
-                    let transformed = transform_wikilinks(&canvas_processed);
+                    let transformed = transform_inline(&canvas_processed, is_resolved);
                     ui.horizontal(|ui| {
                         let mut is_checked = is_checked_initially;
                         if ui.checkbox(&mut is_checked, "").changed() {
                             outcome.updated_body = Some(toggle_checklist_line(body, line_idx));
                         }
-                        CommonMarkViewer::new().show(ui, cache, &transformed);
+                        CommonMarkViewer::new()
+                            .render_math_fn(Some(&render_math))
+                            .show(ui, cache, &transformed);
                     });
                 }
             }
@@ -217,14 +297,347 @@ pub fn render_cached(
             // must be read back right after the segment that produced it,
             // not once at the end of the whole document.
             capture_clicked_wikilink(cache, &index.wikilink_targets, &mut outcome);
+            capture_clicked_tag(cache, &index.tag_targets, &mut outcome);
         } else {
             ui.allocate_space(egui::vec2(ui.available_width(), index.heights[i]));
         }
         let bottom = ui.cursor().top();
         index.heights[i] = (bottom - top).max(1.0);
+        if let Some(id) = scroll_target.as_deref()
+            && segment_has_anchor(&index.segments[i], id)
+        {
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(ui.min_rect().left(), top),
+                egui::pos2(ui.min_rect().right(), bottom),
+            );
+            ui.scroll_to_rect(rect, Some(egui::Align::TOP));
+        }
     }
 
     outcome
+}
+
+/// Renders `text`, drawing image embeds (`![[file.png]]` on a line of
+/// their own) as real images between the Markdown runs around them.
+fn render_with_images(
+    ui: &mut egui::Ui,
+    cache: &mut CommonMarkCache,
+    index: &mut RenderCache,
+    text: &str,
+    resolve_embed: &EmbedResolver<'_>,
+) {
+    let mut run = String::new();
+    let mut in_fence = false;
+    let flush = |ui: &mut egui::Ui, cache: &mut CommonMarkCache, run: &mut String| {
+        if !run.trim().is_empty() {
+            CommonMarkViewer::new()
+                .enable_scroll_to_heading(true)
+                .render_math_fn(Some(&render_math))
+                .show(ui, cache, run);
+        }
+        run.clear();
+    };
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+        }
+        if !in_fence
+            && let Some(name) = image_embed_target(t)
+            && let Some(EmbedContent::Image(path)) = resolve_embed(name)
+        {
+            flush(ui, cache, &mut run);
+            draw_image_embed(ui, index, &path, name);
+            continue;
+        }
+        run.push_str(line);
+        run.push('\n');
+    }
+    flush(ui, cache, &mut run);
+}
+
+/// `egui_commonmark` math hook (§Fase 1.8): `$x^2$` inline as italic
+/// Unicode, `$$…$$` centered and larger, via `markdown::math`.
+fn render_math(ui: &mut egui::Ui, tex: &str, inline: bool) {
+    let text = super::math::to_unicode(tex);
+    let p = crate::ui::pal();
+    if inline {
+        ui.label(egui::RichText::new(text).italics().color(p.text));
+    } else {
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(text)
+                            .size(crate::ui::theme::TEXT_LG)
+                            .italics()
+                            .color(p.text),
+                    );
+                });
+            });
+    }
+}
+
+/// `![[photo.png]]` (optionally with `|width`) alone on a line.
+fn image_embed_target(line: &str) -> Option<&str> {
+    let inner = line.strip_prefix("![[")?.strip_suffix("]]")?;
+    let name = inner.split('|').next()?.trim();
+    let ext = name.rsplit('.').next()?.to_ascii_lowercase();
+    matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp").then_some(name)
+}
+
+fn draw_image_embed(ui: &mut egui::Ui, index: &mut RenderCache, path: &std::path::Path, name: &str) {
+    let texture = index
+        .textures
+        .entry(path.to_path_buf())
+        .or_insert_with(|| {
+            let decoded = image::open(path)
+                .map_err(|e| log::warn!("renderer: cannot decode {}: {e}", path.display()))
+                .ok()?;
+            let rgba = decoded.to_rgba8();
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+            Some(ui.ctx().load_texture(
+                format!("embed:{}", path.display()),
+                color,
+                egui::TextureOptions::LINEAR,
+            ))
+        })
+        .clone();
+    match texture {
+        Some(tex) => {
+            ui.add_space(4.0);
+            ui.add(
+                egui::Image::from_texture(&tex)
+                    .max_width(ui.available_width())
+                    .corner_radius(4.0),
+            );
+            ui.add_space(4.0);
+        }
+        None => {
+            ui.label(egui::RichText::new(format!("🖼 {name}")).italics());
+        }
+    }
+}
+
+/// Replaces `![[Note]]` / `![[Note#Heading]]` lines with the target's
+/// text as a quote-style callout (Obsidian transclusion), recursively up
+/// to `MAX_EMBED_DEPTH`. Unresolved embeds and non-note targets are left
+/// for `transform_wikilinks` / `render_with_images`.
+fn transform_note_embeds(text: &str, resolve_embed: &EmbedResolver<'_>, depth: usize) -> String {
+    if !text.contains("![[") || depth >= MAX_EMBED_DEPTH {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut in_fence = false;
+    for line in text.split_inclusive('\n') {
+        let content = line.trim_end_matches(['\n', '\r']);
+        let t = content.trim();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+        }
+        let embedded = if in_fence {
+            None
+        } else {
+            t.strip_prefix("![[")
+                .and_then(|r| r.strip_suffix("]]"))
+                .and_then(|inner| {
+                    let link = wikilink::WikiLink::parse(inner);
+                    if link.is_pdf() || image_embed_target(t).is_some() {
+                        return None;
+                    }
+                    match resolve_embed(&link.target)? {
+                        EmbedContent::Note { title, body } => {
+                            let section = match &link.heading {
+                                Some(h) => heading_section(&body, h).unwrap_or(body),
+                                None => body,
+                            };
+                            let nested = transform_note_embeds(
+                                &blocks::strip_anchors(&section),
+                                resolve_embed,
+                                depth + 1,
+                            );
+                            let mut quoted = format!("> [!quote] [[{title}]]\n");
+                            for l in nested.lines() {
+                                quoted.push_str("> ");
+                                quoted.push_str(l);
+                                quoted.push('\n');
+                            }
+                            Some(quoted)
+                        }
+                        EmbedContent::Image(_) => None,
+                    }
+                })
+        };
+        match embedded {
+            Some(q) => out.push_str(&q),
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
+/// The lines under heading `title` (until the next heading of the same
+/// or higher level), for `![[Note#Heading]]`.
+fn heading_section(body: &str, title: &str) -> Option<String> {
+    let wanted = slugify(title);
+    let mut level = 0;
+    let mut out: Vec<&str> = Vec::new();
+    let mut inside = false;
+    for line in body.lines() {
+        if let Some((l, t)) = parse_heading(line.trim_start()) {
+            if inside && l <= level {
+                break;
+            }
+            if !inside && slugify(&t) == wanted {
+                inside = true;
+                level = l;
+                out.push(line);
+                continue;
+            }
+        }
+        if inside {
+            out.push(line);
+        }
+    }
+    inside.then(|| out.join("\n"))
+}
+
+fn segment_has_anchor(segment: &Segment, id: &str) -> bool {
+    let text = match segment {
+        Segment::Markdown(t) => t.as_str(),
+        Segment::Checklist { text, .. } => text.as_str(),
+        Segment::Mermaid { .. } => return false,
+    };
+    text.lines().any(|l| blocks::line_has_anchor(l, id))
+}
+
+/// Draws a Mermaid diagram (or, when it can't be drawn, its source as a
+/// code block) followed by its error diagnostics, and routes clicks:
+/// `[[Note]]`/bare targets become wikilink navigation, URLs open.
+fn render_mermaid(
+    ui: &mut egui::Ui,
+    cache: &mut CommonMarkCache,
+    rendered: &crate::mermaid::Rendered,
+    source: &str,
+    fence_line: usize,
+    outcome: &mut RenderOutcome,
+) {
+    match &rendered.scene {
+        Some(scene) => {
+            let act = ui.push_id(("mermaid", fence_line), |ui| crate::mermaid::paint::show(ui, scene)).inner;
+            if let Some(link) = act.clicked_link {
+                let target = link.trim();
+                if let Some(inner) = target.strip_prefix("[[").and_then(|t| t.strip_suffix("]]")) {
+                    outcome.clicked_wikilink = Some(inner.split('|').next().unwrap_or(inner).to_string());
+                } else if target.contains("://") || target.starts_with("mailto:") {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(target));
+                } else if !target.starts_with('#') {
+                    outcome.clicked_wikilink = Some(target.to_string());
+                }
+            }
+            if let Some(line) = act.clicked_line {
+                outcome.clicked_source_line = Some(fence_line + line);
+            }
+        }
+        None => {
+            CommonMarkViewer::new().show(ui, cache, &format!("```mermaid\n{source}\n```"));
+        }
+    }
+    let error_color = ui.visuals().error_fg_color;
+    for d in rendered.diagnostics.iter().filter(|d| d.is_error()).take(5) {
+        ui.label(egui::RichText::new(format!("⚠ {}:{}  {}", d.line, d.col, d.message)).small().color(error_color));
+    }
+}
+
+fn capture_clicked_tag(cache: &CommonMarkCache, tags: &[String], outcome: &mut RenderOutcome) {
+    if outcome.clicked_tag.is_some() {
+        return;
+    }
+    for tag in tags {
+        if cache.get_link_hook(&tag_destination(tag)) == Some(true) {
+            outcome.clicked_tag = Some(tag.clone());
+            return;
+        }
+    }
+}
+
+fn tag_destination(tag: &str) -> String {
+    format!("tag:{tag}")
+}
+
+/// Everything inline that CommonMark doesn't know: wikilinks, `#tag`s and
+/// block anchors (hidden, as in Obsidian).
+fn transform_inline(text: &str, is_resolved: &dyn Fn(&str) -> bool) -> String {
+    let stripped = blocks::strip_anchors(text);
+    let linked = transform_wikilinks(&stripped, is_resolved);
+    transform_tags(&linked)
+}
+
+/// Rewrites inline `#tag`s into `[#tag](<tag:tag>)` links (fence- and
+/// heading-aware, mirroring `notes::tags::inline_tags`).
+fn transform_tags(text: &str) -> String {
+    if !text.contains('#') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len() + 32);
+    let mut in_fence = false;
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            continue;
+        }
+        if in_fence || (t.starts_with('#') && t.chars().find(|c| *c != '#') == Some(' ')) {
+            out.push_str(line);
+            continue;
+        }
+        let tags = crate::notes::tags::inline_tags(line);
+        if tags.is_empty() {
+            out.push_str(line);
+            continue;
+        }
+        // Replace longest tags first so `#a/b` isn't clobbered by `#a`.
+        let mut sorted = tags.clone();
+        sorted.sort_by_key(|t| std::cmp::Reverse(t.len()));
+        let mut rewritten = line.to_string();
+        for tag in sorted {
+            let needle = format!("#{tag}");
+            let mut result = String::with_capacity(rewritten.len());
+            let mut rest = rewritten.as_str();
+            let mut in_code = false;
+            let mut in_link = false;
+            while let Some(pos) = rest.find(&needle) {
+                let (before, after) = rest.split_at(pos);
+                in_code ^= before.matches('`').count() % 2 == 1;
+                in_link ^= before.matches("](<").count() != before.matches(">)").count();
+                result.push_str(before);
+                let prev = before.chars().next_back();
+                let next = after[needle.len()..].chars().next();
+                let boundary_before = prev.is_none_or(|p| p.is_whitespace() || "([{\"'".contains(p));
+                let boundary_after = next.is_none_or(|n| !(n.is_alphanumeric() || matches!(n, '_' | '-' | '/')));
+                if boundary_before && boundary_after && !in_code && !in_link {
+                    result.push_str(&format!("[{needle}](<{}>)", tag_destination(&tag)));
+                } else {
+                    result.push_str(&needle);
+                }
+                rest = &after[needle.len()..];
+            }
+            result.push_str(rest);
+            rewritten = result;
+        }
+        out.push_str(&rewritten);
+    }
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 fn capture_clicked_wikilink(cache: &CommonMarkCache, targets: &[String], outcome: &mut RenderOutcome) {
@@ -284,7 +697,9 @@ fn parse_heading(trimmed: &str) -> Option<(u8, String)> {
     Some((hashes as u8, title))
 }
 
-fn slugify(title: &str) -> String {
+/// URL-style anchor for a heading title (`## Bahan Utama` → `bahan-utama`),
+/// used for scroll-to-heading and `[[Note#Heading]]` links.
+pub fn slugify(title: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = false;
     for c in title.to_lowercase().chars() {
@@ -319,26 +734,42 @@ fn dedupe_slug(base: &str, used: &mut HashMap<String, u32>) -> String {
 enum Segment {
     Markdown(String),
     Checklist { line_idx: usize, checked: bool, text: String },
+    /// A closed ```` ```mermaid ```` fence; `line_idx` is the opening fence.
+    Mermaid { line_idx: usize, source: String },
 }
 
 fn segment_lines(body: &str) -> Vec<Segment> {
     let mut segments = Vec::new();
     let mut current: Vec<&str> = Vec::new();
     let mut in_fence = false;
+    let lines: Vec<&str> = body.lines().collect();
+    let mut skip_until = 0;
 
-    for (idx, line) in body.lines().enumerate() {
+    for (idx, &line) in lines.iter().enumerate() {
+        if idx < skip_until {
+            continue;
+        }
+        if !in_fence
+            && let Some(marker) = crate::mermaid::fence_open(line)
+            && let Some(end) = (idx + 1..lines.len()).find(|&j| crate::mermaid::fence_close(lines[j], marker))
+        {
+            flush_markdown_segment(&mut current, &mut segments);
+            segments.push(Segment::Mermaid { line_idx: idx, source: lines[idx + 1..end].join("\n") });
+            skip_until = end + 1;
+            continue;
+        }
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_fence = !in_fence;
             current.push(line);
             continue;
         }
-        if !in_fence {
-            if let Some((checked, text)) = parse_checklist_line(line) {
-                flush_markdown_segment(&mut current, &mut segments);
-                segments.push(Segment::Checklist { line_idx: idx, checked, text });
-                continue;
-            }
+        if !in_fence
+            && let Some((checked, text)) = parse_checklist_line(line)
+        {
+            flush_markdown_segment(&mut current, &mut segments);
+            segments.push(Segment::Checklist { line_idx: idx, checked, text });
+            continue;
         }
         current.push(line);
     }
@@ -346,7 +777,7 @@ fn segment_lines(body: &str) -> Vec<Segment> {
     segments
 }
 
-fn flush_markdown_segment<'a>(current: &mut Vec<&'a str>, segments: &mut Vec<Segment>) {
+fn flush_markdown_segment(current: &mut Vec<&str>, segments: &mut Vec<Segment>) {
     if current.is_empty() {
         return;
     }
@@ -366,10 +797,10 @@ fn parse_checklist_line(line: &str) -> Option<(bool, String)> {
 
     if let Some(after) = strip_marker(rest, "[ ]") {
         Some((false, after.to_string()))
-    } else if let Some(after) = strip_marker(rest, "[x]").or_else(|| strip_marker(rest, "[X]")) {
-        Some((true, after.to_string()))
     } else {
-        None
+        strip_marker(rest, "[x]")
+            .or_else(|| strip_marker(rest, "[X]"))
+            .map(|after| (true, after.to_string()))
     }
 }
 
@@ -449,12 +880,14 @@ fn transform_canvas_code_blocks(text: &str) -> String {
     result
 }
 
-/// Rewrite `[[Title]]` / `[[Title|Alias]]` into a real CommonMark link
-/// (`[Alias](<wikilink:Title>)`, angle-bracketed since titles may contain
-/// spaces) and `![[name]]` image embeds into a plain placeholder — full
-/// attachment embedding is deferred past this phase. Fence-aware, so code
-/// blocks are left untouched.
-fn transform_wikilinks(text: &str) -> String {
+/// Rewrite `[[Title#Heading|Alias]]` into a real CommonMark link
+/// (`[Alias](<wikilink:Title#Heading>)`, angle-bracketed since titles may
+/// contain spaces) and `![[name]]` image embeds into a plain placeholder —
+/// full attachment embedding is deferred past this phase. Links whose
+/// target `is_resolved` rejects get italic link text, Obsidian's cue for
+/// "this note doesn't exist yet". Fence-aware, so code blocks are left
+/// untouched.
+fn transform_wikilinks(text: &str, is_resolved: &dyn Fn(&str) -> bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_fence = false;
     for (i, line) in text.lines().enumerate() {
@@ -471,12 +904,12 @@ fn transform_wikilinks(text: &str) -> String {
             out.push_str(line);
             continue;
         }
-        out.push_str(&transform_wikilinks_in_line(line));
+        out.push_str(&transform_wikilinks_in_line(line, is_resolved));
     }
     out
 }
 
-fn transform_wikilinks_in_line(line: &str) -> String {
+fn transform_wikilinks_in_line(line: &str, is_resolved: &dyn Fn(&str) -> bool) -> String {
     let mut out = String::new();
     let mut rest = line;
     loop {
@@ -495,19 +928,23 @@ fn transform_wikilinks_in_line(line: &str) -> String {
             out.push_str(&rest[start..]);
             break;
         };
-        let inner = &after[..end];
-        let mut parts = inner.splitn(2, '|');
-        let title = parts.next().unwrap_or(inner).trim();
-        let alias = parts.next().map(str::trim).filter(|a| !a.is_empty()).unwrap_or(title);
+        let link = wikilink::WikiLink::parse(&after[..end]);
 
         if is_embed {
             out.push_str("📎 ");
-            out.push_str(title);
+            out.push_str(&link.target);
         } else {
+            let text = link.alias.clone().unwrap_or_else(|| match &link.heading {
+                Some(h) if !link.is_pdf() => format!("{} › {h}", link.target),
+                _ => link.target.clone(),
+            });
+            let marker = if is_resolved(&link.target) { "" } else { "_" };
             out.push('[');
-            out.push_str(alias);
+            out.push_str(marker);
+            out.push_str(&text);
+            out.push_str(marker);
             out.push_str("](<");
-            out.push_str(&wikilink_destination(title));
+            out.push_str(&wikilink_destination(&link.reference()));
             out.push_str(">)");
         }
         rest = &after[end + 2..];
@@ -518,6 +955,50 @@ fn transform_wikilinks_in_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fake_resolver(target: &str) -> Option<EmbedContent> {
+        match target {
+            "Anak" => Some(EmbedContent::Note {
+                title: "Anak".into(),
+                body: "# Bagian A\nisi a ^x1\n\n# Bagian B\nisi b\n![[Cucu]]\n".into(),
+            }),
+            "Cucu" => Some(EmbedContent::Note {
+                title: "Cucu".into(),
+                body: "cucu ![[Anak]]".into(),
+            }),
+            "foto.png" => Some(EmbedContent::Image("/v/foto.png".into())),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn note_embeds_become_quote_callouts_with_depth_limit() {
+        let out = transform_note_embeds("awal\n![[Anak#Bagian B]]\n![[Hilang]]\n![[foto.png]]\n", &fake_resolver, 0);
+        assert!(out.starts_with("awal\n> [!quote] [[Anak]]\n> # Bagian B\n> isi b\n"), "{out}");
+        // Nested embed rendered one level down, then stops recursing.
+        assert!(out.contains("> > [!quote] [[Cucu]]"), "{out}");
+        assert!(out.contains("![[Hilang]]"), "unresolved embeds are left alone");
+        assert!(out.contains("![[foto.png]]"), "images are drawn separately");
+        assert!(!out.contains("^x1"));
+    }
+
+    #[test]
+    fn heading_section_and_image_targets() {
+        let body = "intro\n# A\na1\n## A2\na2\n# B\nb1";
+        assert_eq!(heading_section(body, "A").as_deref(), Some("# A\na1\n## A2\na2"));
+        assert_eq!(heading_section(body, "a2").as_deref(), Some("## A2\na2"));
+        assert!(heading_section(body, "Z").is_none());
+        assert_eq!(image_embed_target("![[Foto Liburan.JPG|300]]"), Some("Foto Liburan.JPG"));
+        assert_eq!(image_embed_target("![[Catatan]]"), None);
+    }
+
+    #[test]
+    fn inline_tags_render_as_tag_links_outside_code_and_headings() {
+        let out = transform_tags("# #bukan heading\nteks #projek/web dan `#kode`\n");
+        assert!(out.contains("[#projek/web](<tag:projek/web>)"), "{out}");
+        assert!(out.contains("`#kode`"));
+        assert!(out.starts_with("# #bukan heading"));
+    }
 
     #[test]
     fn headings_assigns_unique_slugs() {
@@ -582,28 +1063,50 @@ mod tests {
         assert_eq!(updated, "- [x] Beli beras\n");
     }
 
+    fn all_resolved(_: &str) -> bool {
+        true
+    }
+
     #[test]
     fn transform_wikilinks_rewrites_plain_link() {
-        let out = transform_wikilinks("Lihat [[Belanja Mingguan]] ya.");
+        let out = transform_wikilinks("Lihat [[Belanja Mingguan]] ya.", &all_resolved);
         assert_eq!(out, "Lihat [Belanja Mingguan](<wikilink:Belanja Mingguan>) ya.");
     }
 
     #[test]
     fn transform_wikilinks_uses_alias_as_link_text() {
-        let out = transform_wikilinks("[[Belanja Mingguan|daftar belanja]]");
+        let out = transform_wikilinks("[[Belanja Mingguan|daftar belanja]]", &all_resolved);
         assert_eq!(out, "[daftar belanja](<wikilink:Belanja Mingguan>)");
     }
 
     #[test]
+    fn transform_wikilinks_keeps_heading_in_destination() {
+        let out = transform_wikilinks("[[Resep#Bahan]] [[a.pdf#page=2]]", &all_resolved);
+        assert_eq!(
+            out,
+            "[Resep › Bahan](<wikilink:Resep#Bahan>) [a.pdf](<wikilink:a.pdf#page=2>)"
+        );
+    }
+
+    #[test]
+    fn transform_wikilinks_italicizes_unresolved_links() {
+        let out = transform_wikilinks("[[Ada]] [[Belum Ada]]", &|t| t == "Ada");
+        assert_eq!(
+            out,
+            "[Ada](<wikilink:Ada>) [_Belum Ada_](<wikilink:Belum Ada>)"
+        );
+    }
+
+    #[test]
     fn transform_wikilinks_replaces_embed_with_placeholder() {
-        let out = transform_wikilinks("![[foto.png]]");
+        let out = transform_wikilinks("![[foto.png]]", &all_resolved);
         assert_eq!(out, "📎 foto.png");
     }
 
     #[test]
     fn transform_wikilinks_leaves_code_fences_untouched() {
         let body = "```\n[[Bukan Link]]\n```";
-        assert_eq!(transform_wikilinks(body), body);
+        assert_eq!(transform_wikilinks(body, &all_resolved), body);
     }
 
     // --- §Fase 10: RenderCache / virtualization ---------------------------
@@ -685,6 +1188,16 @@ mod tests {
 
         let checklist = Segment::Checklist { line_idx: 0, checked: false, text: "x".into() };
         assert_eq!(estimate_height(&checklist), estimate_height(&one_line));
+    }
+
+    #[test]
+    fn mermaid_fences_become_their_own_segment() {
+        let segs = segment_lines("a\n```mermaid\nflowchart LR\nA-->B\n```\nb\n```mermaid\nunclosed");
+        assert_eq!(segs[0], Segment::Markdown("a".into()));
+        assert_eq!(segs[1], Segment::Mermaid { line_idx: 1, source: "flowchart LR\nA-->B".into() });
+        // An unclosed fence stays ordinary markdown.
+        assert!(matches!(&segs[2], Segment::Markdown(t) if t.starts_with('b') && t.contains("unclosed")));
+        assert_eq!(estimate_height(&segs[1]), 320.0);
     }
 
     #[test]

@@ -1,9 +1,12 @@
 //! Command palette (⌘K) commands: actions, navigation, settings, and
 //! quick-open for notes and PDFs matching what the user typed.
 
+use std::path::Path;
+
 use egui_icons::icons::{
-    ICON_AUTO_AWESOME, ICON_CREATE_NEW_FOLDER, ICON_DARK_MODE, ICON_DASHBOARD, ICON_DELETE,
-    ICON_DESCRIPTION, ICON_DRAW, ICON_FOLDER_OPEN, ICON_INVENTORY_2, ICON_KEYBOARD, ICON_LABEL,
+    ICON_AUTO_AWESOME, ICON_CALENDAR_TODAY, ICON_CREATE_NEW_FOLDER, ICON_DARK_MODE, ICON_DASHBOARD, ICON_DELETE,
+    ICON_DESCRIPTION, ICON_DRAW, ICON_FOLDER_OPEN, ICON_HUB, ICON_INVENTORY_2, ICON_KEYBOARD,
+    ICON_LABEL,
     ICON_LANGUAGE, ICON_LEFT_PANEL_CLOSE, ICON_NOTE_ADD, ICON_PICTURE_AS_PDF, ICON_SEARCH,
     ICON_UPLOAD_FILE,
 };
@@ -29,7 +32,7 @@ impl MnemonicApp {
                 ICON_NOTE_ADD.codepoint,
                 t("notes-new"),
             )
-            .with_hint("⌘N"),
+            .with_hint(self.hotkey_label("new_note")),
             PaletteCommand::new(
                 "new_canvas",
                 &actions,
@@ -54,14 +57,44 @@ impl MnemonicApp {
                 ICON_SEARCH.codepoint,
                 t("palette-search"),
             )
-            .with_hint("⌘F"),
+            .with_hint(self.hotkey_label("search")),
             PaletteCommand::new(
                 "ask_ai",
                 &actions,
                 ICON_AUTO_AWESOME.codepoint,
                 t("palette-ask-ai"),
             )
-            .with_hint("⌘J"),
+            .with_hint(self.hotkey_label("ai")),
+            PaletteCommand::new(
+                "open_graph",
+                &go,
+                ICON_HUB.codepoint,
+                t("graph-title"),
+            )
+            .with_hint(self.hotkey_label("graph")),
+            PaletteCommand::new(
+                "daily_note",
+                &actions,
+                ICON_CALENDAR_TODAY.codepoint,
+                t("palette-daily-note"),
+            )
+            .with_hint(self.hotkey_label("daily")),
+            PaletteCommand::new(
+                "migrate_filenames",
+                &actions,
+                ICON_DESCRIPTION.codepoint,
+                t("palette-migrate-filenames"),
+            ),
+            PaletteCommand::new(
+                "toggle_rerank",
+                &view,
+                ICON_AUTO_AWESOME.codepoint,
+                if self.settings.rerank_search {
+                    t("palette-rerank-off")
+                } else {
+                    t("palette-rerank-on")
+                },
+            ),
             PaletteCommand::new(
                 "manage_tags",
                 &actions,
@@ -100,7 +133,7 @@ impl MnemonicApp {
                 ICON_LEFT_PANEL_CLOSE.codepoint,
                 t("palette-toggle-sidebar"),
             )
-            .with_hint("⌘\\"),
+            .with_hint(self.hotkey_label("sidebar")),
             PaletteCommand::new(
                 "toggle_theme",
                 &view,
@@ -119,7 +152,7 @@ impl MnemonicApp {
                 ICON_KEYBOARD.codepoint,
                 t("settings-shortcuts"),
             )
-            .with_hint("⌘/"),
+            .with_hint(self.hotkey_label("shortcuts")),
             PaletteCommand::new(
                 "switch_vault",
                 &view,
@@ -172,6 +205,20 @@ impl MnemonicApp {
                     .unwrap_or_default(),
             ));
         }
+        // Templates (`<vault>/Templates/*.md`) insert into the open note.
+        if self.editor.is_some()
+            && let Some(root) = self.vault.as_ref().map(|v| v.root.clone())
+        {
+            let templates_cat = t("palette-cat-templates");
+            for (name, path) in crate::notes::templates::list_templates(&root) {
+                cmds.push(PaletteCommand::new(
+                    format!("template:{}", path.display()),
+                    &templates_cat,
+                    ICON_DESCRIPTION.codepoint,
+                    self.t_args("palette-insert-template", &[("name", &name)]),
+                ));
+            }
+        }
         cmds
     }
 
@@ -188,8 +235,13 @@ impl MnemonicApp {
             self.open_file_by_path(path.into());
             return;
         }
+        if let Some(path) = id.strip_prefix("template:") {
+            self.insert_template(Path::new(path));
+            return;
+        }
         let go = |app: &mut Self, filter: SidebarDocFilter| {
             app.close_document();
+            app.close_graph_view();
             app.doc_filter = filter;
         };
         match id.as_str() {
@@ -210,6 +262,19 @@ impl MnemonicApp {
                 ctx.memory_mut(|m| m.request_focus(ui::ChatSidebarDrawer::input_id()));
             }
             "manage_tags" => self.show_label_manager = true,
+            "migrate_filenames" => self.migrate_uuid_file_names(),
+            "daily_note" => self.open_daily_note(),
+            "open_graph" => self.open_graph_view(),
+            "toggle_rerank" => {
+                self.settings.rerank_search = !self.settings.rerank_search;
+                self.persist_settings();
+                let key = if self.settings.rerank_search {
+                    "toast-rerank-on"
+                } else {
+                    "toast-rerank-off"
+                };
+                self.toast(ui::ToastKind::Info, key, &[]);
+            }
             "nav_all" => go(self, SidebarDocFilter::All),
             "nav_notes" => go(self, SidebarDocFilter::NotesOnly),
             "nav_canvas" => go(self, SidebarDocFilter::WhiteboardsOnly),

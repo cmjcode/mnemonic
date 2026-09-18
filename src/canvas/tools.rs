@@ -45,6 +45,9 @@ pub struct InteractionState {
     /// Element grabbed by the current Select-tool drag, if any. Resolved once
     /// at drag start so the hit test doesn't run every frame.
     pub dragged_elem: Option<super::element::CanvasElementId>,
+    /// Fit the viewport to the document bounds on the next frame the canvas
+    /// is shown (needs the screen size, which only the surface knows).
+    pub pending_fit: bool,
 }
 
 impl InteractionState {
@@ -59,6 +62,7 @@ impl InteractionState {
             current_freehand_points: Vec::new(),
             editing_text_elem: None,
             dragged_elem: None,
+            pending_fit: false,
         }
     }
 }

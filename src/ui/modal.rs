@@ -125,6 +125,59 @@ impl ConfirmModal {
     }
 }
 
+/// What the user chose when the note on disk changed under an unsaved
+/// editor (§6 "Watcher Conflict").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictChoice {
+    /// Discard the editor's version and take what's on disk.
+    Reload,
+    /// Write the editor's version over the disk version.
+    Overwrite,
+    /// Keep both: the editor's version as a new `(conflict)` note.
+    SaveCopy,
+    /// Decide later (the editor stays open, unsaved).
+    Cancel,
+}
+
+pub struct ConflictModal;
+
+impl ConflictModal {
+    /// `None` while still open.
+    pub fn show(ctx: &egui::Context, tr: &LocaleManager, file_name: &str) -> Option<ConflictChoice> {
+        let p = pal();
+        let (result, dismissed) = modal(ctx, "conflict_modal", 440.0, |ui| {
+            modal_title(ui, ICON_WARNING.codepoint, p.warning, &tr.t("conflict-title", &[]));
+            ui.add_space(theme::SPACE_S);
+            ui.label(
+                RichText::new(tr.t("conflict-body", &[("name", file_name)]))
+                    .size(theme::TEXT_BODY)
+                    .color(p.text_dim),
+            );
+            ui.add_space(theme::SPACE_L);
+            let mut choice = None;
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if widgets::button(ui, ButtonKind::Primary, None, &tr.t("conflict-reload", &[])).clicked() {
+                    choice = Some(ConflictChoice::Reload);
+                }
+                if widgets::button(ui, ButtonKind::Danger, None, &tr.t("conflict-overwrite", &[])).clicked() {
+                    choice = Some(ConflictChoice::Overwrite);
+                }
+                if widgets::button(ui, ButtonKind::Ghost, None, &tr.t("conflict-copy", &[])).clicked() {
+                    choice = Some(ConflictChoice::SaveCopy);
+                }
+                if widgets::button(ui, ButtonKind::Ghost, None, &tr.t("confirm-cancel", &[])).clicked() {
+                    choice = Some(ConflictChoice::Cancel);
+                }
+            });
+            choice
+        });
+        if dismissed {
+            return Some(ConflictChoice::Cancel);
+        }
+        result.flatten()
+    }
+}
+
 pub struct PromptInputModal;
 
 impl PromptInputModal {
@@ -442,22 +495,18 @@ impl LabelManagerModal {
 pub struct ShortcutsModal;
 
 impl ShortcutsModal {
-    /// Keyboard shortcut cheat sheet. Returns true when closed.
-    pub fn show(ctx: &egui::Context, tr: &LocaleManager) -> bool {
+    /// Keyboard shortcut cheat sheet: `chords` are `(glyphs, locale key)`
+    /// for the configurable actions (from `config.toml`), followed by the
+    /// fixed editing keys. Returns true when closed.
+    pub fn show(ctx: &egui::Context, tr: &LocaleManager, chords: &[(String, &str)]) -> bool {
         let t = |key: &str| tr.t(key, &[]);
         let p = pal();
-        let rows = [
-            ("⌘K", "shortcut-palette"),
-            ("⌘N", "shortcut-new-note"),
-            ("⌘F", "shortcut-search"),
-            ("⌘S", "shortcut-save"),
-            ("⌘E", "shortcut-toggle-read"),
-            ("⌘\\", "shortcut-sidebar"),
-            ("⌘J", "shortcut-ai"),
-            ("Esc", "shortcut-back"),
-            ("/", "shortcut-slash"),
-            ("[[", "shortcut-wikilink"),
-        ];
+        let mut rows: Vec<(String, &str)> = chords.to_vec();
+        rows.extend([
+            ("Esc".to_string(), "shortcut-back"),
+            ("/".to_string(), "shortcut-slash"),
+            ("[[".to_string(), "shortcut-wikilink"),
+        ]);
         let (result, dismissed) = modal(ctx, "shortcuts_modal", 440.0, |ui| {
             let mut close = false;
             ui.horizontal(|ui| {
@@ -482,7 +531,7 @@ impl ShortcutsModal {
                 .num_columns(2)
                 .spacing(Vec2::new(24.0, 10.0))
                 .show(ui, |ui| {
-                    for (keys, label) in rows {
+                    for (keys, label) in &rows {
                         ui.label(RichText::new(t(label)).size(theme::TEXT_BODY).color(p.text));
                         egui::Frame::NONE
                             .fill(p.surface)

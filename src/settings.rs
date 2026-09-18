@@ -8,6 +8,7 @@
 //! had `vault_path`) still loads, and a corrupt file degrades to defaults
 //! instead of failing startup.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -27,6 +28,12 @@ pub struct AppSettings {
     pub locale: Option<String>,
     pub sidebar_open: bool,
     pub show_outline: bool,
+    /// Reorder search results with the local cross-encoder reranker. Off
+    /// by default: it downloads an extra model and adds latency.
+    pub rerank_search: bool,
+    /// `[hotkeys]`: action id → chord (`"Cmd+Shift+K"`), overriding the
+    /// defaults in `app::hotkeys::DEFAULT_HOTKEYS` (§Fase 1.8).
+    pub hotkeys: BTreeMap<String, String>,
 }
 
 impl Default for AppSettings {
@@ -38,11 +45,21 @@ impl Default for AppSettings {
             locale: None,
             sidebar_open: true,
             show_outline: true,
+            rerank_search: false,
+            hotkeys: BTreeMap::new(),
         }
     }
 }
 
 impl AppSettings {
+    /// The chord configured for `action`, or `default` when unset/empty.
+    pub fn chord<'a>(&'a self, action: &str, default: &'a str) -> &'a str {
+        match self.hotkeys.get(action) {
+            Some(c) if !c.trim().is_empty() => c.as_str(),
+            _ => default,
+        }
+    }
+
     /// Records `root` as the current vault and moves it to the front of
     /// the recent list (deduplicated, capped at `MAX_RECENT_VAULTS`).
     pub fn remember_vault(&mut self, root: &Path) {

@@ -35,16 +35,28 @@ impl Vault {
     }
 }
 
+/// Folders never walked for notes: hidden folders (`.obsidian`, `.git`,
+/// `.mnemonic`, `.trash`, …) and dependency trees.
+pub fn is_skipped_dir_name(name: &str) -> bool {
+    name.starts_with('.') || name == "node_modules"
+}
+
 /// Recursively find all `.md` files under `root` and load them as notes.
-/// `.trash/` is not walked recursively (a trashed folder keeps its tree
-/// out of the main view), but its top-level notes are loaded so the Trash
-/// view can show them (§3.1.4). A single unreadable file is logged and
-/// skipped rather than failing the whole scan.
+/// Hidden folders are skipped (an Obsidian vault's `.obsidian/`, a `.git/`
+/// checkout, our own `.mnemonic/`), and `.trash/` is not walked
+/// recursively (a trashed folder keeps its tree out of the main view),
+/// but its top-level notes are loaded so the Trash view can show them
+/// (§3.1.4). A single unreadable file is logged and skipped rather than
+/// failing the whole scan.
 fn scan(root: &Path) -> Result<Vec<Note>> {
     let mut notes = Vec::new();
     for entry in walkdir::WalkDir::new(root)
         .into_iter()
-        .filter_entry(|e| e.file_name() != ".trash")
+        .filter_entry(|e| {
+            e.depth() == 0
+                || !(e.file_type().is_dir()
+                    && e.file_name().to_str().is_some_and(is_skipped_dir_name))
+        })
     {
         let entry = match entry {
             Ok(e) => e,
@@ -106,6 +118,13 @@ mod tests {
         let trashed_folder = trash_dir.join("Old Folder");
         std::fs::create_dir_all(&trashed_folder).unwrap();
         Note::create(&trashed_folder, "Nested", "isi").unwrap();
+
+        // Hidden folders (Obsidian config, git) and node_modules are ignored.
+        for hidden in [".obsidian", ".git", "node_modules"] {
+            let d = dir.path().join(hidden);
+            std::fs::create_dir_all(&d).unwrap();
+            Note::create(&d, "Hidden", "isi").unwrap();
+        }
 
         let notes = scan(dir.path()).unwrap();
         assert_eq!(notes.len(), 3);

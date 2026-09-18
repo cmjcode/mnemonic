@@ -123,6 +123,62 @@ pub fn icon_button_sized(
     }
 }
 
+/// Variant of `icon_button_sized` that binds an explicit `Id` to the response.
+/// Required when parent containers need to query whether a popup anchored to
+/// this button is open before rendering the button itself.
+pub fn icon_button_sized_id(
+    ui: &mut Ui,
+    id: Id,
+    icon: &str,
+    tooltip: &str,
+    active: bool,
+    size: f32,
+    icon_size: f32,
+) -> Response {
+    let p = pal();
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let response = ui.interact(rect, id, Sense::click());
+    let enabled = ui.is_enabled();
+    let hovered = response.hovered() && enabled;
+    let fill = if active {
+        p.accent_soft
+    } else {
+        p.hover.gamma_multiply(hover_t(ui, response.id, hovered))
+    };
+    if fill.a() > 0 {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(theme::RADIUS_MD), fill);
+    }
+    let color = if !enabled {
+        p.text_faint
+    } else if active {
+        p.accent
+    } else if hovered {
+        p.text
+    } else {
+        p.text_dim
+    };
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        icon,
+        FontId::proportional(icon_size),
+        color,
+    );
+    if response.has_focus() {
+        focus_ring(ui, rect);
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tooltip)
+    });
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if tooltip.is_empty() {
+        response
+    } else {
+        response.on_hover_text(tooltip)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
     Primary,

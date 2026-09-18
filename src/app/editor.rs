@@ -1,22 +1,41 @@
 //! Note editor screen: a centered, comfortable writing column (Write /
-//! Read modes), an optional outline + backlinks panel, an inline
+//! Read modes), an optional side panel (outline, backlinks with context,
+//! unlinked mentions, AI-related notes, local graph), an inline
 //! autocomplete popup for `/` commands and `[[wikilinks]]`, and the
 //! infinite canvas for Canvas mode.
 
-use egui::{Align2, FontId, Frame, Id, Margin, Modifiers, RichText, Vec2};
-use egui_icons::icons::{ICON_DESCRIPTION, ICON_LINK};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
-use super::MnemonicApp;
-use crate::canvas::{
-    self, CanvasDocument, CanvasElement, CanvasElementId, CanvasTool, InteractionState,
+use egui::{Align2, FontId, Frame, Id, Margin, Modifiers, RichText, Vec2};
+use egui_icons::icons::{
+    ICON_ADD_LINK, ICON_CHEVRON_RIGHT, ICON_CLOSE, ICON_DESCRIPTION, ICON_EXPAND_MORE, ICON_HUB,
+    ICON_LINK, ICON_PICTURE_AS_PDF,
 };
+use uuid::Uuid;
+
+use super::graph::GraphView;
+use super::{MnemonicApp, RELATED_LIMIT};
+use crate::canvas::{
+    self, BlockBinding, CanvasDocument, CanvasElement, CanvasElementId, CanvasTool, InteractionState,
+};
+use crate::core::Backlink;
+use crate::core::embedding::RELATED_DOC_SIMILARITY;
+use crate::core::ingestion::pdf_doc_id;
+use crate::graph::{GraphNode, GraphOptions, model::note_key};
 use crate::i18n::LocaleManager;
 use crate::markdown::editor::{
     char_index_to_byte_offset, slash_menu_triggered, slash_templates, wikilink_autocomplete_query,
 };
+use crate::markdown::wikilink::title_key;
 use crate::markdown::{EditorMode, MarkdownEditor, WikilinkIndex, wikilink};
-use crate::notes::Vault;
+use crate::notes::{Note, Vault};
 use crate::ui::{self, ToastKind, pal, theme, widgets};
+
+/// Most unlinked mentions listed in the side panel.
+const MENTIONS_LIMIT: usize = 30;
+/// Height of the local graph in the side panel.
+const LOCAL_GRAPH_HEIGHT: f32 = 220.0;
 
 /// Per-open-note UI state that isn't part of the document itself.
 #[derive(Default)]
@@ -32,6 +51,65 @@ pub(super) struct EditorUi {
     /// Byte offset of a trigger the user dismissed with Esc, so the popup
     /// stays closed until the cursor moves.
     popup_dismissed_at: Option<usize>,
+    /// Link-derived panel data, rebuilt when the note or index changes.
+    links: Option<LinksPanel>,
+    /// Title keys of existing notes/PDFs (for styling unresolved links),
+    /// tagged with the index generation it was built for.
+    resolvable: Option<(u64, HashSet<String>)>,
+    /// Right-panel sections the user folded (Obsidian keeps these per view).
+    collapsed: HashSet<&'static str>,
+    /// Input buffers of the Properties section.
+    new_tag: String,
+    new_alias: String,
+}
+
+/// Everything the side panel shows that comes from the index.
+struct LinksPanel {
+    key: (Uuid, u64, String),
+    backlinks: Vec<Backlink>,
+    mentions: Vec<Mention>,
+    /// `[[links]]` going out of this note (Obsidian's "Outgoing links").
+    outgoing: Vec<Outgoing>,
+    related: Vec<Related>,
+    local_graph: GraphView,
+}
+
+struct Outgoing {
+    /// `Title` or `Title#Heading` as written.
+    reference: String,
+    /// Whether the target exists in the vault.
+    resolved: bool,
+}
+
+struct Mention {
+    title: String,
+    path: PathBuf,
+    line: usize,
+    context: String,
+}
+
+struct Related {
+    title: String,
+    path: PathBuf,
+    is_pdf: bool,
+    similarity: f32,
+}
+
+/// What the side panel asks the app to do.
+enum PanelAction {
+    OpenPath(PathBuf),
+    /// Follow a `[[reference]]` (creates the note if missing).
+    Navigate(String),
+    AddTag(String),
+    RemoveTag(String),
+    AddAlias(String),
+    RemoveAlias(String),
+    /// Wrap an unlinked mention on `line` of the note at `path`.
+    LinkMention { path: PathBuf, line: usize },
+    /// Append `[[target]]` to the open note.
+    InsertLink(String),
+    OpenGraphNode(GraphNode),
+    OpenFullGraph,
 }
 
 impl EditorUi {
@@ -51,6 +129,12 @@ enum Completion {
 /// What the canvas surface asks the app to do after rendering.
 pub(super) struct CanvasOutcome {
     pub(super) modified: bool,
+    /// A Draw.io file replaced the canvas contents: `imported_blocks` are
+    /// the text vertices that became bound nodes and need their paragraphs
+    /// appended to the Markdown (`MarkdownEditor::import_bound_canvas`).
+    pub(super) imported: Option<(CanvasDocument, Vec<(BlockBinding, String)>)>,
+    /// The user asked to bind / unbind the element being text-edited.
+    pub(super) bind: Option<(CanvasElementId, bool)>,
     pub(super) toast: Option<(ToastKind, String)>,
 }
 
@@ -59,116 +143,129 @@ impl MnemonicApp {
         let Some(mut editor) = self.editor.take() else {
             return;
         };
-        let tr = &self.locales;
-        let t = |key: &str| tr.t(key, &[]);
         let p = pal();
         let ctx = ui.ctx().clone();
 
         let mut navigate_to: Option<String> = None;
+        let mut clicked_tag: Option<String> = None;
         let mut scroll_to_slug: Option<String> = None;
+        let mut commit_title = false;
         let mut canvas_toast = None;
+        let mut panel_actions: Vec<PanelAction> = Vec::new();
+
+        if !editor.mode.shows_canvas() {
+            if self.settings.show_outline {
+                self.refresh_links_panel(&editor.note);
+            }
+            self.refresh_resolvable();
+        }
+        let tr = &self.locales;
+        let t = |key: &str| tr.t(key, &[]);
+
+        // Split: the diagram takes the right half, the Markdown keeps the
+        // left (§Fase 3). Edgeless: the diagram takes everything.
+        if editor.mode == EditorMode::Split {
+            editor.ensure_canvas();
+            let half = (ui.available_width() * 0.5).max(320.0);
+            let mut outcome = None;
+            egui::Panel::right("split_canvas_panel")
+                .resizable(true)
+                .default_size(half)
+                .size_range(280.0..=ui.available_width() - 320.0)
+                .frame(egui::Frame::NONE)
+                .show_separator_line(true)
+                .show(ui, |ui| {
+                    if let Some(canvas) = editor.canvas.as_mut() {
+                        outcome = Some(show_canvas_surface(
+                            canvas,
+                            &mut editor.canvas_interaction,
+                            ui,
+                            p.is_dark,
+                            tr,
+                        ));
+                    }
+                });
+            if let Some(outcome) = outcome {
+                canvas_toast = apply_canvas_outcome(&mut editor, outcome);
+            }
+        }
 
         if editor.mode == EditorMode::Edgeless {
             editor.ensure_canvas();
             if let Some(canvas) = editor.canvas.as_mut() {
                 let outcome =
                     show_canvas_surface(canvas, &mut editor.canvas_interaction, ui, p.is_dark, tr);
-                if outcome.modified {
-                    editor.sync_canvas_to_body();
-                }
-                canvas_toast = outcome.toast;
+                canvas_toast = apply_canvas_outcome(&mut editor, outcome);
             }
             self.editor_ui.popup_visible = false;
         } else {
-            // ── Outline & backlinks panel ──
-            if self.settings.show_outline {
+            let editor_ui = &mut self.editor_ui;
+
+            // ── Status bar (Obsidian: backlinks · words · characters) ──
+            let backlink_count = editor_ui.links.as_ref().map(|l| l.backlinks.len()).unwrap_or(0);
+            let status = format!(
+                "{} · {} · {}",
+                tr.t("editor-status-backlinks", &[("count", &backlink_count.to_string())]),
+                tr.t("editor-word-count", &[("count", &editor.word_count().to_string())]),
+                tr.t(
+                    "editor-char-count",
+                    &[("count", &editor.note.body.chars().count().to_string())]
+                ),
+            );
+            egui::Panel::bottom("editor_status_bar")
+                .exact_size(22.0)
+                .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(12, 2)))
+                .show_separator_line(true)
+                .show(ui, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(&status).size(theme::TEXT_XS).color(p.text_faint));
+                    });
+                });
+
+            // ── Right sidebar: local graph, backlinks, outgoing links,
+            //    outline, properties, related (Obsidian's right panes) ──
+            if self.settings.show_outline && editor.mode != EditorMode::Split {
                 let outline = editor.outline();
-                let backlinks: Vec<String> = self
-                    .vault
-                    .as_ref()
-                    .map(|v| {
-                        wikilink::backlinks_for(
-                            &editor.note.frontmatter.title,
-                            editor.note.frontmatter.id,
-                            &v.notes,
-                        )
-                        .into_iter()
-                        .map(|n| n.frontmatter.title.clone())
-                        .collect()
-                    })
-                    .unwrap_or_default();
+                let frontmatter = editor.note.frontmatter.clone();
+                let EditorUi {
+                    links,
+                    collapsed,
+                    new_tag,
+                    new_alias,
+                    ..
+                } = editor_ui;
 
                 egui::Panel::right("editor_outline_panel")
                     .resizable(true)
-                    .default_size(240.0)
-                    .size_range(180.0..=380.0)
+                    .default_size(290.0)
+                    .size_range(220.0..=480.0)
                     .frame(theme::side_panel_frame().fill(p.bg))
                     .show_separator_line(true)
                     .show(ui, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
-                            widgets::section_header(ui, &t("editor-outline"));
-                            if outline.is_empty() {
-                                hint_text(ui, &t("editor-outline-empty"));
-                            }
-                            for heading in &outline {
-                                let resp = widgets::list_row(
-                                    ui,
-                                    widgets::RowSpec {
-                                        icon: "",
-                                        icon_color: p.text_faint,
-                                        label: &heading.title,
-                                        trailing: None,
-                                        selected: false,
-                                        indent: (heading.level.saturating_sub(1) as f32) * 12.0,
-                                        reserve_right: 0.0,
-                                    },
-                                );
-                                if resp.clicked() {
-                                    scroll_to_slug = Some(heading.slug.clone());
-                                }
-                            }
-
-                            widgets::section_header(ui, &t("editor-backlinks"));
-                            if backlinks.is_empty() {
-                                hint_text(ui, &t("editor-backlinks-empty"));
-                            }
-                            for title in &backlinks {
-                                let resp = widgets::list_row(
-                                    ui,
-                                    widgets::RowSpec {
-                                        icon: ICON_DESCRIPTION.codepoint,
-                                        icon_color: p.note_icon,
-                                        label: title,
-                                        trailing: None,
-                                        selected: false,
-                                        indent: 0.0,
-                                        reserve_right: 0.0,
-                                    },
-                                );
-                                if resp.clicked() {
-                                    navigate_to = Some(title.clone());
-                                }
-                            }
+                            right_panel(
+                                ui,
+                                tr,
+                                collapsed,
+                                links.as_mut(),
+                                &outline,
+                                &frontmatter,
+                                new_tag,
+                                new_alias,
+                                &mut panel_actions,
+                                &mut scroll_to_slug,
+                            );
                         });
                     });
             }
 
             // ── Writing column ──
-            let stats = format!(
-                "{} · {}",
-                tr.t(
-                    "editor-word-count",
-                    &[("count", &editor.word_count().to_string())]
-                ),
-                tr.t(
-                    "editor-reading-time",
-                    &[("minutes", &editor.reading_time_minutes().to_string())]
-                ),
-            );
             let editor_ui = &mut self.editor_ui;
             let cache = &mut self.markdown_cache;
             let vault = self.vault.as_ref();
+            let pdfs = &self.pdf_documents;
+            let untitled = t("editor-untitled");
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -177,22 +274,33 @@ impl MnemonicApp {
                     let avail = ui.available_width();
                     let col = (avail - 2.0 * theme::SPACE_XL).clamp(200.0, theme::EDITOR_MAX_WIDTH);
                     let margin = ((avail - col) / 2.0).max(0.0);
-                    ui.add_space(theme::SPACE_XL);
+                    ui.add_space(theme::SPACE_XL * 1.5);
                     ui.horizontal_top(|ui| {
                         ui.add_space(margin);
                         ui.vertical(|ui| {
                             ui.set_width(col);
-                            ui.label(
-                                RichText::new(&stats)
-                                    .size(theme::TEXT_XS)
-                                    .color(p.text_faint),
-                            );
+
+                            // Inline title, as in Obsidian: the note name
+                            // sits above the body and is edited in place.
+                            let title_resp = egui::TextEdit::singleline(&mut editor_ui.title_buffer)
+                                .id(Id::new("note_inline_title"))
+                                .frame(Frame::NONE)
+                                .font(theme::semibold(theme::TEXT_DISPLAY))
+                                .text_color(p.text)
+                                .hint_text(RichText::new(&untitled).color(p.text_faint))
+                                .desired_width(col)
+                                .margin(Margin::ZERO)
+                                .show(ui)
+                                .response;
+                            if title_resp.lost_focus() {
+                                commit_title = true;
+                            }
                             ui.add_space(theme::SPACE_M);
 
                             match editor.mode {
                                 EditorMode::Source => {
                                     let rows =
-                                        ((viewport.height() - 120.0) / 22.0).max(12.0) as usize;
+                                        ((viewport.height() - 160.0) / 24.0).max(12.0) as usize;
                                     source_editor(
                                         ui,
                                         &ctx,
@@ -200,6 +308,7 @@ impl MnemonicApp {
                                         &mut editor,
                                         editor_ui,
                                         vault,
+                                        pdfs,
                                         col,
                                         rows,
                                     );
@@ -211,15 +320,38 @@ impl MnemonicApp {
                                     // the viewport past the padding above it.
                                     let offset = ui.cursor().top() - content_top;
                                     let local = viewport.translate(Vec2::new(0.0, -offset));
-                                    let outcome = editor.render(ui, cache, local);
+                                    let resolvable = editor_ui.resolvable.as_ref().map(|(_, s)| s);
+                                    let is_resolved = |target: &str| {
+                                        resolvable.is_none_or(|s| s.contains(&title_key(target)))
+                                    };
+                                    let resolve_embed = |target: &str| resolve_embed_target(vault, target);
+                                    let outcome = editor.render(ui, cache, local, &is_resolved, &resolve_embed);
                                     if let Some(new_body) = outcome.updated_body {
                                         editor.set_body(new_body);
                                     }
                                     if let Some(title) = outcome.clicked_wikilink {
                                         navigate_to = Some(title);
                                     }
+                                    if let Some(tag) = outcome.clicked_tag {
+                                        clicked_tag = Some(tag);
+                                    }
                                 }
                                 EditorMode::Edgeless => {}
+                                EditorMode::Split => {
+                                    let rows =
+                                        ((viewport.height() - 160.0) / 24.0).max(12.0) as usize;
+                                    source_editor(
+                                        ui,
+                                        &ctx,
+                                        tr,
+                                        &mut editor,
+                                        editor_ui,
+                                        vault,
+                                        pdfs,
+                                        col,
+                                        rows,
+                                    );
+                                }
                             }
                             ui.add_space(theme::SPACE_XL * 4.0);
                         });
@@ -233,13 +365,675 @@ impl MnemonicApp {
             self.markdown_cache.scroll_to_id_target_mut().replace(slug);
         }
         self.editor = Some(editor);
+        if commit_title {
+            self.commit_title_buffer();
+        }
         if let Some((kind, msg)) = canvas_toast {
             self.toasts.push(kind, msg);
         }
         if let Some(title) = navigate_to {
             self.navigate_wikilink(&title);
         }
+        if let Some(tag) = clicked_tag {
+            // Obsidian: clicking a tag searches for it — here, filter the
+            // library by that tag.
+            self.close_document();
+            self.close_graph_view();
+            self.doc_filter = ui::SidebarDocFilter::Tag(tag);
+        }
+        for action in panel_actions {
+            self.apply_panel_action(action);
+        }
     }
+
+    /// Rebuilds the side panel's index-derived data when the open note,
+    /// its title, or the index changed since it was last built.
+    fn refresh_links_panel(&mut self, note: &Note) {
+        let key = (
+            note.frontmatter.id,
+            self.index_generation,
+            note.frontmatter.title.clone(),
+        );
+        if self.editor_ui.links.as_ref().is_some_and(|l| l.key == key) {
+            return;
+        }
+        let (Some(vault), Some(index)) = (self.vault.as_ref(), self.index.as_ref()) else {
+            return;
+        };
+        let id = note.frontmatter.id;
+        let title = note.frontmatter.title.clone();
+
+        let keys = wikilink::link_keys_for(note);
+        let backlinks = index.backlinks_for_keys(&keys, id).unwrap_or_else(|e| {
+            log::warn!("app: loading backlinks failed: {e:#}");
+            Vec::new()
+        });
+
+        let mentions: Vec<Mention> = vault
+            .notes
+            .iter()
+            .filter(|n| n.frontmatter.id != id && !n.frontmatter.trashed && !n.is_canvas())
+            .flat_map(|n| {
+                wikilink::unlinked_mentions(&n.body, &title)
+                    .into_iter()
+                    .map(|m| Mention {
+                        title: n.frontmatter.title.clone(),
+                        path: n.path.clone(),
+                        line: m.line,
+                        context: m.context,
+                    })
+            })
+            .take(MENTIONS_LIMIT)
+            .collect();
+
+        // Related by meaning, minus what is already connected by links.
+        let mut connected: HashSet<String> = wikilink::extract_wikilinks(&note.body)
+            .iter()
+            .map(|t| title_key(t))
+            .collect();
+        connected.extend(backlinks.iter().map(|b| title_key(&b.src_title)));
+        let notes_by_id: HashMap<Uuid, &Note> =
+            vault.notes.iter().map(|n| (n.frontmatter.id, n)).collect();
+        let pdfs_by_id: HashMap<Uuid, &PathBuf> =
+            self.pdf_documents.iter().map(|p| (pdf_doc_id(p), p)).collect();
+        let related = index
+            .similar_documents(id, RELATED_LIMIT * 3)
+            .unwrap_or_else(|e| {
+                log::warn!("app: loading related documents failed: {e:#}");
+                Vec::new()
+            })
+            .into_iter()
+            .filter(|(_, sim)| *sim >= RELATED_DOC_SIMILARITY)
+            .filter_map(|(doc, similarity)| {
+                if let Some(n) = notes_by_id.get(&doc).filter(|n| !n.frontmatter.trashed) {
+                    return Some(Related {
+                        title: n.frontmatter.title.clone(),
+                        path: n.path.clone(),
+                        is_pdf: false,
+                        similarity,
+                    });
+                }
+                pdfs_by_id.get(&doc).map(|p| Related {
+                    title: p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    path: (*p).clone(),
+                    is_pdf: true,
+                    similarity,
+                })
+            })
+            .filter(|r| !connected.contains(&title_key(&r.title)))
+            .take(RELATED_LIMIT)
+            .collect();
+
+        let opts = GraphOptions {
+            show_orphans: true,
+            show_ghosts: true,
+            show_pdfs: true,
+            show_semantic: false,
+        };
+        let full = self.build_graph_data(opts);
+        let focus_key = note_key(id);
+        let local = full
+            .index_of(&focus_key)
+            .map(|center| full.neighborhood(center, 1))
+            .unwrap_or_default();
+        // Keep node positions stable across refreshes of the same note.
+        let mut local_graph = match self.editor_ui.links.take() {
+            Some(mut old) if old.key.0 == id => {
+                old.local_graph.replace_data(local, opts);
+                old.local_graph
+            }
+            _ => GraphView::new(local, opts, &HashMap::new(), true),
+        };
+        local_graph.set_focus(&focus_key);
+
+        let resolvable: HashSet<String> = vault
+            .notes
+            .iter()
+            .filter(|n| !n.frontmatter.trashed)
+            .flat_map(wikilink::link_keys_for)
+            .chain(
+                self.pdf_documents
+                    .iter()
+                    .filter_map(|p| p.file_name().map(|n| title_key(&n.to_string_lossy()))),
+            )
+            .collect();
+        let mut outgoing: Vec<Outgoing> = Vec::new();
+        for occ in wikilink::parse_wikilinks(&note.body) {
+            let reference = occ.link.reference();
+            if outgoing.iter().any(|o| o.reference == reference) {
+                continue;
+            }
+            outgoing.push(Outgoing {
+                resolved: resolvable.contains(&title_key(&occ.link.target)),
+                reference,
+            });
+        }
+
+        self.editor_ui.links = Some(LinksPanel {
+            key,
+            backlinks,
+            mentions,
+            outgoing,
+            related,
+            local_graph,
+        });
+    }
+
+    fn refresh_resolvable(&mut self) {
+        if self
+            .editor_ui
+            .resolvable
+            .as_ref()
+            .is_some_and(|(generation, _)| *generation == self.index_generation)
+        {
+            return;
+        }
+        let Some(vault) = self.vault.as_ref() else {
+            return;
+        };
+        let set = vault
+            .notes
+            .iter()
+            .filter(|n| !n.frontmatter.trashed)
+            .map(|n| title_key(&n.frontmatter.title))
+            .chain(
+                self.pdf_documents
+                    .iter()
+                    .filter_map(|p| p.file_name().map(|n| title_key(&n.to_string_lossy()))),
+            )
+            .collect();
+        self.editor_ui.resolvable = Some((self.index_generation, set));
+    }
+
+    fn apply_panel_action(&mut self, action: PanelAction) {
+        match action {
+            PanelAction::OpenPath(path) => self.open_file_by_path(path),
+            PanelAction::Navigate(reference) => self.navigate_wikilink(&reference),
+            PanelAction::AddTag(tag) => {
+                let tag = tag.trim().trim_start_matches('#').trim_matches('/').to_string();
+                if let Some(editor) = self.editor.as_mut()
+                    && !tag.is_empty()
+                    && !editor.note.frontmatter.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag))
+                {
+                    editor.note.frontmatter.tags.push(tag);
+                    editor.mark_metadata_dirty();
+                }
+            }
+            PanelAction::RemoveTag(tag) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.note.frontmatter.tags.retain(|t| !t.eq_ignore_ascii_case(&tag));
+                    editor.mark_metadata_dirty();
+                }
+            }
+            PanelAction::AddAlias(alias) => {
+                let alias = alias.trim().to_string();
+                if let Some(editor) = self.editor.as_mut()
+                    && !alias.is_empty()
+                    && !editor.note.frontmatter.aliases.iter().any(|a| a.eq_ignore_ascii_case(&alias))
+                {
+                    editor.note.frontmatter.aliases.push(alias);
+                    editor.mark_metadata_dirty();
+                }
+            }
+            PanelAction::RemoveAlias(alias) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.note.frontmatter.aliases.retain(|a| !a.eq_ignore_ascii_case(&alias));
+                    editor.mark_metadata_dirty();
+                }
+            }
+            PanelAction::OpenGraphNode(node) => self.open_graph_node(&node),
+            PanelAction::OpenFullGraph => self.open_graph_view(),
+            PanelAction::InsertLink(target) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    let mut body = editor.note.body.clone();
+                    if !body.is_empty() && !body.ends_with('\n') {
+                        body.push('\n');
+                    }
+                    body.push_str(&format!("\n[[{target}]]\n"));
+                    editor.set_body(body);
+                }
+                self.save_editor_now();
+            }
+            PanelAction::LinkMention { path, line } => {
+                let Some(title) = self.editor.as_ref().map(|e| e.note.frontmatter.title.clone())
+                else {
+                    return;
+                };
+                let Some(mut note) = self.note_by_path(&path) else {
+                    return;
+                };
+                let Some(body) = wikilink::link_mention_on_line(&note.body, line, &title) else {
+                    return;
+                };
+                note.body = body;
+                if let Err(e) = note.save() {
+                    self.report_error("error-context-save-note", e);
+                    return;
+                }
+                self.ignore_watcher_until =
+                    Some(std::time::Instant::now() + super::SELF_WRITE_GRACE);
+                if let Some(vault) = self.vault.as_mut()
+                    && let Some(existing) = vault.notes.iter_mut().find(|n| n.path == path)
+                {
+                    *existing = note.clone();
+                }
+                if let Some(index) = self.index.as_mut()
+                    && let Err(e) = index.upsert_note(&note)
+                {
+                    log::warn!("app: updating links in index failed: {e:#}");
+                }
+                self.reindex_note(&note);
+                self.index_changed();
+                self.toast(ToastKind::Success, "toast-mention-linked", &[("title", &note.frontmatter.title)]);
+            }
+        }
+    }
+}
+
+/// Resolves `![[target]]`: a note by title/stem/alias (its body, for
+/// transclusion) or an attachment file anywhere in the vault by name.
+fn resolve_embed_target(
+    vault: Option<&Vault>,
+    target: &str,
+) -> Option<crate::markdown::renderer::EmbedContent> {
+    use crate::markdown::renderer::EmbedContent;
+    let vault = vault?;
+    let key = title_key(target);
+    if let Some(note) = vault
+        .notes
+        .iter()
+        .filter(|n| !n.frontmatter.trashed)
+        .find(|n| wikilink::link_keys_for(n).contains(&key))
+    {
+        return Some(EmbedContent::Note {
+            title: note.frontmatter.title.clone(),
+            body: note.body.clone(),
+        });
+    }
+    // Attachment: exact file name, first match under the vault root
+    // (hidden folders skipped, like the note scan).
+    let wanted = target.trim();
+    let found = walkdir::WalkDir::new(&vault.root)
+        .into_iter()
+        .filter_entry(|e| {
+            e.depth() == 0
+                || !(e.file_type().is_dir()
+                    && e.file_name().to_str().is_some_and(crate::notes::vault::is_skipped_dir_name))
+        })
+        .flatten()
+        .find(|e| e.file_type().is_file() && e.file_name().to_string_lossy().eq_ignore_ascii_case(wanted))
+        .map(|e| e.path().to_path_buf())?;
+    Some(EmbedContent::Image(found))
+}
+
+/// One Obsidian-style pane header: chevron, uppercase title, count.
+/// Returns whether the section is open.
+fn pane_header(
+    ui: &mut egui::Ui,
+    collapsed: &mut HashSet<&'static str>,
+    key: &'static str,
+    title: &str,
+    count: Option<usize>,
+) -> bool {
+    let p = pal();
+    let open = !collapsed.contains(key);
+    ui.add_space(theme::SPACE_M);
+    let resp = ui
+        .horizontal(|ui| {
+            ui.add_space(4.0);
+            let icon = if open { ICON_EXPAND_MORE.codepoint } else { ICON_CHEVRON_RIGHT.codepoint };
+            ui.label(RichText::new(icon).size(14.0).color(p.text_faint));
+            ui.label(
+                RichText::new(title.to_uppercase())
+                    .font(theme::semibold(11.0))
+                    .color(p.text_faint),
+            );
+            if let Some(n) = count {
+                ui.label(RichText::new(n.to_string()).size(11.0).color(p.text_faint));
+            }
+        })
+        .response
+        .interact(egui::Sense::click());
+    if resp.clicked() {
+        if open {
+            collapsed.insert(key);
+        } else {
+            collapsed.remove(key);
+        }
+    }
+    ui.add_space(2.0);
+    !collapsed.contains(key)
+}
+
+/// The editor's right sidebar, in Obsidian's order: local graph, linked
+/// & unlinked mentions, outgoing links, outline, properties, related.
+#[allow(clippy::too_many_arguments)]
+fn right_panel(
+    ui: &mut egui::Ui,
+    tr: &LocaleManager,
+    collapsed: &mut HashSet<&'static str>,
+    links: Option<&mut LinksPanel>,
+    outline: &[crate::markdown::renderer::Heading],
+    frontmatter: &crate::notes::frontmatter::NoteFrontmatter,
+    new_tag: &mut String,
+    new_alias: &mut String,
+    actions: &mut Vec<PanelAction>,
+    scroll_to_slug: &mut Option<String>,
+) {
+    let p = pal();
+    let t = |key: &str| tr.t(key, &[]);
+
+    // ── Local graph (links between documents, always on top) ──
+    ui.horizontal(|ui| {
+        let open = pane_header(ui, collapsed, "graph", &t("editor-local-graph"), None);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if open && widgets::icon_button(ui, ICON_HUB.codepoint, &t("graph-title"), false).clicked() {
+                actions.push(PanelAction::OpenFullGraph);
+            }
+        });
+    });
+    if !collapsed.contains("graph") {
+        match links.as_ref() {
+            Some(links) if !links.local_graph.data.nodes.is_empty() => {}
+            _ => hint_text(ui, &t("editor-local-graph-empty")),
+        }
+    }
+    let mut graph_open: Option<GraphNode> = None;
+    let mut links = links;
+    if let Some(links) = links.as_deref_mut() {
+        if !collapsed.contains("graph") {
+            let size = Vec2::new(ui.available_width(), LOCAL_GRAPH_HEIGHT);
+            let outcome = links.local_graph.show(ui, tr, size);
+            if let Some(i) = outcome.open {
+                graph_open = Some(links.local_graph.data.nodes[i].clone());
+            }
+        }
+
+        // ── Backlinks: linked mentions + unlinked mentions ──
+        if pane_header(ui, collapsed, "backlinks", &t("editor-linked-mentions"), Some(links.backlinks.len())) {
+            if links.backlinks.is_empty() {
+                hint_text(ui, &t("editor-backlinks-empty"));
+            }
+            for b in &links.backlinks {
+                let resp = widgets::list_row(
+                    ui,
+                    widgets::RowSpec {
+                        icon: ICON_DESCRIPTION.codepoint,
+                        icon_color: p.note_icon,
+                        label: &b.src_title,
+                        trailing: None,
+                        selected: false,
+                        indent: 0.0,
+                        reserve_right: 0.0,
+                    },
+                );
+                if resp.clicked() {
+                    actions.push(PanelAction::OpenPath(b.src_path.clone()));
+                }
+                context_text(ui, &b.context);
+            }
+        }
+        if pane_header(ui, collapsed, "mentions", &t("editor-unlinked-mentions"), Some(links.mentions.len())) {
+            if links.mentions.is_empty() {
+                hint_text(ui, &t("editor-unlinked-mentions-empty"));
+            }
+            for m in &links.mentions {
+                let resp = widgets::list_row(
+                    ui,
+                    widgets::RowSpec {
+                        icon: ICON_DESCRIPTION.codepoint,
+                        icon_color: p.text_faint,
+                        label: &m.title,
+                        trailing: None,
+                        selected: false,
+                        indent: 0.0,
+                        reserve_right: 28.0,
+                    },
+                );
+                if resp.clicked() {
+                    actions.push(PanelAction::OpenPath(m.path.clone()));
+                }
+                let action_center = egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y);
+                if widgets::row_action(
+                    ui,
+                    Id::new(("mention_link", &m.path, m.line)),
+                    action_center,
+                    ICON_ADD_LINK.codepoint,
+                    &t("editor-link-mention"),
+                )
+                .clicked()
+                {
+                    actions.push(PanelAction::LinkMention {
+                        path: m.path.clone(),
+                        line: m.line,
+                    });
+                }
+                context_text(ui, &m.context);
+            }
+        }
+
+        // ── Outgoing links ──
+        if pane_header(ui, collapsed, "outgoing", &t("editor-outgoing-links"), Some(links.outgoing.len())) {
+            if links.outgoing.is_empty() {
+                hint_text(ui, &t("editor-outgoing-empty"));
+            }
+            for o in &links.outgoing {
+                let resp = widgets::list_row(
+                    ui,
+                    widgets::RowSpec {
+                        icon: ICON_LINK.codepoint,
+                        icon_color: if o.resolved { p.accent } else { p.text_faint },
+                        label: &o.reference,
+                        trailing: (!o.resolved).then_some("✎"),
+                        selected: false,
+                        indent: 0.0,
+                        reserve_right: 0.0,
+                    },
+                );
+                if resp.clicked() {
+                    actions.push(PanelAction::Navigate(o.reference.clone()));
+                }
+            }
+        }
+    }
+
+    // ── Outline ──
+    if pane_header(ui, collapsed, "outline", &t("editor-outline"), Some(outline.len())) {
+        if outline.is_empty() {
+            hint_text(ui, &t("editor-outline-empty"));
+        }
+        for heading in outline {
+            let resp = widgets::list_row(
+                ui,
+                widgets::RowSpec {
+                    icon: "",
+                    icon_color: p.text_faint,
+                    label: &heading.title,
+                    trailing: None,
+                    selected: false,
+                    indent: (heading.level.saturating_sub(1) as f32) * 12.0,
+                    reserve_right: 0.0,
+                },
+            );
+            if resp.clicked() {
+                *scroll_to_slug = Some(heading.slug.clone());
+            }
+        }
+    }
+
+    // ── Properties (frontmatter) ──
+    if pane_header(ui, collapsed, "properties", &t("editor-properties"), None) {
+        properties_section(ui, tr, frontmatter, new_tag, new_alias, actions);
+    }
+
+    // ── Related (AI) — MNEMONIC's addition to Obsidian's panes ──
+    if let Some(links) = links
+        && pane_header(ui, collapsed, "related", &t("editor-related"), Some(links.related.len()))
+    {
+        if links.related.is_empty() {
+            hint_text(ui, &t("editor-related-empty"));
+        }
+        for r in &links.related {
+            let percent = format!("{:.0}%", r.similarity * 100.0);
+            let resp = widgets::list_row(
+                ui,
+                widgets::RowSpec {
+                    icon: if r.is_pdf {
+                        ICON_PICTURE_AS_PDF.codepoint
+                    } else {
+                        ICON_DESCRIPTION.codepoint
+                    },
+                    icon_color: if r.is_pdf { p.pdf_icon } else { p.note_icon },
+                    label: &r.title,
+                    trailing: Some(&percent),
+                    selected: false,
+                    indent: 0.0,
+                    reserve_right: 28.0,
+                },
+            );
+            if resp.clicked() {
+                actions.push(PanelAction::OpenPath(r.path.clone()));
+            }
+            if resp.hovered()
+                && widgets::row_action(
+                    ui,
+                    Id::new(("related_link", &r.path)),
+                    egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y),
+                    ICON_ADD_LINK.codepoint,
+                    &t("editor-insert-link"),
+                )
+                .clicked()
+            {
+                actions.push(PanelAction::InsertLink(r.title.clone()));
+            }
+        }
+    }
+    if let Some(node) = graph_open {
+        actions.push(PanelAction::OpenGraphNode(node));
+    }
+}
+
+/// Tags, aliases and any other frontmatter properties, editable in place
+/// like Obsidian's Properties view.
+fn properties_section(
+    ui: &mut egui::Ui,
+    tr: &LocaleManager,
+    fm: &crate::notes::frontmatter::NoteFrontmatter,
+    new_tag: &mut String,
+    new_alias: &mut String,
+    actions: &mut Vec<PanelAction>,
+) {
+    let p = pal();
+    let t = |key: &str| tr.t(key, &[]);
+    let label = |ui: &mut egui::Ui, text: &str| {
+        ui.label(RichText::new(text).size(theme::TEXT_XS).color(p.text_dim));
+    };
+
+    egui::Frame::NONE
+        .inner_margin(Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+
+            label(ui, &t("editor-tags"));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                for tag in &fm.tags {
+                    theme::tag_chip_frame(theme::tag_color(tag)).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.label(RichText::new(format!("#{tag}")).size(theme::TEXT_XS).color(p.text));
+                            if ui
+                                .add(egui::Label::new(RichText::new(ICON_CLOSE.codepoint).size(11.0).color(p.text_faint)).sense(egui::Sense::click()))
+                                .on_hover_text(t("editor-remove"))
+                                .clicked()
+                            {
+                                actions.push(PanelAction::RemoveTag(tag.clone()));
+                            }
+                        });
+                    });
+                }
+                let resp = egui::TextEdit::singleline(new_tag)
+                    .id(Id::new("props_new_tag"))
+                    .hint_text(RichText::new(t("editor-add-tag")).color(p.text_faint))
+                    .font(FontId::proportional(theme::TEXT_XS))
+                    .desired_width(90.0)
+                    .show(ui)
+                    .response;
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !new_tag.trim().is_empty() {
+                    actions.push(PanelAction::AddTag(std::mem::take(new_tag)));
+                    resp.request_focus();
+                }
+            });
+
+            label(ui, &t("editor-aliases"));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                for alias in &fm.aliases {
+                    theme::tag_chip_frame(p.surface).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.label(RichText::new(alias).size(theme::TEXT_XS).color(p.text));
+                            if ui
+                                .add(egui::Label::new(RichText::new(ICON_CLOSE.codepoint).size(11.0).color(p.text_faint)).sense(egui::Sense::click()))
+                                .clicked()
+                            {
+                                actions.push(PanelAction::RemoveAlias(alias.clone()));
+                            }
+                        });
+                    });
+                }
+                let resp = egui::TextEdit::singleline(new_alias)
+                    .id(Id::new("props_new_alias"))
+                    .hint_text(RichText::new(t("editor-add-alias")).color(p.text_faint))
+                    .font(FontId::proportional(theme::TEXT_XS))
+                    .desired_width(110.0)
+                    .show(ui)
+                    .response;
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !new_alias.trim().is_empty() {
+                    actions.push(PanelAction::AddAlias(std::mem::take(new_alias)));
+                    resp.request_focus();
+                }
+            });
+
+            egui::Grid::new("props_grid").num_columns(2).spacing([8.0, 2.0]).show(ui, |ui| {
+                label(ui, &t("editor-created"));
+                ui.label(RichText::new(fm.created.format("%Y-%m-%d %H:%M").to_string()).size(theme::TEXT_XS).color(p.text));
+                ui.end_row();
+                label(ui, &t("editor-modified"));
+                ui.label(RichText::new(fm.modified.format("%Y-%m-%d %H:%M").to_string()).size(theme::TEXT_XS).color(p.text));
+                ui.end_row();
+                for (k, v) in &fm.extra {
+                    label(ui, k);
+                    let shown = match v {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        other => serde_yaml::to_string(other).unwrap_or_default().trim().to_string(),
+                    };
+                    ui.label(RichText::new(shown).size(theme::TEXT_XS).color(p.text));
+                    ui.end_row();
+                }
+            });
+        });
+}
+
+/// The line a link/mention appears on, under its row.
+fn context_text(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::NONE
+        .inner_margin(Margin {
+            left: 30,
+            right: 8,
+            top: 0,
+            bottom: 4,
+        })
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(wikilink::display_text(text))
+                    .size(theme::TEXT_XS)
+                    .color(pal().text_faint),
+            );
+        });
 }
 
 fn hint_text(ui: &mut egui::Ui, text: &str) {
@@ -263,6 +1057,7 @@ fn source_editor(
     editor: &mut MarkdownEditor,
     state: &mut EditorUi,
     vault: Option<&Vault>,
+    pdfs: &[PathBuf],
     width: f32,
     rows: usize,
 ) {
@@ -282,6 +1077,23 @@ fn source_editor(
     }
 
     let mut body = editor.note.body.clone();
+    // Obsidian-style styled source: headings large, links/tags accented,
+    // code monospace — the raw Markdown stays fully editable.
+    let style = crate::markdown::highlight::HighlightStyle {
+        base_size: 15.5,
+        text: p.text,
+        dim: p.text_dim,
+        faint: p.text_faint,
+        accent: p.accent,
+        code_bg: p.surface,
+        highlight_bg: p.accent_soft,
+        semibold: egui::FontFamily::Name(theme::SEMIBOLD_FAMILY.into()),
+        line_height: 24.0,
+    };
+    let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+        let job = crate::markdown::highlight::layout_job(text.as_str(), wrap_width, &style);
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
     let output = egui::TextEdit::multiline(&mut body)
         .id(edit_id)
         .frame(Frame::NONE)
@@ -292,6 +1104,7 @@ fn source_editor(
         .desired_rows(rows)
         .lock_focus(true)
         .margin(Margin::ZERO)
+        .layouter(&mut layouter)
         .show(ui);
     if body != editor.note.body {
         editor.set_body(body.clone());
@@ -313,7 +1126,11 @@ fn source_editor(
                 .collect()
         } else if let Some(query) = wikilink_autocomplete_query(before) {
             vault
-                .map(|v| WikilinkIndex::build(&v.notes).suggestions(&query, 8))
+                .map(|v| {
+                    WikilinkIndex::build(&v.notes)
+                        .with_files(pdfs)
+                        .suggestions(&query, 8)
+                })
                 .unwrap_or_default()
                 .into_iter()
                 .map(|title| {
@@ -457,8 +1274,23 @@ pub(super) fn show_canvas_surface(
     let screen_rect = response.rect;
     let origin = screen_rect.min;
     let mut modified = false;
+    let mut imported_doc: Option<(CanvasDocument, Vec<(BlockBinding, String)>)> = None;
+    let mut bind: Option<(CanvasElementId, bool)> = None;
     let mut toast = None;
     let ctx = ui.ctx().clone();
+
+    // 0. Deferred fit-to-content (set when a Draw.io note is opened: its
+    // coordinates can sit anywhere, and the viewport isn't persisted).
+    if std::mem::take(&mut interaction.pending_fit) {
+        let bounds = canvas
+            .elements
+            .iter()
+            .map(|e| e.bounding_rect())
+            .fold(egui::Rect::NOTHING, |acc, r| acc.union(r));
+        if bounds.is_positive() {
+            canvas.viewport.fit_rect(bounds, screen_rect.size());
+        }
+    }
 
     // Single-letter tool shortcuts (V, H, S, R, ...) while nothing is focused.
     if !ctx.egui_wants_keyboard_input()
@@ -561,6 +1393,7 @@ pub(super) fn show_canvas_surface(
                         size: [w.max(180.0), h.max(120.0)],
                         text: tr.t("canvas-new-sticky", &[]),
                         color: interaction.primary_color,
+                        binding: None,
                     });
                     interaction.active_tool = CanvasTool::Select;
                     modified = true;
@@ -575,6 +1408,7 @@ pub(super) fn show_canvas_surface(
                         fill_color: None,
                         text: String::new(),
                         text_color: None,
+                        binding: None,
                     });
                     interaction.active_tool = CanvasTool::Select;
                     modified = true;
@@ -728,10 +1562,11 @@ pub(super) fn show_canvas_surface(
                 CanvasElement::Connector { label, .. } => label.clone(),
                 _ => String::new(),
             };
-            (e.bounding_rect(), text)
+            let bindable = matches!(e, CanvasElement::StickyNote { .. } | CanvasElement::Shape { .. });
+            (e.bounding_rect(), text, bindable, e.is_bound())
         });
         match info {
-            Some((bounds, mut text_buf)) => {
+            Some((bounds, mut text_buf, bindable, is_bound)) => {
                 let s_rect = canvas.viewport.world_rect_to_screen(bounds, origin);
                 let mut close_edit = ctx.input(|i| i.key_pressed(egui::Key::Escape));
                 let mut changed = false;
@@ -755,9 +1590,13 @@ pub(super) fn show_canvas_surface(
                                 changed = resp.changed();
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        RichText::new(tr.t("canvas-edit-hint", &[]))
-                                            .size(theme::TEXT_XS)
-                                            .color(pal().text_faint),
+                                        RichText::new(if is_bound {
+                                            tr.t("canvas-edit-hint-bound", &[])
+                                        } else {
+                                            tr.t("canvas-edit-hint", &[])
+                                        })
+                                        .size(theme::TEXT_XS)
+                                        .color(pal().text_faint),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
@@ -770,6 +1609,19 @@ pub(super) fn show_canvas_surface(
                                             .clicked()
                                             {
                                                 close_edit = true;
+                                            }
+                                            if bindable {
+                                                let label = if is_bound {
+                                                    tr.t("canvas-unbind", &[])
+                                                } else {
+                                                    tr.t("canvas-bind", &[])
+                                                };
+                                                if widgets::ghost_button(ui, Some(ICON_LINK.codepoint), &label)
+                                                    .clicked()
+                                                {
+                                                    bind = Some((editing_id, !is_bound));
+                                                    close_edit = true;
+                                                }
                                             }
                                         },
                                     );
@@ -828,32 +1680,31 @@ pub(super) fn show_canvas_surface(
                             .file_stem()
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_else(|| canvas.title.clone());
+                        // Bound import (§Fase 3): Draw.io "text" shapes become
+                        // Markdown blocks, every other shape stays diagram-only.
                         let result = std::fs::read_to_string(&load_path)
                             .map_err(anyhow::Error::from)
-                            .and_then(|xml| canvas::DrawioImporter::from_xml_with_report(&title, &xml));
+                            .and_then(|xml| canvas::DrawioImporter::from_xml_bound(&title, &xml));
                         toast = Some(match result {
                             Ok((imported, _)) if imported.elements.is_empty() => {
                                 (ToastKind::Error, tr.t("canvas-import-empty", &[]))
                             }
-                            Ok((imported, report)) => {
-                                canvas.elements = imported.elements;
-                                let bounds = canvas
+                            Ok((mut imported, new_blocks)) => {
+                                let bounds = imported
                                     .elements
                                     .iter()
                                     .map(|e| e.bounding_rect())
                                     .fold(egui::Rect::NOTHING, |acc, r| acc.union(r));
-                                canvas.viewport.fit_rect(bounds, screen_rect.size());
-                                modified = true;
-                                let count = report.elements.to_string();
-                                let mut message =
-                                    tr.t("canvas-import-success", &[("count", &count)]);
-                                if report.skipped > 0 {
-                                    let skipped = report.skipped.to_string();
-                                    message = format!(
-                                        "{message} · {}",
-                                        tr.t("canvas-import-skipped", &[("count", &skipped)])
-                                    );
-                                }
+                                imported.viewport = canvas.viewport.clone();
+                                imported.viewport.fit_rect(bounds, screen_rect.size());
+                                let count = imported.elements.len().to_string();
+                                let bound = new_blocks.len().to_string();
+                                let message = format!(
+                                    "{} · {}",
+                                    tr.t("canvas-import-success", &[("count", &count)]),
+                                    tr.t("canvas-import-bound", &[("count", &bound)])
+                                );
+                                imported_doc = Some((imported, new_blocks));
                                 (ToastKind::Success, message)
                             }
                             Err(e) => (
@@ -907,5 +1758,28 @@ pub(super) fn show_canvas_surface(
             }
         });
 
-    CanvasOutcome { modified, toast }
+    CanvasOutcome {
+        modified,
+        imported: imported_doc,
+        bind,
+        toast,
+    }
+}
+
+/// Applies what the canvas surface asked for to the editor and returns
+/// the toast to show, if any.
+fn apply_canvas_outcome(editor: &mut MarkdownEditor, outcome: CanvasOutcome) -> Option<(ToastKind, String)> {
+    if let Some((doc, blocks)) = outcome.imported {
+        editor.import_bound_canvas(doc, blocks);
+    } else if outcome.modified {
+        editor.sync_canvas_to_body();
+    }
+    if let Some((id, bind)) = outcome.bind {
+        if bind {
+            editor.bind_element_to_note(id);
+        } else {
+            editor.unbind_element(id);
+        }
+    }
+    outcome.toast
 }

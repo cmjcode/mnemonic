@@ -5,7 +5,7 @@
 //! is the background worker that runs generation off the UI thread and
 //! streams decoded text fragments back over a channel (§6 risk 2).
 //! Callers: future chat UI (§Fase 7) — retrieval
-//! (`core::embedding::top_k` over `core::storage::IndexStore::all_chunks`)
+//! (hybrid search over `core::storage::IndexStore`)
 //! stays in the caller, same split as `core::indexer` leaving
 //! `IndexStore` writes to `app.rs`.
 

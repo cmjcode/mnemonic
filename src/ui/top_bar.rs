@@ -12,9 +12,9 @@
 use egui::{Align, Id, Layout, RichText, Ui};
 use egui_icons::icons::{
     ICON_ARROW_BACK, ICON_AUTO_AWESOME, ICON_CHECK, ICON_CLOUD_DONE, ICON_DARK_MODE, ICON_DRAW,
-    ICON_EDIT_NOTE, ICON_ERROR, ICON_FOLDER_OPEN, ICON_KEYBOARD, ICON_LEFT_PANEL_CLOSE,
+    ICON_EDIT_NOTE, ICON_ERROR, ICON_FOLDER_OPEN, ICON_HUB, ICON_KEYBOARD, ICON_LEFT_PANEL_CLOSE,
     ICON_LEFT_PANEL_OPEN, ICON_LIGHT_MODE, ICON_REDO, ICON_SEARCH, ICON_SETTINGS, ICON_SYNC,
-    ICON_TOC, ICON_UNDO, ICON_VISIBILITY,
+    ICON_TOC, ICON_UNDO, ICON_VERTICAL_SPLIT, ICON_VISIBILITY,
 };
 
 use crate::i18n::LocaleManager;
@@ -36,6 +36,8 @@ pub enum EditorModeTab {
     Write,
     Read,
     Canvas,
+    /// Markdown beside its diagram.
+    Split,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +81,7 @@ pub enum TopBarEvent {
     Undo,
     Redo,
     ToggleOutline,
+    ToggleGraph,
 }
 
 pub struct TopBarState<'a> {
@@ -86,6 +89,8 @@ pub struct TopBarState<'a> {
     pub vault_open: bool,
     pub sidebar_open: bool,
     pub chat_open: bool,
+    /// The full-screen graph view is showing.
+    pub graph_open: bool,
     pub theme_mode: ThemeMode,
     /// Background indexing jobs still running (0 hides the indicator).
     pub indexing_jobs: usize,
@@ -225,6 +230,16 @@ impl TopBar {
                             {
                                 events.push(TopBarEvent::ToggleChat);
                             }
+                            if widgets::icon_button(
+                                ui,
+                                ICON_HUB.codepoint,
+                                &format!("{}  ⌘G", t("graph-title")),
+                                state.graph_open,
+                            )
+                            .clicked()
+                            {
+                                events.push(TopBarEvent::ToggleGraph);
+                            }
                             if !matches!(state.context, TopBarContext::Home { .. })
                                 && widgets::icon_button(
                                     ui,
@@ -335,22 +350,26 @@ impl TopBar {
         let labels = [
             t("editor-mode-write"),
             t("editor-mode-read"),
+            t("editor-mode-split"),
             t("editor-mode-edgeless"),
         ];
         let options = [
             (ICON_EDIT_NOTE.codepoint, labels[0].as_str()),
             (ICON_VISIBILITY.codepoint, labels[1].as_str()),
-            (ICON_DRAW.codepoint, labels[2].as_str()),
+            (ICON_VERTICAL_SPLIT.codepoint, labels[2].as_str()),
+            (ICON_DRAW.codepoint, labels[3].as_str()),
         ];
         let selected = match mode {
             EditorModeTab::Write => 0,
             EditorModeTab::Read => 1,
-            EditorModeTab::Canvas => 2,
+            EditorModeTab::Split => 2,
+            EditorModeTab::Canvas => 3,
         };
         if let Some(i) = widgets::segmented(ui, Id::new("editor_mode_switch"), &options, selected) {
             events.push(TopBarEvent::SetEditorMode(match i {
                 0 => EditorModeTab::Write,
                 1 => EditorModeTab::Read,
+                2 => EditorModeTab::Split,
                 _ => EditorModeTab::Canvas,
             }));
         }

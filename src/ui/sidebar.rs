@@ -2,7 +2,7 @@
 //! one glance away.
 //!
 //! 1. Vault switcher + a prominent "New note" button (⌘N) with a "+" menu
-//!    for canvases, folders and PDF import.
+//!    for canvases, sheets (§3.8), folders and PDF/spreadsheet import.
 //! 2. Library: All / Notes / Canvases / PDFs / Archive / Trash, with counts.
 //! 3. Folders: the vault's file tree — click to open, drag to move,
 //!    right-click or "⋯" for rename / move / trash.
@@ -18,8 +18,8 @@ use egui_icons::icons::{
     ICON_ADD, ICON_CHECK, ICON_CHEVRON_RIGHT, ICON_CREATE_NEW_FOLDER, ICON_DASHBOARD, ICON_DELETE,
     ICON_DESCRIPTION, ICON_DRAW, ICON_DRIVE_FILE_MOVE, ICON_DRIVE_FILE_RENAME_OUTLINE, ICON_EDIT,
     ICON_EXPAND_MORE, ICON_FOLDER, ICON_FOLDER_OPEN, ICON_INVENTORY_2, ICON_LABEL, ICON_MORE_HORIZ,
-    ICON_NOTE_ADD, ICON_PICTURE_AS_PDF, ICON_RESTART_ALT, ICON_UNFOLD_LESS, ICON_UNFOLD_MORE,
-    ICON_UPLOAD_FILE,
+    ICON_NOTE_ADD, ICON_PICTURE_AS_PDF, ICON_RESTART_ALT, ICON_TABLE_CHART, ICON_UNFOLD_LESS,
+    ICON_UNFOLD_MORE, ICON_UPLOAD_FILE,
 };
 
 use crate::i18n::LocaleManager;
@@ -46,6 +46,8 @@ pub struct FileTreeNode {
     pub is_dir: bool,
     pub is_canvas: bool,
     pub is_pdf: bool,
+    /// CSV/XLSX sheet (§3.8).
+    pub is_sheet: bool,
     pub note_title: Option<String>,
     pub children: Vec<FileTreeNode>,
 }
@@ -67,6 +69,7 @@ impl FileTreeNode {
             is_dir: true,
             is_canvas: false,
             is_pdf: false,
+            is_sheet: false,
             note_title: None,
             children: Vec::new(),
         };
@@ -97,6 +100,7 @@ impl FileTreeNode {
                 is_dir: false,
                 is_canvas,
                 is_pdf,
+                is_sheet: crate::sheet::is_sheet_path(&path),
                 note_title,
                 children: Vec::new(),
             };
@@ -108,6 +112,7 @@ impl FileTreeNode {
                     is_dir: true,
                     is_canvas: false,
                     is_pdf: false,
+                    is_sheet: false,
                     note_title: None,
                     children: Vec::new(),
                 };
@@ -132,6 +137,8 @@ impl FileTreeNode {
                     }
                 } else if ext == "pdf" || pdfs.contains(&path) {
                     files.push(leaf(false, true, None));
+                } else if crate::sheet::is_sheet_path(&path) {
+                    files.push(leaf(false, false, None));
                 }
             }
         }
@@ -184,6 +191,8 @@ pub enum SidebarEvent {
     SelectFilter(SidebarDocFilter),
     OpenFile(PathBuf),
     ImportPdf,
+    /// Copy CSV/XLSX files into the vault (§3.8).
+    ImportSheet,
     ManageLabels,
     OpenVaultPicker,
     CreateVault,
@@ -194,6 +203,10 @@ pub enum SidebarEvent {
         parent_dir: Option<PathBuf>,
     },
     NewCanvas {
+        parent_dir: Option<PathBuf>,
+    },
+    /// New blank CSV sheet (§3.8).
+    NewSheet {
         parent_dir: Option<PathBuf>,
     },
     CreateFolder {
@@ -455,6 +468,12 @@ impl SidebarDrawer {
                     events.push(SidebarEvent::NewCanvas { parent_dir: None });
                     ui.close();
                 }
+                if widgets::menu_item(ui, ICON_TABLE_CHART.codepoint, &t("sidebar-new-sheet"), None)
+                    .clicked()
+                {
+                    events.push(SidebarEvent::NewSheet { parent_dir: None });
+                    ui.close();
+                }
                 if widgets::menu_item(
                     ui,
                     ICON_CREATE_NEW_FOLDER.codepoint,
@@ -472,6 +491,12 @@ impl SidebarDrawer {
                     .clicked()
                 {
                     events.push(SidebarEvent::ImportPdf);
+                    ui.close();
+                }
+                if widgets::menu_item(ui, ICON_UPLOAD_FILE.codepoint, &t("sheet-import"), None)
+                    .clicked()
+                {
+                    events.push(SidebarEvent::ImportSheet);
                     ui.close();
                 }
             });
@@ -688,6 +713,8 @@ impl SidebarDrawer {
             (ICON_DRAW.codepoint, p.canvas_icon)
         } else if node.is_pdf {
             (ICON_PICTURE_AS_PDF.codepoint, p.pdf_icon)
+        } else if node.is_sheet {
+            (ICON_TABLE_CHART.codepoint, p.sheet_icon)
         } else {
             (ICON_DESCRIPTION.codepoint, p.note_icon)
         };
@@ -836,6 +863,19 @@ impl SidebarDrawer {
                 .clicked()
             {
                 events.push(SidebarEvent::NewCanvas {
+                    parent_dir: Some(node.path.clone()),
+                });
+                ui.close();
+            }
+            if widgets::menu_item(
+                ui,
+                ICON_TABLE_CHART.codepoint,
+                &t("sidebar-new-sheet-here"),
+                None,
+            )
+            .clicked()
+            {
+                events.push(SidebarEvent::NewSheet {
                     parent_dir: Some(node.path.clone()),
                 });
                 ui.close();

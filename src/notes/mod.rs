@@ -5,6 +5,7 @@ pub mod frontmatter;
 pub mod note;
 pub mod query;
 pub mod tags;
+pub mod templates;
 pub mod trash;
 pub mod vault;
 pub mod watcher;

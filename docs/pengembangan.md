@@ -262,6 +262,45 @@ Aplikasi ini adalah tool produktivitas desktop/mobile mandiri (*100% offline & p
 
 ---
 
+### 3.7 Modul 7: Diagram Mermaid Native (Rust murni)
+
+Diagram disimpan sebagai fence ```` ```mermaid ```` di dalam catatan `.md` — format teks yang paling dikenal agent AI dan dirender native oleh Obsidian. Tidak ada file kedua; sidecar `.canvas` (JSON Canvas) tetap dipakai hanya untuk papan tulis bebas (sticky, freehand, block-binding), dan Draw.io hanya untuk impor/ekspor. Modul: `src/mermaid/`.
+
+1. **Pipeline (§3.7.1):** `source::preprocess` → parser per tipe → layout → `Scene` (display list netral) → `paint` (egui) atau `svg`. Tidak ada JavaScript, WebView, maupun Node.
+2. **Parser & diagnostik (§3.7.2):** parser recursive-descent tulisan tangan per tipe. Frontmatter YAML (`title`, `config`), direktif `%%{init: …}%%`, komentar `%%`, `accTitle`/`accDescr` ditangani bersama. Parser tidak pernah panic dan tidak berhenti di baris pertama yang salah: setiap masalah menjadi `Diagnostic { line, col, severity, message }` (1-based, relatif terhadap isi fence) sehingga editor dan agent tahu posisi persisnya.
+3. **Layout (§3.7.3):** keluarga *layered* (Sugiyama, setara dagre) untuk flowchart, class, state, ER: penghapusan siklus DFS, ranking longest-path + balancing, rank digandakan agar setiap edge punya slot label, dummy node untuk edge panjang, minimisasi persilangan barycenter yang menjaga subgraph tetap kontigu (border node per rank, seperti dagre), koordinat via regresi isotonik (pool-adjacent-violators) per layer. Subgraph tanpa edge lintas-batas di-layout rekursif dengan `direction`-nya sendiri. Sequence, pie, dan tipe linear/chart memakai layout khusus yang kecil. Pengukuran teks lewat trait `TextMeasure`: di aplikasi memakai lebar glyph egui asli (`GlyphTable`, dikumpulkan sekali per diagram), di CLI/test memakai tabel aproksimasi deterministik.
+4. **Tema & gaya (§3.7.4):** tema `default`/`dark`/`forest`/`neutral`/`base` + `themeVariables`; `classDef`/`class`/`:::`/`style`/`linkStyle`. Tanpa tema eksplisit, diagram mengikuti mode terang/gelap aplikasi.
+5. **Rendering (§3.7.5):** `Scene` digambar langsung ke shape epaint (tanpa tekstur/SVG), dengan culling di luar layar, kuantisasi ukuran font, dan triangulasi poligon non-konveks. Hasil parse+layout di-cache per sumber (`RenderCache`), jadi frame yang tidak berubah tidak mem-parse ulang. Klik node dengan `click … href` membuka URL atau `[[wikilink]]`; hover menampilkan tooltip. Ekspor SVG untuk agent/CLI.
+6. **Tipe yang didukung (§3.7.6):** flowchart/graph (semua bentuk klasik + `@{ shape }` v11, semua jenis link, subgraph bersarang), sequence, class, state, ER, pie. Tipe lain (gantt, journey, gitGraph, mindmap, timeline, quadrant, requirement, C4, sankey, xychart, block, packet, kanban, architecture, radar, treemap, zenuml) sudah dikenali; sampai diimplementasikan, catatan menampilkan sumbernya sebagai code block plus diagnostik — tidak pernah crash.
+7. **Antarmuka agent (§3.7.7):** `mnemonic-cli diagram list|validate|render` (validate/render berkas `.mmd` atau stdin tanpa vault) dan tool MCP `list_diagrams`, `validate_diagram`, `render_diagram`. Lihat `docs/agent-interface.md`.
+8. **Target performa:** parse+layout+SVG flowchart 550 node / 743 edge ≈ 20 ms (release, termasuk start proses); diagram tipikal < 1 ms. Mermaid.js membutuhkan ratusan ms–detik untuk ukuran yang sama karena mengukur teks lewat DOM.
+
+---
+
+### 3.8 Modul 8: Sheet — Data Tabular di Vault (CSV / XLSX)
+
+Posisi: data tabular yang *hidup di vault* dan terhubung ke catatan, RAG dan agent — **bukan** tiruan Excel. Untuk database, gunakan aplikasi TABULAR.
+
+1. **Format & Sumber Kebenaran:**
+   * `.csv` / `.tsv` adalah format sheet yang **bisa diedit**. File-nya tetap sumber kebenaran (plain text, ramah git & agent), sama seperti `.md`.
+   * Delimiter dideteksi otomatis (`,` `;` tab `|`) — CSV dari Excel ber-locale Indonesia sering memakai `;`. BOM UTF-8 dibuang saat baca dan dipertahankan saat tulis. Baris pertama = header.
+   * `.xlsx` / `.xlsm` / `.xls` / `.xlsb` / `.ods` dibuka **read-only** (`calamine`), satu tab per worksheet. Aplikasi **tidak pernah** menimpa workbook: menulis ulang XLSX akan menghilangkan formula, style, chart dan macro. Untuk mengedit, gunakan *Convert to CSV* (membuat `<nama> - <sheet>.csv` baru).
+   * *Export as XLSX* (`rust_xlsxwriter`) membuat workbook baru dari sheet CSV; angka diekspor sebagai angka.
+2. **Editor Grid:**
+   * Grid tervirtualisasi (hanya baris terlihat yang dirender), edit sel inline, tambah/hapus baris & kolom, ganti nama kolom, sort per kolom (numerik bila kolom berisi angka), filter teks, undo/redo, indikator *dirty*.
+   * Simpan atomic (temp file + rename), dengan pengecekan mtime sebelum menulis seperti catatan (§6 poin 4).
+   * Footer agregat per kolom numerik (COUNT, SUM, AVG, MIN, MAX) — **bukan** formula engine per sel.
+3. **Integrasi Vault:**
+   * Sheet tampil di sidebar, bisa di-link `[[data.csv]]` dan di-embed `![[data.csv]]` (tabel pratinjau N baris pertama di Reading mode), dan muncul sebagai node di graph seperti PDF.
+4. **Indeks & RAG (§3.3):**
+   * Sheet di-chunk per kelompok baris dengan format `Kolom: nilai` per baris agar embedding bermakna, lalu masuk FTS5 + vektor dengan `doc_type = "sheet"`. Sitasi menunjuk ke nomor baris.
+   * Pertanyaan agregasi angka dijawab lebih andal oleh `sheet query` yang deterministik daripada oleh LLM kecil; RAG dipakai untuk menemukan baris yang relevan.
+5. **Agent Interface (§Fase 2):**
+   * `VaultService` + CLI + MCP: `sheets list`, `sheet read` (paging, pilih worksheet), `sheet query` (filter kolom sederhana), `sheet set-cell`, `sheet append-row` (hanya CSV/TSV).
+6. **Batas Cakupan:** tidak ada formula per sel, styling sel, chart, pivot, merge cell, atau penulisan XLSX in-place.
+
+---
+
 ## 4. Struktur Proyek (Directory Layout)
 
 ```

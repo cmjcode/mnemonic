@@ -43,6 +43,59 @@ pub enum ConnectorRouting {
     Orthogonal,
 }
 
+/// Link between a canvas element and a markdown block (`^<block_id>` anchor).
+///
+/// The text of a bound element is *derived* from the markdown block, never stored in
+/// the canvas file; the canvas only remembers which block it mirrors.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct BlockBinding {
+    /// Vault-relative note path (`None` = the note that owns this canvas).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Block anchor id without the leading `^`.
+    pub block_id: String,
+}
+
+impl BlockBinding {
+    /// Binding to a block of the note that owns the canvas.
+    pub fn local(block_id: impl Into<String>) -> Self {
+        BlockBinding {
+            file: None,
+            block_id: block_id.into(),
+        }
+    }
+
+    /// Binding to a block of another note in the vault.
+    pub fn to_file(file: impl Into<String>, block_id: impl Into<String>) -> Self {
+        BlockBinding {
+            file: Some(file.into()),
+            block_id: block_id.into(),
+        }
+    }
+
+    /// Obsidian-style subpath: `#^<block_id>`.
+    pub fn subpath(&self) -> String {
+        format!("#^{}", self.block_id)
+    }
+
+    /// A fresh 6-character lowercase alphanumeric block id (Obsidian style) that is
+    /// not in `taken`.
+    pub fn generate_id(taken: &std::collections::HashSet<String>) -> String {
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+        loop {
+            let id: String = Uuid::new_v4()
+                .as_bytes()
+                .iter()
+                .take(6)
+                .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+                .collect();
+            if !taken.contains(&id) {
+                return id;
+            }
+        }
+    }
+}
+
 /// All interactive elements that can live on the canvas.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CanvasElement {
@@ -52,6 +105,9 @@ pub enum CanvasElement {
         size: [f32; 2],
         text: String,
         color: [f32; 3], // Pastel color (e.g. yellow, blue, green, pink)
+        /// Markdown block this note mirrors; `None` = diagram-only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binding: Option<BlockBinding>,
     },
     Shape {
         id: CanvasElementId,
@@ -64,6 +120,9 @@ pub enum CanvasElement {
         /// Explicit label color; `None` picks a color that contrasts with the fill.
         #[serde(default)]
         text_color: Option<[f32; 3]>,
+        /// Markdown block this shape's label mirrors; `None` = diagram-only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binding: Option<BlockBinding>,
     },
     Connector {
         id: CanvasElementId,
@@ -112,6 +171,50 @@ impl CanvasElement {
             | CanvasElement::DocCard { id, .. }
             | CanvasElement::Frame { id, .. }
             | CanvasElement::FreehandStroke { id, .. } => *id,
+        }
+    }
+
+    /// Markdown block binding of a sticky note or shape (`None` for diagram-only
+    /// elements and for kinds that cannot be bound).
+    pub fn binding(&self) -> Option<&BlockBinding> {
+        match self {
+            CanvasElement::StickyNote { binding, .. } | CanvasElement::Shape { binding, .. } => {
+                binding.as_ref()
+            }
+            _ => None,
+        }
+    }
+
+    /// Set (or clear) the block binding. No-op for kinds that cannot be bound.
+    pub fn set_binding(&mut self, new_binding: Option<BlockBinding>) {
+        if let CanvasElement::StickyNote { binding, .. } | CanvasElement::Shape { binding, .. } = self {
+            *binding = new_binding;
+        }
+    }
+
+    /// Whether this element mirrors a markdown block.
+    pub fn is_bound(&self) -> bool {
+        self.binding().is_some()
+    }
+
+    /// Textual content: sticky note / shape text, connector label, frame title,
+    /// doc card title. `None` for freehand strokes.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            CanvasElement::StickyNote { text, .. } | CanvasElement::Shape { text, .. } => Some(text),
+            CanvasElement::Connector { label, .. } => Some(label),
+            CanvasElement::Frame { title, .. } | CanvasElement::DocCard { title, .. } => Some(title),
+            CanvasElement::FreehandStroke { .. } => None,
+        }
+    }
+
+    /// Replace the textual content (see [`Self::text`]). No-op for freehand strokes.
+    pub fn set_text(&mut self, new_text: String) {
+        match self {
+            CanvasElement::StickyNote { text, .. } | CanvasElement::Shape { text, .. } => *text = new_text,
+            CanvasElement::Connector { label, .. } => *label = new_text,
+            CanvasElement::Frame { title, .. } | CanvasElement::DocCard { title, .. } => *title = new_text,
+            CanvasElement::FreehandStroke { .. } => {}
         }
     }
 

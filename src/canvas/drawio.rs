@@ -12,7 +12,7 @@
 //! - Compressed diagrams (base64 + raw deflate + URI encoding) are inflated.
 //! - Multi-page files are laid out side by side, each page wrapped in a frame.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 
 use anyhow::{anyhow, Context, Result};
@@ -22,7 +22,7 @@ use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
-use super::element::{CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
+use super::element::{BlockBinding, CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
 use super::tools;
 use super::CanvasDocument;
 
@@ -289,6 +289,41 @@ struct ParsedStyle {
     is_edge_label: bool,
     exit: [Option<f32>; 2],
     entry: [Option<f32>; 2],
+    /// MNEMONIC-only element kind (`freehand`, `doccard`) written by the exporter so
+    /// elements Draw.io has no equivalent for survive a save/load round trip.
+    /// Draw.io ignores unknown style keys.
+    mnemonic_kind: Option<String>,
+    mnemonic_note: Option<uuid::Uuid>,
+    mnemonic_doc_type: Option<String>,
+    /// Markdown block binding (`mnemonicBlock=<id>`, `mnemonicBlockFile=<path>`).
+    mnemonic_block: Option<String>,
+    mnemonic_block_file: Option<String>,
+}
+
+impl ParsedStyle {
+    fn binding(&self) -> Option<BlockBinding> {
+        self.mnemonic_block
+            .as_ref()
+            .filter(|id| !id.is_empty())
+            .map(|id| BlockBinding {
+                file: self.mnemonic_block_file.clone(),
+                block_id: id.clone(),
+            })
+    }
+}
+
+/// Style fragment that records a block binding on an exported vertex. The file path
+/// is percent-encoded so `;`, `=` and XML-special characters can't break the style.
+fn binding_style(binding: Option<&BlockBinding>) -> String {
+    let Some(b) = binding else {
+        return String::new();
+    };
+    let mut s = format!("mnemonicBlock={};", b.block_id);
+    if let Some(file) = &b.file {
+        let encoded = percent_encoding::utf8_percent_encode(file, percent_encoding::NON_ALPHANUMERIC);
+        s.push_str(&format!("mnemonicBlockFile={encoded};"));
+    }
+    s
 }
 
 fn parse_style_string(style_str: &str) -> ParsedStyle {
@@ -347,6 +382,17 @@ fn parse_style_string(style_str: &str) -> ParsedStyle {
             "exitY" => style.exit[1] = val.parse().ok(),
             "entryX" => style.entry[0] = val.parse().ok(),
             "entryY" => style.entry[1] = val.parse().ok(),
+            "mnemonicKind" => style.mnemonic_kind = Some(val.to_string()),
+            "mnemonicNote" => style.mnemonic_note = uuid::Uuid::parse_str(val).ok(),
+            "mnemonicDocType" => style.mnemonic_doc_type = Some(val.to_string()),
+            "mnemonicBlock" => style.mnemonic_block = Some(val.to_string()),
+            "mnemonicBlockFile" => {
+                style.mnemonic_block_file = percent_encoding::percent_decode_str(val)
+                    .decode_utf8()
+                    .ok()
+                    .map(|f| f.into_owned())
+                    .filter(|f| !f.is_empty());
+            }
             // Bare style names (no `=`)
             "swimlane" => style.is_swimlane = true,
             "note" => style.is_note = true,
@@ -464,6 +510,52 @@ impl DrawioImporter {
         title: &str,
         xml_content: &str,
     ) -> Result<(CanvasDocument, DrawioImportReport)> {
+        Self::import(title, xml_content).map(|(doc, report, _)| (doc, report))
+    }
+
+    /// Import a diagram whose text-like vertices should become **bound** elements.
+    ///
+    /// Every Draw.io "Text" vertex (bare `text` style key) or sticky note
+    /// (`shape=note`) with a non-empty label gets a fresh block binding to the owning
+    /// note; the returned list pairs each new binding with the label so the caller can
+    /// append `<text> ^<block_id>` paragraphs to the markdown. Vertices that already
+    /// carry `mnemonicBlock=` keep their binding and are not returned; every other
+    /// vertex stays diagram-only.
+    pub fn from_xml_bound(
+        title: &str,
+        xml_content: &str,
+    ) -> Result<(CanvasDocument, Vec<(BlockBinding, String)>)> {
+        let (mut doc, _, candidates) = Self::import(title, xml_content)?;
+        let mut taken: HashSet<String> = doc
+            .elements
+            .iter()
+            .filter_map(|e| e.binding().map(|b| b.block_id.clone()))
+            .collect();
+        let mut new_bindings = Vec::new();
+        for id in candidates {
+            let Some(elem) = doc.get_element_mut(id) else { continue };
+            if elem.is_bound() {
+                continue;
+            }
+            let text = elem.text().unwrap_or_default().to_string();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let block_id = BlockBinding::generate_id(&taken);
+            taken.insert(block_id.clone());
+            let binding = BlockBinding::local(block_id);
+            elem.set_binding(Some(binding.clone()));
+            new_bindings.push((binding, text));
+        }
+        Ok((doc, new_bindings))
+    }
+
+    /// Shared import: the document, a report, and the ids of text-like vertices
+    /// (candidates for binding, see [`Self::from_xml_bound`]).
+    fn import(
+        title: &str,
+        xml_content: &str,
+    ) -> Result<(CanvasDocument, DrawioImportReport, Vec<CanvasElementId>)> {
         let xml_str = unwrap_code_fence(xml_content.trim());
         let pages = Self::parse_pages(xml_str)?;
 
@@ -472,13 +564,14 @@ impl DrawioImporter {
             pages: pages.len(),
             ..Default::default()
         };
+        let mut candidates = Vec::new();
 
         let multi_page = pages.len() > 1;
         let mut cursor_x: Option<f32> = None;
         let mut top_y = 0.0f32;
 
         for page in &pages {
-            let mut elements = Self::build_page(&page.cells, &mut report.skipped);
+            let mut elements = Self::build_page(&page.cells, &mut report.skipped, &mut candidates);
             if elements.is_empty() {
                 continue;
             }
@@ -515,7 +608,7 @@ impl DrawioImporter {
         }
 
         report.elements = doc.elements.len();
-        Ok((doc, report))
+        Ok((doc, report, candidates))
     }
 
     /// Parse every `<diagram>` page (or a bare `<mxGraphModel>`) into raw cells.
@@ -692,7 +785,12 @@ impl DrawioImporter {
     }
 
     /// Resolve cells of one page into canvas elements in document (z-)order.
-    fn build_page(cells: &[RawCell], skipped: &mut usize) -> Vec<CanvasElement> {
+    /// Text-like vertices (Draw.io "Text" and sticky notes) are added to `text_like`.
+    fn build_page(
+        cells: &[RawCell],
+        skipped: &mut usize,
+        text_like: &mut Vec<CanvasElementId>,
+    ) -> Vec<CanvasElement> {
         let by_id: HashMap<&str, usize> = cells
             .iter()
             .enumerate()
@@ -785,6 +883,30 @@ impl DrawioImporter {
         for (idx, cell) in cells.iter().enumerate() {
             let style = &styles[idx];
 
+            if cell.edge && style.mnemonic_kind.as_deref() == Some("freehand") {
+                // Exported by `DrawioExporter`: sourcePoint, bend points, targetPoint.
+                let origin = origin_of(idx);
+                let abs = |p: [f32; 2]| [p[0] + origin.x, p[1] + origin.y];
+                let points: Vec<[f32; 2]> = cell
+                    .source_point
+                    .into_iter()
+                    .chain(cell.waypoints.iter().copied())
+                    .chain(cell.target_point)
+                    .map(abs)
+                    .collect();
+                if points.is_empty() {
+                    *skipped += 1;
+                    continue;
+                }
+                elements.push(CanvasElement::FreehandStroke {
+                    id: CanvasElementId::new(),
+                    points,
+                    color: style.stroke_color.unwrap_or(DEFAULT_STROKE),
+                    width: style.stroke_width,
+                });
+                continue;
+            }
+
             if cell.edge {
                 let endpoint = |id: &Option<String>| id.as_deref().and_then(|s| by_id.get(s)).copied();
                 let source = endpoint(&cell.source);
@@ -818,7 +940,19 @@ impl DrawioImporter {
             };
             let label = cell.label();
 
-            let element = if style.is_swimlane {
+            let element = if style.mnemonic_kind.as_deref() == Some("doccard") {
+                // Label was written as "📄 <title>\n\n<snippet>" by the exporter.
+                let (title, snippet) = label.split_once("\n\n").unwrap_or((label.as_str(), ""));
+                CanvasElement::DocCard {
+                    id: elem_id,
+                    pos: [rect.min.x, rect.min.y],
+                    size: [rect.width(), rect.height()],
+                    note_id: style.mnemonic_note,
+                    title: title.trim_start_matches("📄 ").to_string(),
+                    snippet: snippet.to_string(),
+                    doc_type: style.mnemonic_doc_type.clone().unwrap_or_else(|| "note".to_string()),
+                }
+            } else if style.is_swimlane {
                 CanvasElement::Frame {
                     id: elem_id,
                     rect: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
@@ -829,14 +963,19 @@ impl DrawioImporter {
                         .unwrap_or(tools::PALETTE_PRIMARY_ACCENT),
                 }
             } else if style.is_note {
+                text_like.push(elem_id);
                 CanvasElement::StickyNote {
                     id: elem_id,
                     pos: [rect.min.x, rect.min.y],
                     size: [rect.width(), rect.height()],
                     text: label,
                     color: style.fill_color.unwrap_or(tools::PALETTE_STICKY_YELLOW),
+                    binding: style.binding(),
                 }
             } else {
+                if style.is_text {
+                    text_like.push(elem_id);
+                }
                 let (fill_color, stroke_width) = vertex_appearance(style);
                 CanvasElement::Shape {
                     id: elem_id,
@@ -847,6 +986,7 @@ impl DrawioImporter {
                     fill_color,
                     text: label,
                     text_color: style.font_color,
+                    binding: style.binding(),
                 }
             };
             elements.push(element);
@@ -974,17 +1114,24 @@ impl DrawioExporter {
         xml.push_str("        <mxCell id=\"0\"/>\n");
         xml.push_str("        <mxCell id=\"1\" parent=\"0\"/>\n");
 
-        // Map CanvasElementId -> string ID for edge references
-        let mut id_map: HashMap<CanvasElementId, String> = HashMap::new();
-        let mut cell_counter = 2usize;
+        // Cell ids are assigned up front so an edge may reference a shape that
+        // comes later in z-order; elements are then written in document order so
+        // the stacking order survives a round trip.
+        let id_map: HashMap<CanvasElementId, String> = doc
+            .elements
+            .iter()
+            .enumerate()
+            .map(|(i, elem)| {
+                let prefix = match elem {
+                    CanvasElement::Connector { .. } | CanvasElement::FreehandStroke { .. } => "edge",
+                    _ => "cell",
+                };
+                (elem.id(), format!("{prefix}_{}", i + 2))
+            })
+            .collect();
 
-        // 1. Export Shapes, StickyNotes, Frames, DocCards
         for elem in &doc.elements {
-            let elem_id = elem.id();
-            let cell_id = format!("cell_{}", cell_counter);
-            cell_counter += 1;
-            id_map.insert(elem_id, cell_id.clone());
-
+            let cell_id = &id_map[&elem.id()];
             match elem {
                 CanvasElement::Shape {
                     kind,
@@ -994,13 +1141,9 @@ impl DrawioExporter {
                     fill_color,
                     text,
                     text_color,
+                    binding,
                     ..
                 } => {
-                    let w = (rect[2] - rect[0]).max(10.0);
-                    let h = (rect[3] - rect[1]).max(10.0);
-                    let x = rect[0];
-                    let y = rect[1];
-
                     let shape_name = match kind {
                         ShapeKind::Rectangle => "rounded=0",
                         ShapeKind::RoundedRect => "rounded=1",
@@ -1020,46 +1163,31 @@ impl DrawioExporter {
                         .unwrap_or_default();
 
                     let style = format!(
-                        "{};whiteSpace=wrap;html=1;strokeColor={};fillColor={};strokeWidth={};{}",
+                        "{};whiteSpace=wrap;html=1;strokeColor={};fillColor={};strokeWidth={};{}{}",
                         shape_name,
                         stroke_hex,
                         fill_hex,
                         stroke_width.max(0.5),
-                        font_style
+                        font_style,
+                        binding_style(binding.as_ref())
                     );
-
-                    xml.push_str(&format!(
-                        "        <mxCell id=\"{}\" value=\"{}\" style=\"{}\" vertex=\"1\" parent=\"1\">\n",
-                        cell_id, escape_html_label(text), style
-                    ));
-                    xml.push_str(&format!(
-                        "          <mxGeometry x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" as=\"geometry\"/>\n",
-                        x, y, w, h
-                    ));
-                    xml.push_str("        </mxCell>\n");
+                    Self::push_vertex(&mut xml, cell_id, text, &style, *rect);
                 }
                 CanvasElement::StickyNote {
                     pos,
                     size,
                     text,
                     color,
+                    binding,
                     ..
                 } => {
-                    let fill_hex = to_hex_color(*color);
                     let style = format!(
-                        "shape=note;whiteSpace=wrap;html=1;size=14;fillColor={};strokeColor=#b8860b;",
-                        fill_hex
+                        "shape=note;whiteSpace=wrap;html=1;size=14;fillColor={};strokeColor=#b8860b;{}",
+                        to_hex_color(*color),
+                        binding_style(binding.as_ref())
                     );
-
-                    xml.push_str(&format!(
-                        "        <mxCell id=\"{}\" value=\"{}\" style=\"{}\" vertex=\"1\" parent=\"1\">\n",
-                        cell_id, escape_html_label(text), style
-                    ));
-                    xml.push_str(&format!(
-                        "          <mxGeometry x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" as=\"geometry\"/>\n",
-                        pos[0], pos[1], size[0], size[1]
-                    ));
-                    xml.push_str("        </mxCell>\n");
+                    let rect = [pos[0], pos[1], pos[0] + size[0], pos[1] + size[1]];
+                    Self::push_vertex(&mut xml, cell_id, text, &style, rect);
                 }
                 CanvasElement::Frame {
                     rect,
@@ -1067,120 +1195,105 @@ impl DrawioExporter {
                     color,
                     ..
                 } => {
-                    let w = (rect[2] - rect[0]).max(20.0);
-                    let h = (rect[3] - rect[1]).max(20.0);
-                    let color_hex = to_hex_color(*color);
                     let style = format!(
                         "swimlane;startSize=24;whiteSpace=wrap;html=1;strokeColor={};fillColor=none;",
-                        color_hex
+                        to_hex_color(*color)
                     );
-
-                    xml.push_str(&format!(
-                        "        <mxCell id=\"{}\" value=\"{}\" style=\"{}\" vertex=\"1\" parent=\"1\">\n",
-                        cell_id, escape_html_label(title), style
-                    ));
-                    xml.push_str(&format!(
-                        "          <mxGeometry x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" as=\"geometry\"/>\n",
-                        rect[0], rect[1], w, h
-                    ));
-                    xml.push_str("        </mxCell>\n");
+                    Self::push_vertex(&mut xml, cell_id, title, &style, *rect);
                 }
                 CanvasElement::DocCard {
                     pos,
                     size,
+                    note_id,
                     title,
                     snippet,
+                    doc_type,
                     ..
                 } => {
                     let text = format!("📄 {}\n\n{}", title, snippet);
-                    let style = "rounded=1;whiteSpace=wrap;html=1;fillColor=#1e2430;strokeColor=#3b82f6;";
-
-                    xml.push_str(&format!(
-                        "        <mxCell id=\"{}\" value=\"{}\" style=\"{}\" vertex=\"1\" parent=\"1\">\n",
-                        cell_id, escape_html_label(&text), style
-                    ));
-                    xml.push_str(&format!(
-                        "          <mxGeometry x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" as=\"geometry\"/>\n",
-                        pos[0], pos[1], size[0], size[1]
-                    ));
-                    xml.push_str("        </mxCell>\n");
+                    let note_ref = note_id
+                        .map(|id| format!("mnemonicNote={id};"))
+                        .unwrap_or_default();
+                    let style = format!(
+                        "mnemonicKind=doccard;{note_ref}mnemonicDocType={doc_type};rounded=1;whiteSpace=wrap;html=1;fillColor=#1e2430;strokeColor=#3b82f6;"
+                    );
+                    let rect = [pos[0], pos[1], pos[0] + size[0], pos[1] + size[1]];
+                    Self::push_vertex(&mut xml, cell_id, &text, &style, rect);
                 }
-                CanvasElement::Connector { .. } | CanvasElement::FreehandStroke { .. } => {}
-            }
-        }
+                CanvasElement::FreehandStroke {
+                    points,
+                    color,
+                    width,
+                    ..
+                } => {
+                    // No Draw.io equivalent: stored as a plain polyline edge tagged
+                    // `mnemonicKind=freehand`, which Draw.io renders as a line and
+                    // the importer turns back into a stroke.
+                    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+                        continue;
+                    };
+                    let style = format!(
+                        "mnemonicKind=freehand;edgeStyle=none;endArrow=none;startArrow=none;html=1;strokeColor={};strokeWidth={};",
+                        to_hex_color(*color),
+                        width
+                    );
+                    let bends: &[[f32; 2]] = if points.len() > 2 {
+                        &points[1..points.len() - 1]
+                    } else {
+                        &[]
+                    };
+                    Self::push_edge(&mut xml, cell_id, "", &style, "", *first, *last, bends);
+                }
+                CanvasElement::Connector {
+                    from_elem,
+                    to_elem,
+                    from_pos,
+                    to_pos,
+                    routing,
+                    stroke_color,
+                    stroke_width,
+                    label,
+                    arrow_end,
+                    waypoints,
+                    ..
+                } => {
+                    let routing_style = match routing {
+                        ConnectorRouting::Orthogonal => "edgeStyle=orthogonalEdgeStyle;rounded=0;",
+                        ConnectorRouting::Curved => "curved=1;",
+                        ConnectorRouting::Straight => "edgeStyle=none;rounded=0;",
+                    };
+                    let arrow_style = if *arrow_end {
+                        "endArrow=classic;"
+                    } else {
+                        "endArrow=none;"
+                    };
 
-        // 2. Export Connectors (Edges)
-        for elem in &doc.elements {
-            if let CanvasElement::Connector {
-                id: _,
-                from_elem,
-                to_elem,
-                from_pos,
-                to_pos,
-                routing,
-                stroke_color,
-                stroke_width,
-                label,
-                arrow_end,
-                waypoints,
-            } = elem
-            {
-                let edge_id = format!("edge_{}", cell_counter);
-                cell_counter += 1;
-
-                let routing_style = match routing {
-                    ConnectorRouting::Orthogonal => "edgeStyle=orthogonalEdgeStyle;rounded=0;",
-                    ConnectorRouting::Curved => "curved=1;",
-                    ConnectorRouting::Straight => "edgeStyle=none;rounded=0;",
-                };
-
-                let arrow_style = if *arrow_end {
-                    "endArrow=classic;"
-                } else {
-                    "endArrow=none;"
-                };
-
-                let stroke_hex = to_hex_color(*stroke_color);
-                let style = format!(
-                    "{}html=1;{}strokeColor={};strokeWidth={};",
-                    routing_style, arrow_style, stroke_hex, stroke_width
-                );
-
-                let source_attr = from_elem
-                    .and_then(|sid| id_map.get(&sid))
-                    .map(|sc| format!(" source=\"{}\"", sc))
-                    .unwrap_or_default();
-
-                let target_attr = to_elem
-                    .and_then(|tid| id_map.get(&tid))
-                    .map(|tc| format!(" target=\"{}\"", tc))
-                    .unwrap_or_default();
-
-                xml.push_str(&format!(
-                    "        <mxCell id=\"{}\" value=\"{}\" style=\"{}\" edge=\"1\" parent=\"1\"{}{}>\n",
-                    edge_id, escape_html_label(label), style, source_attr, target_attr
-                ));
-                xml.push_str("          <mxGeometry relative=\"1\" as=\"geometry\">\n");
-                xml.push_str(&format!(
-                    "            <mxPoint x=\"{:.1}\" y=\"{:.1}\" as=\"sourcePoint\"/>\n",
-                    from_pos[0], from_pos[1]
-                ));
-                xml.push_str(&format!(
-                    "            <mxPoint x=\"{:.1}\" y=\"{:.1}\" as=\"targetPoint\"/>\n",
-                    to_pos[0], to_pos[1]
-                ));
-                if !waypoints.is_empty() {
-                    xml.push_str("            <Array as=\"points\">\n");
-                    for pt in waypoints {
-                        xml.push_str(&format!(
-                            "              <mxPoint x=\"{:.1}\" y=\"{:.1}\"/>\n",
-                            pt[0], pt[1]
-                        ));
+                    // Attach to the exact border point the canvas uses, expressed as
+                    // Draw.io's fractional exit/entry constraints, so the importer
+                    // doesn't have to re-derive the anchor.
+                    let mut attach = String::new();
+                    let source_attr = Self::endpoint_attr(doc, &id_map, *from_elem, "source");
+                    let target_attr = Self::endpoint_attr(doc, &id_map, *to_elem, "target");
+                    if let Some(r) = from_elem.and_then(|id| doc.get_element(id)).map(|e| e.bounding_rect()) {
+                        let (fx, fy) = fraction_on_rect(r, *from_pos);
+                        attach.push_str(&format!("exitX={fx:.4};exitY={fy:.4};exitDx=0;exitDy=0;"));
                     }
-                    xml.push_str("            </Array>\n");
+                    if let Some(r) = to_elem.and_then(|id| doc.get_element(id)).map(|e| e.bounding_rect()) {
+                        let (fx, fy) = fraction_on_rect(r, *to_pos);
+                        attach.push_str(&format!("entryX={fx:.4};entryY={fy:.4};entryDx=0;entryDy=0;"));
+                    }
+
+                    let style = format!(
+                        "{}html=1;{}{}strokeColor={};strokeWidth={};",
+                        routing_style,
+                        arrow_style,
+                        attach,
+                        to_hex_color(*stroke_color),
+                        stroke_width
+                    );
+                    let endpoints = format!("{source_attr}{target_attr}");
+                    Self::push_edge(&mut xml, cell_id, label, &style, &endpoints, *from_pos, *to_pos, waypoints);
                 }
-                xml.push_str("          </mxGeometry>\n");
-                xml.push_str("        </mxCell>\n");
             }
         }
 
@@ -1191,4 +1304,93 @@ impl DrawioExporter {
 
         xml
     }
+
+    /// `<mxCell vertex="1">` with an absolute geometry. Sizes are kept as-is
+    /// (down to 1px) so thin imported shapes don't grow on each save.
+    fn push_vertex(xml: &mut String, cell_id: &str, label: &str, style: &str, rect: [f32; 4]) {
+        let w = (rect[2] - rect[0]).max(1.0);
+        let h = (rect[3] - rect[1]).max(1.0);
+        xml.push_str(&format!(
+            "        <mxCell id=\"{}\" value=\"{}\" style=\"{}\" vertex=\"1\" parent=\"1\">\n",
+            cell_id,
+            escape_html_label(label),
+            style
+        ));
+        xml.push_str(&format!(
+            "          <mxGeometry x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" as=\"geometry\"/>\n",
+            rect[0], rect[1], w, h
+        ));
+        xml.push_str("        </mxCell>\n");
+    }
+
+    /// `<mxCell edge="1">` with explicit source/target points and optional bends.
+    #[allow(clippy::too_many_arguments)]
+    fn push_edge(
+        xml: &mut String,
+        cell_id: &str,
+        label: &str,
+        style: &str,
+        endpoint_attrs: &str,
+        from: [f32; 2],
+        to: [f32; 2],
+        bends: &[[f32; 2]],
+    ) {
+        xml.push_str(&format!(
+            "        <mxCell id=\"{}\" value=\"{}\" style=\"{}\" edge=\"1\" parent=\"1\"{}>\n",
+            cell_id,
+            escape_html_label(label),
+            style,
+            endpoint_attrs
+        ));
+        xml.push_str("          <mxGeometry relative=\"1\" as=\"geometry\">\n");
+        xml.push_str(&format!(
+            "            <mxPoint x=\"{:.2}\" y=\"{:.2}\" as=\"sourcePoint\"/>\n",
+            from[0], from[1]
+        ));
+        xml.push_str(&format!(
+            "            <mxPoint x=\"{:.2}\" y=\"{:.2}\" as=\"targetPoint\"/>\n",
+            to[0], to[1]
+        ));
+        if !bends.is_empty() {
+            xml.push_str("            <Array as=\"points\">\n");
+            for pt in bends {
+                xml.push_str(&format!(
+                    "              <mxPoint x=\"{:.2}\" y=\"{:.2}\"/>\n",
+                    pt[0], pt[1]
+                ));
+            }
+            xml.push_str("            </Array>\n");
+        }
+        xml.push_str("          </mxGeometry>\n");
+        xml.push_str("        </mxCell>\n");
+    }
+
+    /// ` source="cell_N"` / ` target="cell_N"` when the referenced element exists.
+    fn endpoint_attr(
+        doc: &CanvasDocument,
+        id_map: &HashMap<CanvasElementId, String>,
+        elem: Option<CanvasElementId>,
+        attr: &str,
+    ) -> String {
+        elem.filter(|id| doc.get_element(*id).is_some())
+            .and_then(|id| id_map.get(&id))
+            .map(|cell| format!(" {attr}=\"{cell}\""))
+            .unwrap_or_default()
+    }
+}
+
+/// Position of `point` as fractions of `rect` (Draw.io `exitX/exitY` semantics), clamped to
+/// the border so a point that drifted slightly outside still attaches.
+fn fraction_on_rect(rect: Rect, point: [f32; 2]) -> (f32, f32) {
+    let frac = |v: f32, min: f32, len: f32| {
+        if len <= f32::EPSILON {
+            0.5
+        } else {
+            ((v - min) / len).clamp(0.0, 1.0)
+        }
+    };
+    (
+        frac(point[0], rect.min.x, rect.width()),
+        frac(point[1], rect.min.y, rect.height()),
+    )
 }
