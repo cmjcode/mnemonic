@@ -165,10 +165,12 @@ impl MarkdownEditor {
         let vault_root = vault_root.map(Path::to_path_buf);
         let is_canvas = note.is_canvas();
         let canvas_storage = CanvasStorage::detect(&note);
-        let initial_mode = match canvas_storage {
-            CanvasStorage::Sidecar => EditorMode::Split,
-            _ if is_canvas => EditorMode::Edgeless,
-            _ => EditorMode::Live,
+        let initial_mode = if note.has_note_content() {
+            EditorMode::Live
+        } else if is_canvas {
+            EditorMode::Edgeless
+        } else {
+            EditorMode::Live
         };
 
         let canvas = match canvas_storage {
@@ -835,7 +837,7 @@ mod tests {
         let note = Note::create_canvas(dir.path(), "Papan").unwrap();
         let mut editor = MarkdownEditor::open_in(note, Some(dir.path()));
         assert_eq!(editor.canvas_storage(), CanvasStorage::Sidecar);
-        assert_eq!(editor.mode, EditorMode::Split);
+        assert_eq!(editor.mode, EditorMode::Edgeless);
 
         let xml = r#"<mxfile><diagram name="P"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
             <mxCell id="a" value="Alpha" style="rounded=1;html=1;" vertex="1" parent="1"><mxGeometry x="900" y="40" width="120" height="60" as="geometry"/></mxCell>

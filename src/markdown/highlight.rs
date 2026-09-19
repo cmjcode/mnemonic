@@ -75,27 +75,19 @@ pub fn layout_job(text: &str, wrap_width: f32, style: &HighlightStyle) -> Layout
             continue;
         }
 
-        // Headings: `#` marks faint, title large & semibold.
+        // Headings: `#` marks faint, title large & semibold. Marks and title
+        // share one line height, or the marks sit on a different baseline.
         let hashes = trimmed.chars().take_while(|c| *c == '#').count();
         if (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ') {
             let size = heading_size(hashes, style.base_size);
             let marks_end = start + indent + hashes + 1;
-            push(
-                &mut job,
-                start,
-                marks_end,
-                TextFormat {
-                    font_id: FontId::new(size, style.semibold.clone()),
-                    color: style.faint,
-                    ..base_format(style)
-                },
-            );
             let heading = TextFormat {
                 font_id: FontId::new(size, style.semibold.clone()),
                 color: style.text,
                 line_height: Some(size * 1.35),
                 ..base_format(style)
             };
+            push(&mut job, start, marks_end, TextFormat { color: style.faint, ..heading.clone() });
             inline_runs(&mut job, style, &line[indent + hashes + 1..], marks_end, heading);
             continue;
         }
@@ -431,6 +423,14 @@ mod tests {
         assert_eq!(section_at(text.find("[[").unwrap() + 2).format.color, st.accent);
         assert_eq!(section_at(text.find("^id1").unwrap()).format.color, st.faint);
         assert!(covers_all(&job));
+    }
+
+    #[test]
+    fn heading_marks_share_the_title_line_height() {
+        let job = layout_job("# 🚀 Judul ^8a6jg2\n", 400.0, &style());
+        let heading: Vec<_> = job.sections.iter().filter(|s| s.byte_range.end.0 < job.text.len()).collect();
+        let first = heading[0].format.line_height;
+        assert!(heading.iter().all(|s| s.format.line_height == first && s.format.font_id.size == heading[0].format.font_id.size));
     }
 
     #[test]

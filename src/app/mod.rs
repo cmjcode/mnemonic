@@ -538,7 +538,7 @@ impl MnemonicApp {
                     c.trashed += 1;
                     continue;
                 }
-                if note.is_canvas() {
+                if note.is_pure_canvas() {
                     let doc = load_canvas_for_preview(note);
                     derived.canvas_previews.insert(
                         note.path.clone(),
@@ -551,7 +551,7 @@ impl MnemonicApp {
                 }
                 if fm.archived {
                     c.archived += 1;
-                } else if note.is_canvas() {
+                } else if note.is_pure_canvas() {
                     c.canvases += 1;
                 } else {
                     c.notes += 1;
@@ -1235,7 +1235,11 @@ impl MnemonicApp {
         }
         self.editor_ui = EditorUi::for_title(&note.frontmatter.title);
         let root = self.vault.as_ref().map(|v| v.root.clone());
-        self.editor = Some(MarkdownEditor::open_in(note, root.as_deref()));
+        let mut editor = MarkdownEditor::open_in(note, root.as_deref());
+        if self.doc_filter == SidebarDocFilter::WhiteboardsOnly && editor.canvas.is_some() {
+            editor.mode = EditorMode::Edgeless;
+        }
+        self.editor = Some(editor);
     }
 
     /// Opens any file (note, canvas, PDF, sheet) by path.
@@ -2071,8 +2075,7 @@ impl MnemonicApp {
                 title: &mut self.editor_ui.title_buffer,
                 mode: match editor.mode {
                     EditorMode::Live | EditorMode::Source => ui::EditorModeTab::Note,
-                    EditorMode::Edgeless => ui::EditorModeTab::Canvas,
-                    EditorMode::Split => ui::EditorModeTab::Split,
+                    EditorMode::Edgeless | EditorMode::Split => ui::EditorModeTab::Canvas,
                 },
                 save_state: if self.editor_ui.save_failed {
                     ui::SaveState::Failed
@@ -2155,10 +2158,6 @@ impl MnemonicApp {
                             ui::EditorModeTab::Canvas => {
                                 editor.ensure_canvas();
                                 EditorMode::Edgeless
-                            }
-                            ui::EditorModeTab::Split => {
-                                editor.ensure_canvas();
-                                EditorMode::Split
                             }
                         };
                     }

@@ -2,7 +2,7 @@
 //! screen so navigation never "disappears".
 //!
 //! - Home: sidebar toggle + one global search field (⌘F).
-//! - Editor: back, inline-editable title (single click), Note/Split/Canvas
+//! - Editor: back, inline-editable title (single click), Note/Canvas
 //!   switcher, undo/redo, outline toggle, reading-theme picker, print /
 //!   export menu (§3.2.5), and a live save indicator.
 //! - PDF: back + file name.
@@ -16,7 +16,7 @@ use egui_icons::icons::{
     ICON_EDIT_NOTE, ICON_ERROR, ICON_FOLDER_OPEN, ICON_HTML, ICON_HUB, ICON_IOS_SHARE, ICON_KEYBOARD,
     ICON_LEFT_PANEL_CLOSE, ICON_LEFT_PANEL_OPEN, ICON_LIGHT_MODE, ICON_PALETTE,
     ICON_PICTURE_AS_PDF, ICON_PRINT, ICON_REDO, ICON_REFRESH, ICON_SEARCH, ICON_SETTINGS, ICON_SYNC,
-    ICON_TOC, ICON_UNDO, ICON_VERTICAL_SPLIT,
+    ICON_TOC, ICON_UNDO,
 };
 
 use crate::i18n::LocaleManager;
@@ -39,8 +39,6 @@ pub fn title_field_id() -> Id {
 pub enum EditorModeTab {
     Note,
     Canvas,
-    /// Markdown beside its diagram.
-    Split,
 }
 
 /// Where the open note goes, in its reading theme's colours (§3.2.5).
@@ -375,21 +373,18 @@ impl TopBar {
         }
         ui.add_space(6.0);
 
-        let labels = [t("editor-mode-note"), t("editor-mode-split"), t("editor-mode-edgeless")];
+        let labels = [t("editor-mode-note"), t("editor-mode-edgeless")];
         let options = [
             (ICON_EDIT_NOTE.codepoint, labels[0].as_str()),
-            (ICON_VERTICAL_SPLIT.codepoint, labels[1].as_str()),
-            (ICON_DRAW.codepoint, labels[2].as_str()),
+            (ICON_DRAW.codepoint, labels[1].as_str()),
         ];
         let selected = match mode {
             EditorModeTab::Note => 0,
-            EditorModeTab::Split => 1,
-            EditorModeTab::Canvas => 2,
+            EditorModeTab::Canvas => 1,
         };
         if let Some(i) = widgets::segmented(ui, Id::new("editor_mode_switch"), &options, selected) {
             events.push(TopBarEvent::SetEditorMode(match i {
                 0 => EditorModeTab::Note,
-                1 => EditorModeTab::Split,
                 _ => EditorModeTab::Canvas,
             }));
         }
@@ -547,7 +542,7 @@ mod tests {
 
     #[test]
     fn editor_mode_tabs_are_distinct() {
-        assert_ne!(EditorModeTab::Note, EditorModeTab::Split);
+        assert_ne!(EditorModeTab::Note, EditorModeTab::Canvas);
         assert_ne!(ExportKind::Pdf, ExportKind::Html);
         assert_ne!(SaveState::Saved, SaveState::Pending);
     }

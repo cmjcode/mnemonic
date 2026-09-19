@@ -7,7 +7,9 @@
 //! the neighbouring line, ↑/↓ at the edge move to the neighbouring block,
 //! Esc or a click elsewhere goes back to reading. Every edit goes through
 //! `MarkdownEditor::set_body` (undo, autosave), splicing only the edited
-//! lines with `live_blocks::replace_lines`.
+//! lines with `live_blocks::replace_lines`. Block anchors (` ^id`, §Fase 3)
+//! are hidden from the raw text and put back on every edit
+//! (`markdown::live_anchors`); the Source mode still shows them.
 //! Callers: `app::editor::show_editor` (Live and Split modes).
 
 use std::ops::Range;
@@ -20,6 +22,7 @@ use super::EditorUi;
 use super::source::{autocomplete, set_cursor, source_style, take_popup_keys};
 use crate::i18n::LocaleManager;
 use crate::markdown::MarkdownEditor;
+use crate::markdown::live_anchors::{self, Hidden};
 use crate::markdown::live_blocks::{self, ListContinuation, LiveBlock};
 use crate::markdown::renderer::{EmbedResolver, LiveParams};
 use crate::notes::Vault;
@@ -38,12 +41,31 @@ pub(super) struct LiveEdit {
     pub(super) lines: Range<usize>,
     /// Where to put the text cursor once the editor is on screen.
     place: Option<Placement>,
+    /// The lines as last shown, anchors hidden. Kept while it still matches
+    /// the body, so an anchor typed by hand stays visible until the block
+    /// is opened again.
+    anchors: Option<Hidden>,
+}
+
+impl LiveEdit {
+    fn new(lines: Range<usize>, place: Option<Placement>) -> Self {
+        LiveEdit { lines, place, anchors: None }
+    }
+
+    /// The active lines as the editor shows them.
+    fn shown(&mut self, body: &str) -> &Hidden {
+        let full = live_blocks::lines_text(body, self.lines.clone());
+        if self.anchors.as_ref().is_some_and(|h| h.full() != full) {
+            self.anchors = None;
+        }
+        self.anchors.get_or_insert_with(|| Hidden::new(&full))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Placement {
     End,
-    /// Char index into the edited text.
+    /// Char index into the edited text, anchors included.
     Char(usize),
     /// Screen position of the click that opened the block.
     Point(Pos2),
@@ -92,17 +114,18 @@ pub(super) fn live_view(
 
     let blocks = if state.live.is_some() { editor.blocks() } else { Vec::new() };
     let line_mode = state.live.as_ref().is_some_and(|l| is_line_mode(&blocks, &l.lines));
-    let original = state.live.as_ref().map(|l| live_blocks::lines_text(&editor.note.body, l.lines.clone()));
+    // The active lines as shown: anchors hidden, restored on every commit.
+    let shown = state.live.as_mut().map(|l| l.shown(&editor.note.body).clone());
     let rendered_range = state.live.as_ref().map(|l| l.lines.clone());
 
     let popup_keys = take_popup_keys(&ctx, state);
-    let nav = match &original {
-        Some(text) if !state.popup_visible && ctx.memory(|m| m.has_focus(id)) => take_nav_key(&ctx, id, text, line_mode),
+    let nav = match &shown {
+        Some(h) if !state.popup_visible && ctx.memory(|m| m.has_focus(id)) => take_nav_key(&ctx, id, &h.visible, line_mode),
         _ => None,
     };
 
     // ── Render, with the raw editor in place of the active lines ──
-    let mut buffer = original.clone().unwrap_or_default();
+    let mut buffer = shown.as_ref().map(|h| h.visible.clone()).unwrap_or_default();
     let mut output: Option<egui::text_edit::TextEditOutput> = None;
     let style = source_style(inputs.colors);
     let hint = inputs.tr.t("editor-live-hint", &[]);
@@ -149,17 +172,23 @@ pub(super) fn live_view(
     }
 
     // ── Apply this frame's edits to the active lines ──
+    // Cursors from the `TextEdit` index the shown text; `commit` and
+    // `handle_key` work on the full one.
     let mut live = state.live.take();
-    if let (Some(l), Some(orig)) = (live.as_mut(), original.as_deref()) {
+    if let (Some(l), Some(h)) = (live.as_mut(), shown.as_ref()) {
         let cursor = output
             .as_ref()
             .and_then(|o| o.cursor_range)
             .map(|r| r.primary.index.0)
-            .unwrap_or_else(|| orig.chars().count());
+            .unwrap_or_else(|| h.visible.chars().count());
         match nav {
             Some(NavKey::Leave) => {}
-            Some(key) => handle_key(editor, l, &blocks, orig, cursor, key),
-            None if buffer != orig => commit(editor, l, &buffer, cursor, line_mode, false),
+            Some(key) => handle_key(editor, l, &blocks, &h.full(), h.to_full(cursor), key),
+            None if buffer != h.visible => {
+                let edited = h.restore(&buffer);
+                commit(editor, l, &edited.full(), edited.to_full(cursor), line_mode, false);
+                l.anchors = Some(edited);
+            }
             None => {}
         }
     }
@@ -167,11 +196,13 @@ pub(super) fn live_view(
         ctx.memory_mut(|m| m.surrender_focus(id));
         live = None;
     }
-    if let (Some(l), Some(out)) = (live.as_mut(), output.as_ref())
+    if let (Some(l), Some(h), Some(out)) = (live.as_mut(), shown.as_ref(), output.as_ref())
         && let Some((text, cursor)) =
             autocomplete(&ctx, inputs.tr, state, inputs.vault, inputs.pdfs, &buffer, out, &popup_keys)
     {
-        commit(editor, l, &text, cursor, line_mode, true);
+        let edited = h.restore(&text);
+        commit(editor, l, &edited.full(), edited.to_full(cursor), line_mode, true);
+        l.anchors = Some(edited);
     }
 
     // Place the cursor once the editor for these lines is on screen.
@@ -179,10 +210,11 @@ pub(super) fn live_view(
         && Some(&l.lines) == rendered_range.as_ref()
         && let Some(place) = l.place.take()
     {
-        let len = buffer.chars().count();
+        let now = l.shown(&editor.note.body);
+        let len = now.visible.chars().count();
         let at = match place {
             Placement::End => len,
-            Placement::Char(c) => c.min(len),
+            Placement::Char(c) => now.to_visible(c).min(len),
             Placement::Point(p) => out.galley.cursor_from_pos(p - out.galley_pos).index.0.min(len),
         };
         set_cursor(&ctx, id, at);
@@ -210,7 +242,7 @@ pub(super) fn live_view(
 
     // ── Clicks that start editing somewhere else ──
     let mut open = |lines: Range<usize>, place: Placement| {
-        live = Some(LiveEdit { lines, place: Some(place) });
+        live = Some(LiveEdit::new(lines, Some(place)));
         ctx.request_repaint();
     };
     if let Some(req) = outcome.edit {
@@ -337,11 +369,11 @@ fn handle_key(editor: &mut MarkdownEditor, live: &mut LiveEdit, blocks: &[LiveBl
                 }
             }
         }
+        // Joined lines keep one block anchor, not `^a` stuck mid-sentence.
         NavKey::MergeUp => match prev {
             Some(p) if single_line(p) => {
                 let above = live_blocks::lines_text(&editor.note.body, p.lines.clone());
-                let at = above.chars().count();
-                let merged = format!("{above}{text}");
+                let (merged, at) = live_anchors::join_lines(&above, text);
                 live.lines = p.lines.start..live.lines.end.max(p.lines.end);
                 commit(editor, live, &merged, at, true, true);
             }
@@ -354,9 +386,9 @@ fn handle_key(editor: &mut MarkdownEditor, live: &mut LiveEdit, blocks: &[LiveBl
         NavKey::MergeDown => {
             if let Some(n) = next.filter(|n| single_line(n)) {
                 let below = live_blocks::lines_text(&editor.note.body, n.lines.clone());
-                let merged = format!("{text}{below}");
+                let (merged, at) = live_anchors::join_lines(text, &below);
                 live.lines = live.lines.start..n.lines.end;
-                commit(editor, live, &merged, cursor, true, true);
+                commit(editor, live, &merged, at, true, true);
             }
         }
         NavKey::Up => {
@@ -393,7 +425,7 @@ mod tests {
     }
 
     fn live(lines: Range<usize>) -> LiveEdit {
-        LiveEdit { lines, place: None }
+        LiveEdit::new(lines, None)
     }
 
     #[test]
@@ -489,5 +521,35 @@ mod tests {
         commit(&mut e, &mut l, "x1\nx2\nx3", 8, true, false);
         assert_eq!(e.note.body, "x1\nx2\nx3\ny");
         assert_eq!((l.lines.clone(), l.place), (2..3, Some(Placement::Char(2))));
+    }
+
+    #[test]
+    fn anchors_are_hidden_while_editing_and_kept_in_the_file() {
+        let (_d, mut e) = editor("# Judul ^8a6jg2\nisi ^b1\n");
+        let mut l = live(0..1);
+        assert_eq!(l.shown(&e.note.body).visible, "# Judul");
+
+        // Typing at the end of the shown text keeps the anchor last.
+        let edited = l.shown(&e.note.body).restore("# Judul Baru");
+        commit(&mut e, &mut l, &edited.full(), edited.to_full(12), true, false);
+        assert_eq!(e.note.body, "# Judul Baru ^8a6jg2\nisi ^b1\n");
+
+        // Enter at the end of the shown line: the anchor stays on it.
+        let h = l.shown(&e.note.body).clone();
+        let blocks = e.blocks();
+        handle_key(&mut e, &mut l, &blocks, &h.full(), h.to_full(12), NavKey::Enter);
+        assert_eq!(e.note.body, "# Judul Baru ^8a6jg2\n\nisi ^b1\n");
+
+        // Backspace joins without leaving `^8a6jg2` mid-sentence.
+        let mut l = live(2..3);
+        let h = l.shown(&e.note.body).clone();
+        let blocks = e.blocks();
+        handle_key(&mut e, &mut l, &blocks, &h.full(), 0, NavKey::MergeUp);
+        let mut l = live(0..1);
+        let h = l.shown(&e.note.body).clone();
+        let blocks = e.blocks();
+        handle_key(&mut e, &mut l, &blocks, &h.full(), h.to_full(h.visible.chars().count()), NavKey::MergeDown);
+        assert_eq!(e.note.body, "# Judul Baruisi ^8a6jg2\n");
+        assert_eq!(l.place, Some(Placement::Char(12)));
     }
 }

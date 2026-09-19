@@ -111,6 +111,7 @@ pub(super) fn draw_block(
     outcome: &mut RenderOutcome,
 ) -> bool {
     apply_block_style(ui, env.colors, block.kind);
+    index.md_runs = 0;
     let indent = match block.kind {
         BlockKind::ListItem | BlockKind::Checklist { .. } | BlockKind::Paragraph | BlockKind::Quote => {
             (block.indent.min(24) as f32) * INDENT_PX_PER_COLUMN
@@ -389,12 +390,18 @@ fn markdown(ui: &mut egui::Ui, cache: &mut CommonMarkCache, index: &mut RenderCa
 fn render_with_images(ui: &mut egui::Ui, cache: &mut CommonMarkCache, index: &mut RenderCache, text: &str, env: &BlockEnv<'_>) {
     let mut run = String::new();
     let mut in_fence = false;
-    let flush = |ui: &mut egui::Ui, cache: &mut CommonMarkCache, run: &mut String| {
+    // Each run in its own id scope: `egui_commonmark` names tables
+    // `_table/0`, `_table/1`, … per `show`, so two runs in one `Ui`
+    // (nested embeds, callouts) would give their tables the same `Grid` id.
+    let flush = |ui: &mut egui::Ui, cache: &mut CommonMarkCache, index: &mut RenderCache, run: &mut String| {
         if !run.trim().is_empty() {
-            CommonMarkViewer::new()
-                .enable_scroll_to_heading(true)
-                .render_math_fn(Some(&render_math))
-                .show(ui, cache, run);
+            index.md_runs += 1;
+            ui.push_id(("md_run", index.md_runs), |ui| {
+                CommonMarkViewer::new()
+                    .enable_scroll_to_heading(true)
+                    .render_math_fn(Some(&render_math))
+                    .show(ui, cache, run);
+            });
         }
         run.clear();
     };
@@ -407,14 +414,14 @@ fn render_with_images(ui: &mut egui::Ui, cache: &mut CommonMarkCache, index: &mu
             && let Some(name) = image_embed_target(t)
             && let Some(EmbedContent::Image(path)) = (env.resolve_embed)(name)
         {
-            flush(ui, cache, &mut run);
+            flush(ui, cache, index, &mut run);
             draw_image_embed(ui, index, &path, name);
             continue;
         }
         run.push_str(line);
         run.push('\n');
     }
-    flush(ui, cache, &mut run);
+    flush(ui, cache, index, &mut run);
 }
 
 /// `egui_commonmark` math hook (§Fase 1.8): `$x^2$` inline as italic

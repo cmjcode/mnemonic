@@ -146,6 +146,10 @@ pub struct RenderCache {
     /// Laid-out Mermaid diagrams keyed by `diagram_key(source, dark)`:
     /// parse + layout run once per distinct source, not per frame (§3.7).
     diagrams: HashMap<u64, Arc<crate::mermaid::Rendered>>,
+    /// Markdown runs drawn so far in the current block. `egui_commonmark`
+    /// numbers its tables from 0 on every `show`, so each run gets an id
+    /// scope of its own or two tables in one block clash (`draw::flush`).
+    md_runs: usize,
 }
 
 impl RenderCache {
@@ -374,8 +378,12 @@ pub fn render_cached(
                 .interact(sensor_rect, ui.id().with(("live_block", block.lines.start)), egui::Sense::click())
                 .on_hover_cursor(egui::CursorIcon::Text);
             let source = live_blocks::block_source(&lines, &block);
+            // Its own id scope: widgets inside (tables above all) would
+            // otherwise share ids with the same widgets in other blocks.
             let edit_button = ui
-                .scope(|ui| draw::draw_block(ui, cache, index, body, &block, &source, &env, &mut outcome))
+                .push_id(("live_block_content", block.lines.start), |ui| {
+                    draw::draw_block(ui, cache, index, body, &block, &source, &env, &mut outcome)
+                })
                 .inner;
             // `CommonMarkViewer::show` resets all link hooks at the start of
             // the next call, so clicks must be read back per block.

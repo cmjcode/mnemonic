@@ -3,7 +3,7 @@ id: b2c3d4e5-f6a7-8901-bcde-f23456789012
 title: Proyek Startup AI
 type: note
 created: 2026-08-01T02:00:00+00:00
-modified: 2026-09-19T06:00:09.547581+00:00
+modified: 2026-09-19T07:14:26.834220+00:00
 pinned: true
 color: purple
 tags:

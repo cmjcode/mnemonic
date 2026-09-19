@@ -104,8 +104,8 @@ impl MnemonicApp {
             _ => query::filter_notes(&vault.notes, &grid_filter, &search),
         };
         match &filter {
-            SidebarDocFilter::NotesOnly => visible_notes.retain(|n| !n.is_canvas()),
-            SidebarDocFilter::WhiteboardsOnly => visible_notes.retain(|n| n.is_canvas()),
+            SidebarDocFilter::NotesOnly => visible_notes.retain(|n| n.has_note_content()),
+            SidebarDocFilter::WhiteboardsOnly => visible_notes.retain(|n| n.has_canvas_data()),
             _ => {}
         }
         query::sort_notes(&mut visible_notes, self.sort_mode);
@@ -693,7 +693,7 @@ fn note_card(
     let (bg, menu_open) = card_shell(ui, card_id, fill, is_selected, |ui, hovered| {
         // Title row
         ui.horizontal_top(|ui| {
-            let (icon, color) = if note.is_canvas() {
+            let (icon, color) = if note.is_pure_canvas() {
                 (ICON_DRAW.codepoint, p.canvas_icon)
             } else {
                 (ICON_DESCRIPTION.codepoint, p.note_icon)

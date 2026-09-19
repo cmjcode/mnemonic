@@ -340,6 +340,53 @@ impl Note {
             })
     }
 
+    /// Whether this note contains actual note / Markdown content
+    /// rather than being a pure canvas/whiteboard or raw diagram.
+    pub fn has_note_content(&self) -> bool {
+        if self.body.starts_with("<?xml")
+            || self.body.starts_with("<mxfile")
+            || self.body.starts_with("<mxGraphModel")
+            || self.path.extension().is_some_and(|ext| ext == "drawio")
+        {
+            return false;
+        }
+
+        let trimmed = self.body.trim();
+
+        if self.frontmatter.note_type != NoteType::Canvas {
+            return true;
+        }
+
+        if trimmed.is_empty() {
+            return false;
+        }
+        if trimmed.contains("Klik dua kali kartu ini untuk mengubah teksnya")
+            && trimmed.lines().count() <= 3
+        {
+            return false;
+        }
+        // If the entire body is just a single ```drawio or ```canvas fence with no other text
+        if (trimmed.starts_with("```drawio") || trimmed.starts_with("```canvas"))
+            && trimmed.ends_with("```")
+            && trimmed.matches("```").count() == 2
+        {
+            return false;
+        }
+
+        true
+    }
+
+    /// Whether this note has canvas / whiteboard data (either via a sidecar
+    /// or embedded canvas/drawio data).
+    pub fn has_canvas_data(&self) -> bool {
+        self.is_canvas()
+    }
+
+    /// Whether this is purely a canvas/whiteboard document with no note text.
+    pub fn is_pure_canvas(&self) -> bool {
+        self.has_canvas_data() && !self.has_note_content()
+    }
+
     /// Write current frontmatter + body back to `self.path`, bumping
     /// `modified`. Atomic: the content goes to a temp file in the same
     /// folder first and is renamed over the note, so a crash mid-write
@@ -732,5 +779,33 @@ isi tanpa frontmatter");
         let sidecar = restored.sidecar_path();
         restored.delete_permanently().unwrap();
         assert!(!sidecar.exists());
+    }
+
+    #[test]
+    fn note_content_vs_pure_canvas() {
+        let dir = tempdir().unwrap();
+
+        // 1. Regular note has note content, not pure canvas
+        let regular = Note::create(dir.path(), "Catatan Biasa", "Isi teks catatan").unwrap();
+        assert!(regular.has_note_content());
+        assert!(!regular.is_pure_canvas());
+
+        // 2. Newly created canvas has no real note content, is pure canvas
+        let canvas = Note::create_canvas(dir.path(), "Kanvas Baru").unwrap();
+        assert!(!canvas.has_note_content());
+        assert!(canvas.has_canvas_data());
+        assert!(canvas.is_pure_canvas());
+
+        // 3. Regular note with sidecar has BOTH note content and canvas data, but is NOT pure canvas
+        let mut note_with_sidecar = Note::create(dir.path(), "Catatan Arsitektur", "Ini teks panjang").unwrap();
+        note_with_sidecar.has_sidecar = true;
+        assert!(note_with_sidecar.has_note_content());
+        assert!(note_with_sidecar.has_canvas_data());
+        assert!(!note_with_sidecar.is_pure_canvas());
+
+        // 4. Drawio note is pure canvas
+        let drawio = Note::create_drawio(dir.path(), "Diagram").unwrap();
+        assert!(!drawio.has_note_content());
+        assert!(drawio.is_pure_canvas());
     }
 }
