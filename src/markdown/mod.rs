@@ -9,6 +9,7 @@ pub mod highlight;
 pub mod live_anchors;
 pub mod live_blocks;
 pub mod math;
+pub mod outline;
 pub mod renderer;
 pub mod sections;
 pub mod sheet_embed;

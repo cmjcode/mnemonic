@@ -576,6 +576,7 @@ error-context-save-sheet = save the sheet
 error-context-export-sheet = export the sheet
 error-context-import-sheet = import the spreadsheet
 toast-link-sheet-missing = Sheet "{ $name }" isn't in the vault
+toast-link-folder-invalid = Can't create "{ $name }": the folder must be inside the vault and not hidden
 graph-kind-sheet = Sheet
 
 ## Live editor & reading themes (§3.2.1, §3.2.5)

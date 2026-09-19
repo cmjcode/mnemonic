@@ -293,6 +293,7 @@ impl MarkdownEditor {
                 ),
             };
             self.canvas = Some(canvas);
+            self.upgrade_block_canvas();
         }
         self.canvas.as_mut().unwrap()
     }

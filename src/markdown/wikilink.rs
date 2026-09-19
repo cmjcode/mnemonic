@@ -189,6 +189,15 @@ pub fn display_text(line: &str) -> String {
 /// intact — used when a note is renamed. Fenced code is left alone.
 /// Returns `None` when nothing changed.
 pub fn rewrite_link_target(body: &str, old_title: &str, new_title: &str) -> Option<String> {
+    rewrite_link_target_in(body, old_title, new_title, None)
+}
+
+/// [`rewrite_link_target`] that also follows folder-qualified links
+/// (`[[Kuliah/Old]]` → `[[Kuliah/New]]`) when the renamed note lives in
+/// `folder` (vault-relative, `/`-separated): the link's folder part must
+/// be a suffix of it, so a same-named note elsewhere keeps its links.
+pub fn rewrite_link_target_in(body: &str, old_title: &str, new_title: &str, folder: Option<&str>) -> Option<String> {
+    let folder_parts = folder.map(path_key_parts).unwrap_or_default();
     let old_key = title_key(old_title);
     if old_key.is_empty() || old_title.trim() == new_title.trim() {
         return None;
@@ -211,12 +220,30 @@ pub fn rewrite_link_target(body: &str, old_title: &str, new_title: &str) -> Opti
         for (start, end) in wikilink_spans(line) {
             let inner = &line[start + 2..end - 2];
             let link = WikiLink::parse(inner);
-            if title_key(&link.target) != old_key {
+            // `Some(prefix)` = the folder part to keep in front of the new title.
+            let prefix = if title_key(&link.target) == old_key {
+                Some(String::new())
+            } else {
+                let parts = path_key_parts(&link.target);
+                let (name, dirs) = match parts.split_last() {
+                    Some((name, dirs)) => (name.as_str(), dirs),
+                    None => ("", &[][..]),
+                };
+                let matches = folder.is_some()
+                    && !dirs.is_empty()
+                    && name == old_key
+                    && folder_parts.len() >= dirs.len()
+                    && folder_parts[folder_parts.len() - dirs.len()..] == *dirs;
+                let written = link.target.trim();
+                matches.then(|| written[..written.rfind(['/', '\\']).map_or(0, |i| i + 1)].to_string())
+            };
+            let Some(prefix) = prefix else {
                 continue;
-            }
+            };
             // Replace just the target portion so heading/alias survive.
             let target_len = inner.find(['#', '|']).unwrap_or(inner.len());
             out.push_str(&line[last..start + 2]);
+            out.push_str(&prefix);
             out.push_str(new_title.trim());
             out.push_str(&inner[target_len..]);
             out.push_str("]]");
@@ -312,38 +339,135 @@ pub fn link_mention_on_line(body: &str, line: usize, title: &str) -> Option<Stri
 /// Maps link targets (case-insensitive) to the note that owns them, for
 /// wikilink resolution and autocomplete (§3.2.2). A note is reachable by
 /// its title, its file stem (Obsidian's native identity) and each of its
-/// frontmatter `aliases`, in that priority order on collisions.
+/// frontmatter `aliases`, in that priority order on collisions, and by a
+/// folder-qualified path (`[[Kuliah/Algoritma Graph]]`, matched as a
+/// suffix of the file path like Obsidian's "shortest path" links).
+///
+/// Titles need not be unique across folders: every note sharing a name is
+/// kept as a candidate. Without a source note the one with the shortest
+/// path wins (then alphabetical), so resolution is deterministic;
+/// [`WikilinkIndex::resolve_from`] prefers the candidate in the linking
+/// note's own folder, as Obsidian does.
 pub struct WikilinkIndex {
     by_title: HashMap<String, (String, PathBuf)>,
+    /// Every note reachable by a title or file-stem key, best first.
+    by_name: HashMap<String, Vec<PathBuf>>,
+    /// `(lowercased path components with `.md` dropped, path)` per note,
+    /// for folder-qualified links.
+    paths: Vec<(Vec<String>, PathBuf)>,
+}
+
+/// Ordering of candidates for one name: fewer path components first
+/// (closest to the vault root), then alphabetical — deterministic.
+fn candidate_order(a: &Path, b: &Path) -> std::cmp::Ordering {
+    a.components().count().cmp(&b.components().count()).then_with(|| a.cmp(b))
+}
+
+/// Lowercased components of a link target or note path, `.md` dropped
+/// from the last one; `.` and empty segments skipped.
+fn path_key_parts(s: &str) -> Vec<String> {
+    let mut parts: Vec<String> = s
+        .split(['/', '\\'])
+        .filter(|p| !p.is_empty() && *p != ".")
+        .map(title_key)
+        .collect();
+    if let Some(last) = parts.last_mut()
+        && let Some(stripped) = last.strip_suffix(".md")
+    {
+        *last = stripped.to_string();
+    }
+    parts
 }
 
 impl WikilinkIndex {
     /// Build the index from all (non-trashed) notes currently in the
-    /// vault. Titles are assumed unique, matching Obsidian's own
-    /// convention; the last note wins on a title collision, while stems
-    /// and aliases never override a title.
+    /// vault. On a title collision the shortest path wins the plain key
+    /// (see [`candidate_order`]); stems and aliases never override a title.
     pub fn build(notes: &[Note]) -> WikilinkIndex {
-        let mut by_title = HashMap::new();
-        for note in notes {
-            if note.frontmatter.trashed || note.frontmatter.title.is_empty() {
-                continue;
+        let live: Vec<&Note> = notes.iter().filter(|n| !n.frontmatter.trashed).collect();
+        let mut by_name: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        for note in &live {
+            let keys = link_keys_for(note);
+            let stem = note
+                .path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(title_key)
+                .filter(|s| keys.contains(s));
+            let title = (!note.frontmatter.title.is_empty()).then(|| title_key(&note.frontmatter.title));
+            for key in title.into_iter().chain(stem) {
+                let list = by_name.entry(key).or_default();
+                if !list.contains(&note.path) {
+                    list.push(note.path.clone());
+                }
             }
+        }
+        for list in by_name.values_mut() {
+            list.sort_by(|a, b| candidate_order(a, b));
+        }
+        let mut by_title: HashMap<String, (String, PathBuf)> = HashMap::new();
+        let mut titled: Vec<&Note> = live.iter().copied().filter(|n| !n.frontmatter.title.is_empty()).collect();
+        // Worst first, so the best candidate is inserted last and wins.
+        titled.sort_by(|a, b| candidate_order(&b.path, &a.path));
+        for note in titled {
             by_title.insert(
                 title_key(&note.frontmatter.title),
                 (note.frontmatter.title.clone(), note.path.clone()),
             );
         }
-        for note in notes {
-            if note.frontmatter.trashed {
-                continue;
-            }
+        let mut rest = live.clone();
+        rest.sort_by(|a, b| candidate_order(&a.path, &b.path));
+        for note in rest {
             for key in link_keys_for(note).into_iter().skip(1) {
                 by_title
                     .entry(key)
                     .or_insert((note.frontmatter.title.clone(), note.path.clone()));
             }
         }
-        WikilinkIndex { by_title }
+        let paths = live
+            .iter()
+            .map(|n| (path_key_parts(&n.path.to_string_lossy()), n.path.clone()))
+            .collect();
+        WikilinkIndex { by_title, by_name, paths }
+    }
+
+    /// Every note `target` may mean, best first: all notes sharing the
+    /// title/stem (or the alias owner), or, for `folder/name`, every note
+    /// whose path ends with those segments. More than one entry means the
+    /// link is ambiguous.
+    pub fn candidates(&self, target: &str) -> Vec<&Path> {
+        let key = title_key(target);
+        if let Some(list) = self.by_name.get(&key) {
+            return list.iter().map(PathBuf::as_path).collect();
+        }
+        if let Some((_, path)) = self.by_title.get(&key) {
+            return vec![path.as_path()];
+        }
+        let wanted = path_key_parts(target);
+        if wanted.len() < 2 {
+            return Vec::new();
+        }
+        let mut found: Vec<&Path> = self
+            .paths
+            .iter()
+            .filter(|(parts, _)| parts.len() >= wanted.len() && parts[parts.len() - wanted.len()..] == wanted[..])
+            .map(|(_, p)| p.as_path())
+            .collect();
+        found.sort_by(|a, b| candidate_order(a, b));
+        found
+    }
+
+    /// Like [`resolve`](Self::resolve), but among notes sharing a name the
+    /// one in `source`'s folder (the linking note) wins, as in Obsidian.
+    pub fn resolve_from(&self, target: &str, source: Option<&Path>) -> Option<&Path> {
+        let candidates = self.candidates(target);
+        if candidates.len() > 1
+            && let Some(dir) = source.and_then(Path::parent)
+            && let Some(near) = candidates.iter().find(|p| p.parent() == Some(dir))
+        {
+            return Some(near);
+        }
+        self.resolve(target)
     }
 
     /// Adds non-note link targets (PDF file names) so they resolve and
@@ -359,13 +483,20 @@ impl WikilinkIndex {
         self
     }
 
-    /// The path of the note titled `title`, if one exists.
+    /// The path of the note `title` names (title, stem, alias or a
+    /// folder-qualified path), if one exists.
     pub fn resolve(&self, title: &str) -> Option<&Path> {
-        self.by_title.get(&title_key(title)).map(|(_, p)| p.as_path())
+        if let Some((_, p)) = self.by_title.get(&title_key(title)) {
+            return Some(p.as_path());
+        }
+        if title.contains(['/', '\\']) {
+            return self.candidates(title).first().copied();
+        }
+        None
     }
 
     pub fn contains(&self, title: &str) -> bool {
-        self.by_title.contains_key(&title_key(title))
+        self.resolve(title).is_some()
     }
 
     /// Titles starting with `prefix` (case-insensitive), sorted
@@ -580,6 +711,48 @@ mod tests {
             link_keys_for(&a),
             vec!["judul asli".to_string(), "alias satu".to_string(), "judul lain".to_string()]
         );
+    }
+
+    #[test]
+    fn duplicate_titles_keep_every_candidate_and_resolve_deterministically() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("Kuliah");
+        std::fs::create_dir_all(&sub).unwrap();
+        let nested = Note::create(&sub, "Machine Learning 101", "").unwrap();
+        let root = Note::create(dir.path(), "Machine Learning 101", "").unwrap();
+        let peer = Note::create(&sub, "Algoritma Graph", "").unwrap();
+        // Scan order must not matter.
+        for notes in [vec![nested.clone(), root.clone()], vec![root.clone(), nested.clone()]] {
+            let index = WikilinkIndex::build(&notes);
+            assert_eq!(index.resolve("machine learning 101"), Some(root.path.as_path()));
+            assert_eq!(
+                index.candidates("Machine Learning 101"),
+                vec![root.path.as_path(), nested.path.as_path()]
+            );
+        }
+        let index = WikilinkIndex::build(&[root.clone(), nested.clone(), peer.clone()]);
+        // A link from inside Kuliah/ means the Kuliah note.
+        assert_eq!(
+            index.resolve_from("Machine Learning 101", Some(&peer.path)),
+            Some(nested.path.as_path())
+        );
+        assert_eq!(index.resolve_from("Machine Learning 101", None), Some(root.path.as_path()));
+        // Folder-qualified links.
+        assert_eq!(index.resolve("Kuliah/Machine Learning 101"), Some(nested.path.as_path()));
+        assert_eq!(index.resolve("kuliah/algoritma graph.md"), Some(peer.path.as_path()));
+        assert!(index.contains("Kuliah/Algoritma Graph"));
+        assert!(index.resolve("Pribadi/Algoritma Graph").is_none());
+        assert_eq!(index.candidates("Algoritma Graph").len(), 1);
+    }
+
+    #[test]
+    fn rewrite_link_target_in_follows_folder_qualified_links() {
+        let body = "[[Kuliah/Lama#H|x]] [[Lain/Lama]] [[lama]] [[A/Kuliah/Lama]]\n";
+        let out = rewrite_link_target_in(body, "Lama", "Baru", Some("A/Kuliah")).unwrap();
+        assert_eq!(out, "[[Kuliah/Baru#H|x]] [[Lain/Lama]] [[Baru]] [[A/Kuliah/Baru]]\n");
+        // Without a folder only plain links move (old behaviour).
+        let plain = rewrite_link_target(body, "Lama", "Baru").unwrap();
+        assert_eq!(plain, "[[Kuliah/Lama#H|x]] [[Lain/Lama]] [[Baru]] [[A/Kuliah/Lama]]\n");
     }
 
     #[test]

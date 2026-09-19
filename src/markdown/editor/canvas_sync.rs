@@ -13,12 +13,67 @@
 //! New segments are anchored on save / edit close, never mid-keystroke.
 //! Callers: `markdown::editor`, `app::editor::canvas_surface`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::canvas::{BindingScope, BlockBinding, CanvasDocument, CanvasElementId, outline};
+use crate::canvas::{BindingScope, BlockBinding, CanvasDocument, CanvasElement, CanvasElementId, outline};
 use crate::markdown::sections::{self, SegmentKind};
 
 use super::{CanvasStorage, MarkdownEditor, blocks};
+
+/// Whether `doc` is an older per-block canvas of this note: local boxes
+/// bound to single `^block` lines and no section box. Such a canvas never
+/// shows tables, code or Mermaid fences (they had no block anchor).
+fn is_block_canvas(doc: &CanvasDocument) -> bool {
+    !outline::is_section_canvas(doc)
+        && doc.elements.iter().any(|e| e.binding().is_some_and(|b| b.file.is_none() && !b.is_segment()))
+}
+
+/// Replaces the local per-block boxes of `canvas` with the section boxes of
+/// `fresh`. Diagram-only shapes and boxes bound to other notes stay; a
+/// connector that touched a block box moves to the box of the section
+/// holding that block (dropped when both ends land in one section, or when
+/// the outline already links the two).
+fn adopt_section_boxes(canvas: &mut CanvasDocument, fresh: CanvasDocument, body: &str) {
+    let fresh_boxes = outline::segment_elements(&fresh);
+    let mut moved: HashMap<CanvasElementId, CanvasElementId> = HashMap::new();
+    for e in &canvas.elements {
+        let Some(b) = e.binding().filter(|b| b.file.is_none()) else { continue };
+        let target = body
+            .lines()
+            .position(|l| blocks::line_has_anchor(l, &b.block_id))
+            .and_then(|line| sections::segment_at_line(body, line))
+            .and_then(|seg| seg.id)
+            .and_then(|id| fresh_boxes.get(&id).copied());
+        if let Some(target) = target {
+            moved.insert(e.id(), target);
+        }
+    }
+    let mut linked: HashSet<(CanvasElementId, CanvasElementId)> = fresh
+        .elements
+        .iter()
+        .filter_map(|e| match e {
+            CanvasElement::Connector { from_elem: Some(f), to_elem: Some(t), .. } => Some((*f, *t)),
+            _ => None,
+        })
+        .collect();
+    canvas.elements.retain(|e| e.binding().is_none_or(|b| b.file.is_some()));
+    let kept: HashSet<CanvasElementId> = canvas.elements.iter().map(|e| e.id()).collect();
+    canvas.elements.retain_mut(|e| {
+        let CanvasElement::Connector { from_elem, to_elem, .. } = e else { return true };
+        for end in [&mut *from_elem, &mut *to_elem] {
+            if let Some(id) = *end
+                && !kept.contains(&id)
+            {
+                *end = moved.get(&id).copied();
+            }
+        }
+        match (*from_elem, *to_elem) {
+            (Some(f), Some(t)) => f != t && !linked.contains(&(t, f)) && linked.insert((f, t)),
+            _ => true,
+        }
+    });
+    canvas.elements.extend(fresh.elements);
+}
 
 /// Same kind of segment, ignoring heading level / fence language.
 fn same_kind(a: &SegmentKind, b: &SegmentKind) -> bool {
@@ -139,6 +194,18 @@ impl MarkdownEditor {
         changed
     }
 
+    /// An older per-block sidecar becomes a section canvas as soon as it is
+    /// opened, so its tables, code and Mermaid fences get boxes too
+    /// (§3.9.2). Returns whether it was converted.
+    pub(super) fn upgrade_block_canvas(&mut self) -> bool {
+        if !self.canvas_storage.is_sidecar() || !self.canvas.as_ref().is_some_and(is_block_canvas) {
+            return false;
+        }
+        log::info!("editor: converting per-block canvas of {} to sections", self.note.path.display());
+        self.tidy_canvas();
+        true
+    }
+
     /// Re-lays out the section boxes as a mind map. A canvas made of the
     /// older per-block boxes is converted first (its local block boxes are
     /// replaced by section boxes; diagram-only shapes stay).
@@ -150,8 +217,7 @@ impl MarkdownEditor {
         if !self.is_section_canvas() {
             let fresh = self.build_section_canvas();
             if let Some(canvas) = self.canvas.as_mut() {
-                canvas.elements.retain(|e| e.binding().is_none_or(|b| b.file.is_some()));
-                canvas.elements.extend(fresh.elements);
+                adopt_section_boxes(canvas, fresh, &self.note.body);
             }
             self.canvas_storage = CanvasStorage::Sidecar;
         } else {
@@ -365,6 +431,39 @@ mod tests {
         assert!(e.note.body.contains("## Ide ^"));
         let r = e.canvas.as_ref().unwrap().get_element(new).unwrap().bounding_rect();
         assert_eq!(r.min.x, 900.0);
+    }
+
+    #[test]
+    fn block_sidecar_is_upgraded_on_open_and_shows_mermaid() {
+        let dir = tempdir().unwrap();
+        let body = "# A ^aaaaaa\nisi ^bbbbbb\n\n## ER ^cccccc\n\n```mermaid\nerDiagram\n  X ||--o{ Y : has\n```\n";
+        let note = Note::create(dir.path(), "Skema", body).unwrap();
+        let file = |id: &str, block: &str, y: i32| {
+            format!(
+                r##"{{"id":"{id}","type":"file","x":0,"y":{y},"width":240,"height":56,"file":"Skema.md","subpath":"#^{block}","mnemonic":{{"kind":"shape","shape":"RoundedRect"}}}}"##
+            )
+        };
+        let json = format!(
+            r#"{{"nodes":[{},{},{}],"edges":[{{"id":"e1","fromNode":"n1","toNode":"n3"}},{{"id":"e2","fromNode":"n1","toNode":"n2"}}]}}"#,
+            file("n1", "aaaaaa", 0),
+            file("n2", "bbbbbb", 80),
+            file("n3", "cccccc", 160),
+        );
+        std::fs::write(note.sidecar_path(), json).unwrap();
+        let mut e = MarkdownEditor::open_in(note, Some(dir.path()));
+        e.ensure_canvas();
+        assert!(e.is_section_canvas());
+        let diagram = box_of(&e, "erDiagram");
+        assert!(text_of(&e, diagram).starts_with("```mermaid"));
+        // The fence got its anchor on the line below.
+        let segs = sections::segments(&e.note.body);
+        assert!(segs.iter().any(|s| s.kind == sections::SegmentKind::Mermaid && s.id.is_some()));
+        // No per-block box is left; e1 duplicates the outline edge and e2
+        // collapsed into one section, so only outline edges remain.
+        let canvas = e.canvas.as_ref().unwrap();
+        assert!(canvas.elements.iter().all(|el| el.binding().is_none_or(|b| b.is_segment())));
+        let connectors = canvas.elements.iter().filter(|el| matches!(el, CanvasElement::Connector { .. })).count();
+        assert_eq!(connectors, 2);
     }
 
     #[test]

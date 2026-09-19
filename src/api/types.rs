@@ -14,6 +14,8 @@ use uuid::Uuid;
 use crate::notes::Note;
 use crate::notes::frontmatter::NoteType;
 
+pub use super::memory::types::*;
+
 /// Filter for `VaultService::list_notes`. All fields optional; an empty
 /// filter lists every non-trashed note.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -57,6 +59,41 @@ pub struct NoteDetail {
     pub extra: BTreeMap<String, serde_json::Value>,
     /// Targets of every `[[wikilink]]` in the body, in order, deduplicated.
     pub links: Vec<String>,
+    /// Fingerprint of the file as read (§3.10.3); pass it back as `if_hash`
+    /// to write only if nobody changed the note in between.
+    pub content_hash: String,
+    /// Every heading of the whole note (also when `body` is one section).
+    pub outline: Vec<OutlineEntry>,
+    /// Set when only part of the note was requested: `body` then holds
+    /// just that section or block.
+    pub selection: Option<SelectionOut>,
+}
+
+/// One heading of a note (§3.10.2).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct OutlineEntry {
+    pub level: u8,
+    pub text: String,
+    /// `Parent#Child` — usable as `section` in read/patch/append.
+    pub path: String,
+    /// `^id` on the heading line, without the caret.
+    pub anchor: Option<String>,
+    /// 1-based inclusive line range of the section in the body.
+    pub line: usize,
+    pub end_line: usize,
+}
+
+/// The part of a note a read or edit addressed.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SelectionOut {
+    /// `section` | `block`.
+    pub kind: &'static str,
+    /// Heading path of a section, `^id` of a block.
+    pub label: String,
+    /// 1-based inclusive line range in the body (after an edit: of the
+    /// part as it was before the edit).
+    pub line: usize,
+    pub end_line: usize,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -73,6 +110,12 @@ pub struct WriteNoteRequest {
     /// Replaces the tag list when given.
     pub tags: Option<Vec<String>>,
     pub create_if_missing: bool,
+    /// `content_hash` from the read this write is based on; the write is
+    /// refused when the file changed since (§3.10.3).
+    pub if_hash: Option<String>,
+    /// Who is writing (e.g. `claude-code`); recorded as `updated_by`
+    /// (`created_by` on create) in the frontmatter.
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +124,8 @@ pub struct WriteNoteResult {
     pub note: NoteSummary,
     pub created: bool,
     pub warnings: Vec<String>,
+    /// Fingerprint of the file after the write.
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -91,6 +136,8 @@ pub struct CreateNoteRequest {
     /// Vault-relative folder, created when missing. Must stay inside the vault.
     pub folder: Option<String>,
     pub tags: Vec<String>,
+    /// Recorded as `created_by` in the frontmatter.
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,6 +185,9 @@ pub struct OutgoingLink {
     pub context: String,
     /// Vault-relative path the target resolves to, `None` for a ghost link.
     pub resolved_path: Option<String>,
+    /// Other notes sharing the target's name (the link is ambiguous; write
+    /// `[[Folder/Name]]` to pin one). Usually empty.
+    pub other_candidates: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -219,6 +269,11 @@ pub struct SearchRequest {
     pub k: usize,
     /// Try the vector route (loads the embedding model on first use).
     pub semantic: bool,
+    /// Only hits from this vault-relative folder (and its subfolders);
+    /// `.` = the root only.
+    pub folder: Option<String>,
+    /// Only notes carrying this tag (nested `tag/sub` included).
+    pub tag: Option<String>,
 }
 
 impl Default for SearchRequest {
@@ -227,6 +282,8 @@ impl Default for SearchRequest {
             query: String::new(),
             k: 10,
             semantic: true,
+            folder: None,
+            tag: None,
         }
     }
 }
@@ -250,6 +307,11 @@ pub struct SearchHitOut {
     /// Keyword snippet with highlight markers removed.
     pub snippet: Option<String>,
     pub text: String,
+    /// Heading path (`Parent#Child`) of the section the chunk sits in —
+    /// pass it as `section` to `read_note` for the whole section.
+    pub heading: Option<String>,
+    /// 1-based body line where the chunk starts (notes only).
+    pub line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]

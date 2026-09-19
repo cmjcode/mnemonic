@@ -31,13 +31,20 @@ stderr and exit non-zero; stdout carries only results. Logs go to stderr
 | Command | What it does |
 | --- | --- |
 | `notes list [--tag T] [--folder F] [--include-trashed]` | Frontmatter summaries sorted by path. `--tag a` also matches nested `a/b`. `--folder F` includes subfolders; `--folder .` is the root only. |
-| `notes read <REF>` | Frontmatter + body + `extra` (unmodelled frontmatter keys) + outgoing link targets. |
-| `notes write <REF> [--body-file F \| --stdin] [--tag T]... [--create] [--folder F]` | Replace the body and/or the tag list of an existing note. `--create` creates it (titled `REF`, in `--folder`) when missing. |
-| `notes create <TITLE> [--folder F] [--body-file F \| --stdin] [--tag T]...` | New `<folder>/<title>.md` (collision-safe name). |
+| `notes read <REF> [--section S \| --block ID]` | Fresh from disk: frontmatter + body (or only section `S` / block `^ID`) + `extra` (unmodelled frontmatter keys) + outgoing link targets + the whole note's `outline` + `content_hash`. |
+| `notes write <REF> [--body-file F \| --stdin] [--tag T]... [--create] [--folder F] [--if-hash H] [--agent A]` | Replace the body and/or the tag list of an existing note. `--create` creates it (titled `REF`, in `--folder`) when no note has that name. `--if-hash` refuses the write if the file changed since that read. |
+| `notes create <TITLE> [--folder F] [--body-file F \| --stdin] [--tag T]... [--agent A]` | New `<folder>/<title>.md` (collision-safe name). |
+| `notes append <REF> (--text T \| --body-file F \| --stdin) [--section S] [--if-hash H] [--agent A] [--create] [--folder F] [--tag T]...` | Append Markdown at the end of the note or of section `S` (see "Agent memory"). |
+| `notes patch <REF> [--section S \| --block ID] [--old OLD] (--new NEW \| --body-file F \| --stdin) [--replace-all] [--if-hash H] [--agent A]` | Replace a section's content (heading kept), a block's text (anchor kept) and/or an exact `--old` string. |
 | `notes trash <REF>` | Soft delete: move into `.trash/`, mark `trashed: true`, drop its search chunks. |
-| `search <QUERY> [-k N] [--keyword-only]` | Hybrid BM25 + vector search over indexed chunks (RRF-fused, one hit per note). |
-| `backlinks <REF>` | Notes linking to `REF` by title, file stem or alias. |
-| `links <REF>` | Outgoing `[[wikilinks]]` and what each resolves to. |
+| `search <QUERY> [-k N] [--keyword-only] [--folder F] [--tag T]` | Hybrid BM25 + vector search over indexed chunks (RRF-fused, one hit per note), optionally within a folder subtree / tag. Hits carry the `heading` and `line` they come from. |
+| `backlinks <REF>` | Notes whose links resolve to `REF` (by title, file stem, alias or `Folder/Name`, resolved from the linking note). |
+| `links <REF>` | Outgoing `[[wikilinks]]`, what each resolves to and, for shared names, the `other_candidates`. |
+| `folders` | Every non-hidden folder with direct and subtree note counts. |
+| `overview` | One-call orientation: folders, top tags, recent notes, duplicate titles, the vault's `AGENTS.md`. |
+| `remember [TEXT \| --body-file F \| --stdin] [--title T] [--folder F] [--tag T]... [--into REF [--section S]] [--link N]... [--agent A] [--allow-duplicate] [--keyword-only]` | Store a memory (new note in `Memory/`, or appended to `--into`); nothing is written when the vault already holds it. |
+| `recall <QUERY> [--budget N] [-k N] [--folder F] [--tag T] [--keyword-only] [--include-stale]` | What the vault knows about `QUERY`: sections packed into a token budget, stale notes last. |
+| `related <REF> [-k N]` | Notes connected to `REF`: `links_to`, `linked_from`, `similar`, `shared_tag:<tag>`. |
 | `graph` | Nodes (`note`/`canvas`/`pdf`/`ghost`) and edges (indices into `nodes`). |
 | `index [--full] [--keyword-only]` | Rescan, refresh `notes_index`/`links`, chunk + embed changed notes, prune stale chunks. |
 | `ask <QUESTION> [--max-tokens N]` | RAG answer from the local LLM with citations. |
@@ -56,10 +63,22 @@ stderr and exit non-zero; stdout carries only results. Logs go to stderr
 | `notes export <REF> [--format html\|pdf] [--theme ID] [--out F]` | The note as a standalone HTML page (stdout without `--out`) or PDF (`--out` required; needs Chrome/Edge/Chromium/Brave, or `MNEMONIC_BROWSER`), in the theme's print colours. `--out` may be vault-relative. |
 | `mcp` | Serve MCP over stdio until stdin closes. |
 
-`<REF>` resolves, in order: UUID (`id` frontmatter), then wikilink rules
-(title, file stem, alias; case-insensitive), then vault-relative path with
-or without `.md`, then bare file name. `<SHEET>` is a vault-relative path
+`<REF>` resolves, in order: UUID (`id` frontmatter); a vault-relative path
+(`Kuliah/Algoritma Graph.md`, or without `.md` when it contains a `/`);
+then wikilink rules — title, file stem, alias (case-insensitive), or a
+folder-qualified name matched as a path suffix (`Kuliah/Algoritma Graph`);
+then bare file name. **A name several notes share is an error** listing
+their paths (`ambiguous note reference …`): agents must pass a path then,
+never get one of them silently. `--create`/`create_if_missing` only create
+when no note has the name at all. `<SHEET>` is a vault-relative path
 (`Data/Budget.csv`) or a file name/stem that matches exactly one sheet.
+
+Folders work like an Obsidian vault: any tree of subfolders, hidden folders
+(`.obsidian`, `.git`, `.trash`, `.mnemonic`) skipped. Links resolve like
+Obsidian too: `[[Name]]` shared by several notes means the one in the
+linking note's folder, else the one closest to the root; `[[Folder/Name]]`
+pins one. Renaming a note in the app rewrites `[[Folder/Old]]` links as
+well as plain ones.
 
 ### Search, index and models
 
@@ -87,15 +106,35 @@ structs. Field names are snake_case and stable. Highlights:
   "note_type": "note", "tags": [], "aliases": [], "created": "RFC3339",
   "modified": "RFC3339", "pinned": false, "archived": false, "trashed": false,
   "canvas": false }
-// notes read → NoteSummary fields + "body", "extra": {…}, "links": ["Target", …]
+// notes read → NoteSummary fields + "body", "extra": {…}, "links": ["Target", …],
+//              "content_hash": "16 hex", "outline": [ { "level", "text",
+//              "path": "Parent#Child", "anchor": null|"id", "line", "end_line" } ],
+//              "selection": null | { "kind": "section"|"block", "label", "line", "end_line" }
+// notes write → NoteSummary fields + "created", "warnings", "content_hash"
+// notes append/patch → NoteSummary fields + "content_hash", "changed", "created",
+//              "selection", "replacements", "warnings"
 // search → { "query", "semantic": bool, "hits": [ { "doc_id", "path", "title",
 //            "page": null|N (PDF), "row": null|N (sheet, first data row),
 //            "char_offset", "score": null|f32,
-//            "kind": "semantic"|"keyword"|"both", "snippet", "text" } ], "warnings": [] }
+//            "kind": "semantic"|"keyword"|"both", "snippet", "text",
+//            "heading": null|"Parent#Child", "line": null|N (1-based) } ], "warnings": [] }
 // backlinks → { "target": {id,title,path}, "backlinks": [ { "source_id",
 //               "source_title", "source_path", "line" (0-based), "context" } ] }
 // links → { "source": {…}, "links": [ { "target", "heading", "alias", "line",
-//           "context", "resolved_path": null|"…" } ] }
+//           "context", "resolved_path": null|"…", "other_candidates": ["…"] } ] }
+// folders → { "folders": [ { "path" ("" = root), "name", "depth", "notes", "notes_total" } ] }
+// overview → { "name", "notes", "canvases", "sheets", "pdfs", "folders": [Folder],
+//              "tags": [ { "tag", "count" } ], "recent": [ { "id", "title", "path", "modified" } ],
+//              "duplicate_titles": [ { "title", "paths" } ],
+//              "guide": null | { "path": "AGENTS.md", "text", "truncated" }, "tips": [] }
+// remember → { "status": "created"|"appended"|"duplicate", "note": null|NoteSummary,
+//              "content_hash": null|"…", "similar": [ { "path", "title", "score",
+//              "kind": "exact"|"semantic"|"keyword"|"both", "heading", "snippet" } ], "warnings" }
+// recall → { "query", "semantic", "budget_tokens", "used_tokens", "omitted",
+//            "items": [ { "path", "title", "section": null|"A#B", "line", "text",
+//            "score", "kind", "stale": null|"reason", "truncated", "tokens" } ], "warnings" }
+// related → { "note": {id,title,path}, "related": [ { "path", "title",
+//             "reasons": ["links_to"|"linked_from"|"similar"|"shared_tag:x"], "score" } ], "warnings" }
 // graph → { "nodes": [ { "key", "label", "kind", "doc_id", "path", "tag", "degree" } ],
 //           "edges": [ { "a", "b", "kind": "link"|"semantic", "weight" } ] }
 // index → { "notes_indexed", "chunked", "skipped", "pruned", "semantic",
@@ -114,6 +153,63 @@ structs. Field names are snake_case and stable. Highlights:
 // sheets set/append/create → { "path", "rows", "columns", "changed" }
 ```
 
+## Agent memory (§3.10)
+
+The vault doubles as an agent's long-term memory. What makes it work well
+for agents, beyond a plain folder of Markdown:
+
+1. **Orient in one call.** `overview` / `vault_overview` returns the folder
+   tree, the most used tags, recent notes, titles several notes share, and
+   the vault's own **`AGENTS.md`** (at the vault root): write your vault's
+   conventions there ("projects live in `Proyek/`, one note per client,
+   decisions go under `## Keputusan`") and every agent reads them first.
+2. **Read only what you need.** `read_note` always returns the note's
+   `outline` (every heading with `path` `Parent#Child` and 1-based line
+   range). Ask for one part with `section` — `Status`, `Proyek#Status`
+   (ancestors in order, not necessarily adjacent) or `^anchor` — or with
+   `block` (an anchored `^id` block). A section runs to the next heading of
+   the same or a higher level, subsections included. Search hits and
+   recall items carry the `heading`/`section` they came from.
+3. **Never overwrite someone else's edit.** Every read returns
+   `content_hash` (FNV-1a of the file bytes). Pass it back as `if_hash` to
+   `write_note`/`append_note`/`patch_note`: when the file changed since
+   (the user typed in the app, another agent wrote), the edit is refused
+   with the new hash — read again and redo it. Every edit also reloads the
+   note from disk first, so a long-running MCP server never writes back a
+   stale copy.
+4. **Edit surgically.** `append_note` adds text at the end of a note or a
+   section (blank-line/list spacing handled; `create_if_missing` for logs).
+   `patch_note` replaces a section's content (heading line kept), a
+   block's text (anchor and list marker kept) and/or an exact `old_str`
+   (must be unique unless `replace_all`; searched only inside the
+   section/block when one is given). Line endings (LF/CRLF) are kept.
+5. **Provenance.** `agent` (on every write) is recorded in the frontmatter
+   as `updated_by` (and `created_by` for new notes) — plain keys, so the
+   note stays a normal Obsidian note.
+6. **Memory semantics.** `remember` writes a self-contained note into
+   `Memory/` (or `folder`, or appends to `ref`/`section`), links it to
+   `links`, and indexes it at once. It refuses (`status: "duplicate"`,
+   nothing written) when the text is already contained in a note, or a
+   chunk is ≥ 0.92 cosine-similar (semantic mode). `recall` expands the best
+   chunks to their whole sections (a heading-less note up to 2000 chars is
+   returned whole), deduplicates, and packs them into `budget_tokens`
+   (≈ 4 chars/token; `omitted` counts what didn't fit). `related_notes`
+   explains each neighbour.
+7. **Forgetting without deleting.** A note is *stale* when its frontmatter
+   has `valid_until: YYYY-MM-DD` in the past, `superseded_by: "[[Newer]]"`,
+   `archived: true`, or another note lists it in `supersedes:` (a link or a
+   list of links). `recall` flags it in `stale` and ranks it last (unless
+   `include_stale`). Nothing is removed; the user stays in control.
+
+After any agent write the note's chunks are refreshed immediately — with
+embeddings when the model is already loaded in that process, otherwise
+keyword-only with the `kw:` marker so the next semantic `index` (or the
+app's indexer) embeds it.
+
+Suggested agent loop: `vault_overview` → `recall` (or `search_notes`) →
+`read_note` with `section` → `patch_note`/`append_note` with `if_hash` →
+`remember` for new durable facts.
+
 ## MCP server
 
 `mnemonic-cli --vault <PATH> mcp` speaks JSON-RPC 2.0 over stdio, one JSON
@@ -131,11 +227,18 @@ holding the same JSON the CLI prints):
 | Tool | Arguments |
 | --- | --- |
 | `list_notes` | `tag?`, `folder?`, `include_trashed?` |
-| `read_note` | `ref` |
-| `write_note` | `ref`, `body?`, `tags?`, `folder?`, `create_if_missing?` |
-| `create_note` | `title`, `body?`, `folder?`, `tags?` |
+| `read_note` | `ref`, `section?`, `block?` |
+| `write_note` | `ref`, `body?`, `tags?`, `folder?`, `create_if_missing?`, `if_hash?`, `agent?` |
+| `create_note` | `title`, `body?`, `folder?`, `tags?`, `agent?` |
 | `trash_note` | `ref` |
-| `search_notes` | `query`, `k?` (10), `semantic?` (true) |
+| `search_notes` | `query`, `k?` (10), `semantic?` (true), `folder?`, `tag?` |
+| `vault_overview` | – |
+| `list_folders` | – |
+| `append_note` | `ref`, `text`, `section?`, `if_hash?`, `agent?`, `create_if_missing?`, `folder?`, `tags?` |
+| `patch_note` | `ref`, `new_str`, `section?` or `block?`, `old_str?`, `replace_all?`, `if_hash?`, `agent?` |
+| `remember` | `text`, `title?`, `folder?` (`Memory`), `tags?`, `ref?`, `section?`, `links?`, `agent?`, `allow_duplicate?`, `semantic?` (true) |
+| `recall` | `query`, `budget_tokens?` (1500), `k?` (8), `folder?`, `tag?`, `semantic?` (true), `include_stale?` |
+| `related_notes` | `ref`, `k?` (10) |
 | `get_backlinks` | `ref` |
 | `get_links` | `ref` |
 | `get_graph` | – |

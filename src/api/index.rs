@@ -19,6 +19,9 @@ use crate::llm::{self, CandleEngine, Generator};
 
 /// KNN / FTS candidate pool fed to RRF (same as `app::RETRIEVAL_CANDIDATES`).
 const RETRIEVAL_CANDIDATES: usize = 30;
+/// Larger pool when a folder/tag filter drops hits after ranking, so a
+/// narrow filter still finds its matches.
+const FILTERED_CANDIDATES: usize = 300;
 /// Chunks retrieved for the RAG prompt (same as `app::CHAT_TOP_K`).
 const ASK_TOP_K: usize = 5;
 /// Prefix of a `document_hashes` entry written by a keyword-only run: the
@@ -59,7 +62,7 @@ fn is_sheet(path: &std::path::Path) -> bool {
     crate::sheet::is_sheet_path(path)
 }
 
-fn kind_str(kind: MatchKind) -> &'static str {
+pub(crate) fn kind_str(kind: MatchKind) -> &'static str {
     match kind {
         MatchKind::Semantic => "semantic",
         MatchKind::Keyword => "keyword",
@@ -67,10 +70,35 @@ fn kind_str(kind: MatchKind) -> &'static str {
     }
 }
 
-fn strip_highlights(s: &str) -> String {
+pub(crate) fn strip_highlights(s: &str) -> String {
     s.chars()
         .filter(|c| *c != HIGHLIGHT_START && *c != HIGHLIGHT_END)
         .collect()
+}
+
+/// Folder/tag restriction of a retrieval (§3.10.4); empty = everything.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct HitFilter {
+    folder: Option<String>,
+    tag: Option<String>,
+}
+
+impl HitFilter {
+    /// `folder` is vault-relative (`.`/`""` = root only); `tag` may carry `#`.
+    pub(crate) fn new(folder: Option<&str>, tag: Option<&str>) -> HitFilter {
+        HitFilter {
+            folder: folder
+                .map(|f| f.trim().trim_start_matches("./").trim_matches('/'))
+                .map(|f| if f == "." { String::new() } else { f.to_string() }),
+            tag: tag
+                .map(|t| t.trim().trim_start_matches('#').to_string())
+                .filter(|t| !t.is_empty()),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.folder.is_none() && self.tag.is_none()
+    }
 }
 
 impl VaultService {
@@ -183,6 +211,19 @@ impl VaultService {
         Ok(v)
     }
 
+    /// Re-chunks note `i` after an agent edit so `search`/`recall` see it
+    /// at once: with real vectors when the embedding model is already
+    /// loaded, otherwise keyword-only (marked so the next semantic run, or
+    /// the app's indexer, embeds it).
+    pub(crate) fn refresh_chunks(&mut self, i: usize) -> Result<()> {
+        if self.vault.notes[i].frontmatter.trashed {
+            return Ok(());
+        }
+        let semantic = matches!(self.embedder, Lazy::Ready(_));
+        let hash = ingestion::note_content_hash(&self.vault.notes[i]);
+        self.chunk_and_store(i, semantic, &hash)
+    }
+
     fn chunk_and_store(&mut self, i: usize, semantic: bool, hash: &str) -> Result<()> {
         let note = &self.vault.notes[i];
         let id = note.frontmatter.id;
@@ -212,15 +253,18 @@ impl VaultService {
 
     // ─── Search ──────────────────────────────────────────────────────────
 
-    /// Hybrid ranking over the cached chunks. Returns the hits plus whether
-    /// the vector route ran and any degradation warnings.
-    fn retrieve(
+    /// Hybrid ranking over the cached chunks, restricted to `filter`.
+    /// Returns the hits plus whether the vector route ran and any
+    /// degradation warnings.
+    pub(crate) fn retrieve(
         &mut self,
         query: &str,
         k: usize,
         semantic: bool,
         one_per_doc: bool,
+        filter: &HitFilter,
     ) -> Result<(Vec<SearchHit>, bool, Vec<String>)> {
+        let pool = if filter.is_empty() { RETRIEVAL_CANDIDATES } else { FILTERED_CANDIDATES };
         let mut warnings = Vec::new();
         let mut used_semantic = false;
         let mut vector_hits = Vec::new();
@@ -233,7 +277,7 @@ impl VaultService {
             };
             match embedding.and_then(|e| {
                 self.index
-                    .knn_chunks(&e, RETRIEVAL_CANDIDATES)
+                    .knn_chunks(&e, pool)
                     .map_err(|e| format!("vector search failed: {e:#}"))
             }) {
                 Ok(hits) => {
@@ -245,22 +289,63 @@ impl VaultService {
         }
         let keyword = self
             .index
-            .keyword_chunks(query, RETRIEVAL_CANDIDATES)
+            .keyword_chunks(query, pool)
             .context("keyword search")?;
-        let hits = hybrid_rank(
+        let mut hits = hybrid_rank(
             vector_hits,
             keyword,
             HybridOptions {
-                k,
+                k: if filter.is_empty() { k } else { pool },
                 min_similarity: llm::SIMILARITY_THRESHOLD,
                 one_per_doc,
             },
         );
+        if !filter.is_empty() {
+            hits.retain(|h| self.hit_passes(h, filter));
+            hits.truncate(k);
+        }
         Ok((hits, used_semantic, warnings))
     }
 
+    /// Whether a hit's document lies in `filter.folder` and carries
+    /// `filter.tag` (frontmatter or inline; PDFs/sheets have no tags).
+    fn hit_passes(&self, hit: &SearchHit, filter: &HitFilter) -> bool {
+        if let Some(folder) = filter.folder.as_deref() {
+            let rel = self.rel(&hit.chunk.file_path);
+            let dir = rel.rfind('/').map_or("", |i| &rel[..i]);
+            let inside = dir == folder || (!folder.is_empty() && dir.starts_with(&format!("{folder}/")));
+            if !inside {
+                return false;
+            }
+        }
+        if let Some(tag) = filter.tag.as_deref() {
+            let note = self
+                .vault
+                .notes
+                .iter()
+                .find(|n| n.frontmatter.id == hit.chunk.doc_id || n.path == hit.chunk.file_path);
+            let tagged = note.is_some_and(|n| n.effective_tags().iter().any(|t| crate::notes::tags::matches_tag(t, tag)));
+            if !tagged {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// `(heading path, 1-based line)` of a note chunk; `(None, None)` for
+    /// PDFs, sheets and canvas notes.
+    pub(crate) fn chunk_position(&self, chunk: &ingestion::DocumentChunk) -> (Option<String>, Option<usize>) {
+        match self.vault.notes.iter().find(|n| n.frontmatter.id == chunk.doc_id) {
+            Some(n) if !n.is_canvas() => {
+                let (line, heading) = super::memory::locate(&n.body, chunk.char_offset);
+                (heading.map(|h| h.path_string()), Some(line))
+            }
+            _ => (None, None),
+        }
+    }
+
     /// Title of the note (or file name of the PDF) a chunk came from.
-    fn doc_title(&self, chunk: &ingestion::DocumentChunk) -> String {
+    pub(crate) fn doc_title(&self, chunk: &ingestion::DocumentChunk) -> String {
         self.vault
             .notes
             .iter()
@@ -286,10 +371,13 @@ impl VaultService {
             });
         }
         let k = req.k.max(1);
-        let (hits, semantic, warnings) = self.retrieve(&query, k, req.semantic, true)?;
+        let filter = HitFilter::new(req.folder.as_deref(), req.tag.as_deref());
+        let (hits, semantic, warnings) = self.retrieve(&query, k, req.semantic, true, &filter)?;
         let hits = hits
             .into_iter()
-            .map(|h| SearchHitOut {
+            .map(|h| {
+                let (heading, line) = self.chunk_position(&h.chunk);
+                SearchHitOut {
                 doc_id: h.chunk.doc_id,
                 path: self.rel(&h.chunk.file_path),
                 title: self.doc_title(&h.chunk),
@@ -300,7 +388,9 @@ impl VaultService {
                 kind: kind_str(h.kind),
                 snippet: h.snippet.as_deref().map(strip_highlights),
                 text: h.chunk.text_content,
-            })
+                heading,
+                line,
+            }})
             .collect();
         Ok(SearchResult {
             query,
@@ -317,7 +407,7 @@ impl VaultService {
     pub fn ask(&mut self, req: &AskRequest) -> Result<AskResult> {
         let question = req.question.trim().to_string();
         anyhow::ensure!(!question.is_empty(), "empty question");
-        let (hits, semantic, warnings) = self.retrieve(&question, ASK_TOP_K, true, false)?;
+        let (hits, semantic, warnings) = self.retrieve(&question, ASK_TOP_K, true, false, &HitFilter::default())?;
         let context = llm::select_context(&hits, llm::SIMILARITY_THRESHOLD);
         let citations = context
             .iter()
@@ -394,6 +484,7 @@ mod tests {
                 query: "telur".into(),
                 k: 5,
                 semantic: false,
+                ..Default::default()
             })
             .unwrap();
         assert!(!res.semantic);
@@ -420,7 +511,8 @@ mod tests {
             svc.search(&SearchRequest {
                 query: "zebra".into(),
                 k: 5,
-                semantic: false
+                semantic: false,
+                ..Default::default()
             })
             .unwrap()
             .hits
@@ -439,7 +531,8 @@ mod tests {
             .search(&SearchRequest {
                 query: "zebra".into(),
                 k: 5,
-                semantic: false
+                semantic: false,
+                ..Default::default()
             })
             .unwrap()
             .hits
@@ -470,6 +563,7 @@ mod tests {
                 query: "kucing".into(),
                 k: 5,
                 semantic: false,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(res.hits.len(), 1);
@@ -490,6 +584,7 @@ mod tests {
                 query: "resep makanan".into(),
                 k: 2,
                 semantic: true,
+                ..Default::default()
             })
             .unwrap();
         assert!(res.semantic);

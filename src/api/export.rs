@@ -122,6 +122,7 @@ mod tests {
             body: "## Bahan\n> [!tip] Kiat\n> Pakai **gula aren**.\n".into(),
             folder: None,
             tags: vec![],
+            agent: None,
         })
         .unwrap();
         (dir, svc)

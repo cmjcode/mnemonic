@@ -17,6 +17,9 @@ use crate::graph::model::{EdgeKind, GraphData, GraphOptions, NodeKind};
 use crate::markdown::wikilink::{self, WikilinkIndex};
 use crate::notes::{Note, Vault};
 
+/// Start of the error `resolve_index` returns for a name no note has.
+const NOT_FOUND: &str = "note not found";
+
 /// One open vault plus everything needed to answer agent requests.
 pub struct VaultService {
     pub(super) vault: Vault,
@@ -72,7 +75,7 @@ impl VaultService {
         summarize(note, self.rel(&note.path))
     }
 
-    fn note_ref(&self, note: &Note) -> NoteRefOut {
+    pub(crate) fn note_ref(&self, note: &Note) -> NoteRefOut {
         NoteRefOut {
             id: note.frontmatter.id,
             title: note.frontmatter.title.clone(),
@@ -109,8 +112,12 @@ impl VaultService {
 
     // ─── Resolution ──────────────────────────────────────────────────────
 
-    /// Finds a non-trashed note by UUID, title/alias/file stem (wikilink
-    /// rules), or vault-relative path (with or without `.md`).
+    /// Finds a non-trashed note by UUID, vault-relative path (with or
+    /// without `.md`), title/file stem/alias or folder-qualified name
+    /// (`Kuliah/Algoritma Graph`, wikilink rules). A name several notes
+    /// share is an error listing their paths — an agent must never read or
+    /// overwrite the wrong one silently; the GUI's "shortest path wins"
+    /// rule only applies to links.
     pub fn resolve_index(&self, reference: &str) -> Result<usize> {
         let reference = reference.trim();
         if reference.is_empty() {
@@ -122,26 +129,45 @@ impl VaultService {
         {
             return Ok(i);
         }
-        if let Some(path) = self.links.resolve(reference)
-            && let Some(i) = notes.iter().position(|n| n.path == path)
-        {
-            return Ok(i);
-        }
         let candidate = self.vault.root.join(reference.trim_start_matches("./"));
         let with_md = candidate.with_extension("md");
-        if let Some(i) = notes.iter().position(|n| {
-            !n.frontmatter.trashed && (n.path == candidate || n.path == with_md)
-        }) {
+        // Something written as a path (`Kuliah/X`, `X.md`) is matched as a
+        // path first; a bare name goes through the title rules so a name
+        // several notes share is reported, not silently the root one.
+        let path_like = reference.contains(['/', '\\']) || reference.to_lowercase().ends_with(".md");
+        let exact = notes.iter().position(|n| {
+            !n.frontmatter.trashed && (n.path == candidate || (path_like && n.path == with_md))
+        });
+        if let Some(i) = exact {
             return Ok(i);
         }
-        // Path-like reference without folder: match on the file name.
-        if let Some(i) = notes.iter().position(|n| {
-            !n.frontmatter.trashed
-                && n.path.file_name().is_some_and(|f| Some(f) == candidate.file_name())
-        }) {
-            return Ok(i);
+        let mut matches = self.links.candidates(reference);
+        if matches.is_empty() {
+            // Path-like reference whose folder is wrong or missing: match
+            // on the file name.
+            matches = notes
+                .iter()
+                .filter(|n| {
+                    !n.frontmatter.trashed
+                        && candidate.file_name().is_some()
+                        && (n.path.file_name() == candidate.file_name()
+                            || n.path.file_name() == with_md.file_name())
+                })
+                .map(|n| n.path.as_path())
+                .collect();
         }
-        bail!("note not found: {reference}")
+        match matches.as_slice() {
+            [] => bail!("{NOT_FOUND}: {reference}"),
+            [path] => notes
+                .iter()
+                .position(|n| n.path == *path)
+                .with_context(|| format!("note not found: {reference}")),
+            many => bail!(
+                "ambiguous note reference `{reference}`: {} notes match ({}); pass the vault-relative path or id instead",
+                many.len(),
+                many.iter().map(|p| self.rel(p)).collect::<Vec<_>>().join(", ")
+            ),
+        }
     }
 
     pub fn resolve(&self, reference: &str) -> Result<&Note> {
@@ -180,46 +206,51 @@ impl VaultService {
         out
     }
 
-    pub fn read_note(&self, reference: &str) -> Result<NoteDetail> {
-        let note = self.resolve(reference)?;
-        let mut links = Vec::new();
-        if !note.is_canvas() {
-            for occ in wikilink::parse_wikilinks(&note.body) {
-                if !links.contains(&occ.link.target) {
-                    links.push(occ.link.target);
-                }
-            }
-        }
-        Ok(NoteDetail {
-            summary: self.summary(note),
-            body: note.body.clone(),
-            extra: extra_to_json(&note.frontmatter.extra),
-            links,
+    /// The whole note, fresh from disk (see `read_note_part` for one
+    /// section or block).
+    pub fn read_note(&mut self, reference: &str) -> Result<NoteDetail> {
+        self.read_note_part(&ReadNoteRequest {
+            r#ref: reference.to_string(),
+            ..Default::default()
         })
     }
 
+    /// `true` when `reference` names no note at all (an ambiguous name is
+    /// not missing) — the only case where a "create if missing" may create.
+    pub(crate) fn is_missing(&self, reference: &str) -> bool {
+        self.resolve_index(reference)
+            .is_err_and(|e| e.to_string().starts_with(NOT_FOUND))
+    }
+
     /// Updates body and/or tags of an existing note through `Note::save`
-    /// (atomic write, unknown frontmatter keys preserved) and refreshes
-    /// its index row. Creates the note when missing and
+    /// (atomic write, unknown frontmatter keys preserved) after reloading
+    /// it from disk and checking `if_hash`, then refreshes its index row
+    /// and chunks. Creates the note when it is missing and
     /// `create_if_missing` is set.
     pub fn write_note(&mut self, req: &WriteNoteRequest) -> Result<WriteNoteResult> {
-        let idx = match self.resolve_index(&req.reference) {
-            Ok(i) => i,
-            Err(_) if req.create_if_missing => {
-                let created = self.create_note(&CreateNoteRequest {
+        if req.create_if_missing && self.is_missing(&req.reference) {
+            let mut warnings = Vec::new();
+            let note = self.create_note_with_warnings(
+                &CreateNoteRequest {
                     title: req.reference.trim().to_string(),
                     body: req.body.clone().unwrap_or_default(),
                     folder: req.folder.clone(),
                     tags: req.tags.clone().unwrap_or_default(),
-                })?;
-                return Ok(WriteNoteResult {
-                    note: created,
-                    created: true,
-                    warnings: Vec::new(),
-                });
-            }
-            Err(e) => return Err(e),
-        };
+                    agent: req.agent.clone(),
+                },
+                &mut warnings,
+            )?;
+            let content_hash = super::memory::file_hash(&self.vault.root.join(&note.path))?;
+            return Ok(WriteNoteResult {
+                note,
+                created: true,
+                warnings,
+                content_hash,
+            });
+        }
+        let idx = self.resolve_index(&req.reference)?;
+        self.reload_note(idx)?;
+        self.check_if_hash(idx, req.if_hash.as_deref())?;
         let mut warnings = Vec::new();
         {
             let note = &mut self.vault.notes[idx];
@@ -235,25 +266,34 @@ impl VaultService {
                     );
                 }
             }
-            note.save()
-                .with_context(|| format!("saving note {}", note.path.display()))?;
         }
-        self.reload_note(idx)?;
-        let note = &self.vault.notes[idx];
-        self.index
-            .upsert_note(note)
-            .with_context(|| format!("indexing note {}", note.path.display()))?;
-        let summary = self.summary(note);
-        self.refresh_links();
+        warnings.extend(self.stamp_agent(idx, req.agent.as_deref(), false));
+        let (note, content_hash) = self.commit_note(idx, &mut warnings)?;
         Ok(WriteNoteResult {
-            note: summary,
+            note,
             created: false,
             warnings,
+            content_hash,
         })
     }
 
     /// Creates `<folder>/<title>.md` (collision-safe name) and indexes it.
     pub fn create_note(&mut self, req: &CreateNoteRequest) -> Result<NoteSummary> {
+        let mut warnings = Vec::new();
+        let summary = self.create_note_with_warnings(req, &mut warnings)?;
+        for w in warnings {
+            log::warn!("api: {w}");
+        }
+        Ok(summary)
+    }
+
+    /// [`create_note`](Self::create_note), collecting non-fatal problems
+    /// (e.g. chunking failed) into `warnings`.
+    pub(crate) fn create_note_with_warnings(
+        &mut self,
+        req: &CreateNoteRequest,
+        warnings: &mut Vec<String>,
+    ) -> Result<NoteSummary> {
         let title = req.title.trim();
         if title.is_empty() {
             bail!("a note needs a non-empty title");
@@ -261,17 +301,11 @@ impl VaultService {
         let dir = self.folder_path(req.folder.as_deref())?;
         let mut note = Note::create(&dir, title, &req.body)
             .with_context(|| format!("creating note `{title}` in {}", dir.display()))?;
-        if !req.tags.is_empty() {
-            note.frontmatter.tags = normalize_tags(&req.tags);
-            note.save()?;
-        }
-        let note = Note::load(&note.path)?;
-        self.index
-            .upsert_note(&note)
-            .with_context(|| format!("indexing note {}", note.path.display()))?;
-        let summary = self.summary(&note);
+        note.frontmatter.tags = normalize_tags(&req.tags);
         self.vault.notes.push(note);
-        self.refresh_links();
+        let idx = self.vault.notes.len() - 1;
+        warnings.extend(self.stamp_agent(idx, req.agent.as_deref(), true));
+        let (summary, _) = self.commit_note(idx, warnings)?;
         Ok(summary)
     }
 
@@ -305,9 +339,10 @@ impl VaultService {
         })
     }
 
-    /// Re-reads one note from disk (after a save) so timestamps and the
-    /// stable id match the file.
-    fn reload_note(&mut self, idx: usize) -> Result<()> {
+    /// Re-reads one note from disk (after a save, or before an edit so
+    /// changes made by the app meanwhile are not overwritten) so body,
+    /// timestamps and the stable id match the file.
+    pub(crate) fn reload_note(&mut self, idx: usize) -> Result<()> {
         let path = self.vault.notes[idx].path.clone();
         let mut fresh = Note::load(&path)?;
         fresh.frontmatter.trashed |= self.vault.notes[idx].frontmatter.trashed;
@@ -317,27 +352,45 @@ impl VaultService {
 
     // ─── Links & graph ───────────────────────────────────────────────────
 
-    /// Notes linking to `reference` by title, file stem or alias.
+    /// Notes whose links resolve to `reference` — by title, file stem,
+    /// alias or folder-qualified path, resolved from the linking note the
+    /// way the app does (so a same-named note elsewhere doesn't steal
+    /// them). Computed from the loaded notes, ordered by source title then
+    /// line.
     pub fn backlinks(&self, reference: &str) -> Result<BacklinksResult> {
         let note = self.resolve(reference)?;
-        let keys = wikilink::link_keys_for(note);
-        let rows = self.index.backlinks_for_keys(&keys, note.frontmatter.id)?;
+        let mut backlinks: Vec<BacklinkOut> = Vec::new();
+        for src in &self.vault.notes {
+            if src.frontmatter.trashed || src.frontmatter.id == note.frontmatter.id || src.is_canvas() {
+                continue;
+            }
+            for occ in wikilink::parse_wikilinks(&src.body) {
+                if self.links.resolve_from(&occ.link.target, Some(&src.path)) == Some(note.path.as_path()) {
+                    backlinks.push(BacklinkOut {
+                        source_id: src.frontmatter.id,
+                        source_title: src.frontmatter.title.clone(),
+                        source_path: self.rel(&src.path),
+                        line: occ.line,
+                        context: occ.context,
+                    });
+                }
+            }
+        }
+        backlinks.sort_by(|a, b| {
+            a.source_title
+                .to_lowercase()
+                .cmp(&b.source_title.to_lowercase())
+                .then(a.source_path.cmp(&b.source_path))
+                .then(a.line.cmp(&b.line))
+        });
         Ok(BacklinksResult {
             target: self.note_ref(note),
-            backlinks: rows
-                .into_iter()
-                .map(|b| BacklinkOut {
-                    source_id: b.src_id,
-                    source_title: b.src_title,
-                    source_path: self.rel(&b.src_path),
-                    line: b.line,
-                    context: b.context,
-                })
-                .collect(),
+            backlinks,
         })
     }
 
-    /// Every `[[wikilink]]` in `reference`'s body, with what it resolves to.
+    /// Every `[[wikilink]]` in `reference`'s body, with what it resolves to
+    /// and, when the name is shared, the other notes it could mean.
     pub fn outgoing_links(&self, reference: &str) -> Result<LinksResult> {
         let note = self.resolve(reference)?;
         let links = if note.is_canvas() {
@@ -345,13 +398,23 @@ impl VaultService {
         } else {
             wikilink::parse_wikilinks(&note.body)
                 .into_iter()
-                .map(|occ| OutgoingLink {
-                    resolved_path: self.links.resolve(&occ.link.target).map(|p| self.rel(p)),
-                    target: occ.link.target,
-                    heading: occ.link.heading,
-                    alias: occ.link.alias,
-                    line: occ.line,
-                    context: occ.context,
+                .map(|occ| {
+                    let resolved = self.links.resolve_from(&occ.link.target, Some(&note.path));
+                    OutgoingLink {
+                        resolved_path: resolved.map(|p| self.rel(p)),
+                        other_candidates: self
+                            .links
+                            .candidates(&occ.link.target)
+                            .into_iter()
+                            .filter(|p| Some(*p) != resolved)
+                            .map(|p| self.rel(p))
+                            .collect(),
+                        target: occ.link.target,
+                        heading: occ.link.heading,
+                        alias: occ.link.alias,
+                        line: occ.line,
+                        context: occ.context,
+                    }
                 })
                 .collect()
         };
@@ -371,7 +434,13 @@ impl VaultService {
         files.extend(crate::sheet::find_sheets(self.root()));
         let mut edges = self.index.link_edges()?;
         for edge in &mut edges {
-            if let Some(path) = self.links.resolve(&edge.target)
+            let source = self
+                .vault
+                .notes
+                .iter()
+                .find(|n| n.frontmatter.id == edge.src_id)
+                .map(|n| n.path.as_path());
+            if let Some(path) = self.links.resolve_from(&edge.target, source)
                 && let Some(note) = self.vault.notes.iter().find(|n| n.path == path)
             {
                 edge.target_key = wikilink::title_key(&note.frontmatter.title);
@@ -415,7 +484,7 @@ impl VaultService {
     }
 }
 
-fn normalize_tags(tags: &[String]) -> Vec<String> {
+pub(crate) fn normalize_tags(tags: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for t in tags {
         let t = t.trim().trim_start_matches('#').to_string();
@@ -484,6 +553,34 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_titles_are_ambiguous_refs_but_links_resolve_by_folder() {
+        let dir = tempdir().unwrap();
+        let kuliah = dir.path().join("Kuliah");
+        std::fs::create_dir_all(&kuliah).unwrap();
+        Note::create(dir.path(), "ML", "root [[Kuliah/ML]]").unwrap();
+        Note::create(&kuliah, "ML", "kuliah").unwrap();
+        Note::create(&kuliah, "Graph", "lihat [[ML]]").unwrap();
+        Note::create(dir.path(), "Index", "lihat [[ML]]").unwrap();
+        let svc = VaultService::open(dir.path()).unwrap();
+
+        let err = svc.resolve("ML").unwrap_err().to_string();
+        assert!(err.contains("ambiguous") && err.contains("Kuliah/ML.md"), "{err}");
+        assert_eq!(svc.resolve("Kuliah/ML").unwrap().body, "kuliah");
+        assert_eq!(svc.resolve("ML.md").unwrap().body, "root [[Kuliah/ML]]");
+
+        let back = svc.backlinks("Kuliah/ML.md").unwrap();
+        let sources: Vec<&str> = back.backlinks.iter().map(|b| b.source_path.as_str()).collect();
+        assert_eq!(sources, vec!["Kuliah/Graph.md", "ML.md"]);
+        let back = svc.backlinks("ML.md").unwrap();
+        assert_eq!(back.backlinks.len(), 1);
+        assert_eq!(back.backlinks[0].source_path, "Index.md");
+
+        let links = svc.outgoing_links("Index").unwrap();
+        assert_eq!(links.links[0].resolved_path.as_deref(), Some("ML.md"));
+        assert_eq!(links.links[0].other_candidates, vec!["Kuliah/ML.md"]);
+    }
+
+    #[test]
     fn read_lists_links_and_extra_keys() {
         let (d, _) = service_with_notes();
         std::fs::write(
@@ -491,7 +588,7 @@ mod tests {
             "---\ntitle: Custom\ncustom: 1\nnested:\n  a: [1, 2]\n---\nhello [[Alpha]]",
         )
         .unwrap();
-        let svc = VaultService::open(d.path()).unwrap();
+        let mut svc = VaultService::open(d.path()).unwrap();
         let detail = svc.read_note("Custom").unwrap();
         assert_eq!(detail.body, "hello [[Alpha]]");
         assert_eq!(detail.links, vec!["Alpha"]);

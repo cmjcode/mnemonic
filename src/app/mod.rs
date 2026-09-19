@@ -1353,12 +1353,13 @@ impl MnemonicApp {
             return;
         }
 
+        // Title, stem, alias or `Folder/Name`; among same-named notes the
+        // one next to the note being read wins (Obsidian's rule).
+        let source = self.editor.as_ref().map(|e| e.note.path.clone());
         let existing = self.vault.as_ref().and_then(|vault| {
-            vault
-                .notes
-                .iter()
-                .find(|n| !n.frontmatter.trashed && title_key(&n.frontmatter.title) == key)
-                .cloned()
+            let index = wikilink::WikilinkIndex::build(&vault.notes);
+            let path = index.resolve_from(&link.target, source.as_deref())?.to_path_buf();
+            vault.notes.iter().find(|n| n.path == path).cloned()
         });
         if let Some(note) = existing {
             self.open_note(note);
@@ -1383,7 +1384,25 @@ impl MnemonicApp {
         if self.editor.is_some() {
             return;
         }
-        match Note::create(&root, &link.target, "") {
+        // `[[Folder/New]]` creates `New` inside `Folder/` (never outside
+        // the vault or in a hidden folder).
+        let (dir, title) = match link.target.rsplit_once(['/', '\\']) {
+            Some((folder, name)) => {
+                let safe = std::path::Path::new(folder).components().all(|c| {
+                    matches!(c, std::path::Component::Normal(p) if !p.to_string_lossy().starts_with('.'))
+                });
+                if !safe {
+                    self.toast(ToastKind::Error, "toast-link-folder-invalid", &[("name", &link.target)]);
+                    return;
+                }
+                (root.join(folder), name.trim().to_string())
+            }
+            None => (root, link.target.clone()),
+        };
+        let created = std::fs::create_dir_all(&dir)
+            .map_err(anyhow::Error::from)
+            .and_then(|()| Note::create(&dir, &title, ""));
+        match created {
             Ok(note) => {
                 self.rescan_and_reindex();
                 self.open_note(note);
@@ -1403,6 +1422,13 @@ impl MnemonicApp {
         let Some(vault) = self.vault.as_mut() else {
             return;
         };
+        // The renamed note's folder, so `[[Folder/Old]]` links follow too.
+        let folder = vault
+            .notes
+            .iter()
+            .find(|n| n.frontmatter.id == renamed_id)
+            .and_then(|n| n.path.parent()?.strip_prefix(&vault.root).ok())
+            .map(|p| p.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"));
         let mut previous: Vec<(PathBuf, String)> = Vec::new();
         let mut save_error = None;
         let mut editor_body = None;
@@ -1410,7 +1436,8 @@ impl MnemonicApp {
             if note.frontmatter.id == renamed_id || note.frontmatter.trashed {
                 continue;
             }
-            let Some(body) = wikilink::rewrite_link_target(&note.body, old_title, new_title) else {
+            let Some(body) = wikilink::rewrite_link_target_in(&note.body, old_title, new_title, folder.as_deref())
+            else {
                 continue;
             };
             if open_path.as_ref() == Some(&note.path) {

@@ -589,6 +589,7 @@ mod tests {
                 query: "Transport".into(),
                 k: 5,
                 semantic: false,
+                ..Default::default()
             })
             .unwrap();
         let hit = res.hits.iter().find(|h| h.path == "Data/Budget.csv").unwrap();

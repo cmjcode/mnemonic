@@ -506,6 +506,7 @@ error-context-save-sheet = menyimpan sheet
 error-context-export-sheet = mengekspor sheet
 error-context-import-sheet = mengimpor spreadsheet
 toast-link-sheet-missing = Sheet "{ $name }" tidak ditemukan di vault
+toast-link-folder-invalid = Tidak bisa membuat "{ $name }": folder harus di dalam vault dan tidak tersembunyi
 graph-kind-sheet = Sheet
 
 ## Live editor & reading themes (§3.2.1, §3.2.5)

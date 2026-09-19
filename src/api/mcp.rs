@@ -2,8 +2,9 @@
 //! stdio, hand-rolled JSON-RPC 2.0 — one JSON object per line, newline
 //! delimited, no framing headers, no extra dependency. Implements
 //! `initialize`, `notifications/initialized`, `ping`, `tools/list` and
-//! `tools/call`; every tool (notes, search, diagrams, sheets) maps 1:1
-//! onto a `VaultService` method and
+//! `tools/call`; every tool (notes, search, diagrams, sheets, and the
+//! agent-memory tools of `api::memory::tools`) maps 1:1 onto a
+//! `VaultService` method and
 //! returns its JSON as a single `text` content block. stdout carries
 //! protocol messages only — diagnostics go through `log` (stderr).
 //! Callers: `src/bin/mnemonic-cli.rs`.
@@ -13,6 +14,7 @@ use std::io::{BufRead, Write};
 use anyhow::Result;
 use serde_json::{Value, json};
 
+use super::memory::tools as memory_tools;
 use super::service::VaultService;
 use super::types::*;
 
@@ -86,11 +88,15 @@ fn dispatch(service: &mut VaultService, method: &str, params: Value) -> Result<V
             "capabilities": { "tools": {} },
             "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
             "instructions": format!(
-                "MNEMONIC vault at {}. Notes are Markdown files with YAML frontmatter; \
-                 refer to a note by title, alias, vault-relative path or id. Spreadsheets \
-                 (CSV editable, XLSX read-only) have *_sheet tools; use query_sheet for \
-                 totals and filters. Run `reindex` before `search_notes`/`ask_vault` if \
-                 results look stale.",
+                "MNEMONIC vault at {}: an Obsidian-style folder tree of Markdown notes with \
+                 YAML frontmatter. Call vault_overview first (structure, tags, the vault's \
+                 AGENTS.md). Refer to a note by vault-relative path (safest), title, alias \
+                 or id; titles shared by several notes must be given as paths. Read one \
+                 part with read_note `section`; edit with append_note/patch_note and pass \
+                 the last content_hash as if_hash. Use recall for context within a token \
+                 budget and remember to store durable facts. Spreadsheets (CSV editable, \
+                 XLSX read-only) have *_sheet tools; use query_sheet for totals and \
+                 filters. Run `reindex` if search results look stale.",
                 service.root().display()
             ),
         })),
@@ -105,7 +111,7 @@ fn dispatch(service: &mut VaultService, method: &str, params: Value) -> Result<V
                 .and_then(Value::as_str)
                 .ok_or((INVALID_PARAMS, "tools/call needs a `name`".to_string()))?;
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            if !TOOL_NAMES.contains(&name) {
+            if !TOOL_NAMES.contains(&name) && !memory_tools::TOOL_NAMES.contains(&name) {
                 return Err((INVALID_PARAMS, format!("unknown tool: {name}")));
             }
             Ok(match call_tool(service, name, args) {
@@ -160,9 +166,12 @@ struct RefArgs {
 }
 
 fn call_tool(service: &mut VaultService, name: &str, args: Value) -> Result<Value> {
+    if let Some(out) = memory_tools::call_tool(service, name, args.clone()) {
+        return out;
+    }
     let out = match name {
         "list_notes" => serde_json::to_value(service.list_notes(&parse_args::<NoteFilter>(args)?))?,
-        "read_note" => serde_json::to_value(service.read_note(&parse_args::<RefArgs>(args)?.r#ref)?)?,
+        "read_note" => serde_json::to_value(service.read_note_part(&parse_args::<ReadNoteRequest>(args)?)?)?,
         "write_note" => serde_json::to_value(service.write_note(&parse_args::<WriteNoteRequest>(args)?)?)?,
         "create_note" => serde_json::to_value(service.create_note(&parse_args::<CreateNoteRequest>(args)?)?)?,
         "trash_note" => serde_json::to_value(service.trash_note(&parse_args::<RefArgs>(args)?.r#ref)?)?,
@@ -207,6 +216,12 @@ fn ref_schema(what: &str) -> Value {
 
 /// The `tools/list` payload: name, description and JSON Schema input.
 pub fn tool_definitions() -> Vec<Value> {
+    let mut tools = core_tool_definitions();
+    tools.extend(memory_tools::tool_definitions());
+    tools
+}
+
+fn core_tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "list_notes",
@@ -222,12 +237,20 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "read_note",
-            "description": "Read one note: frontmatter, Markdown body, preserved extra frontmatter keys and its outgoing [[wikilinks]].",
-            "inputSchema": ref_schema("Note to read")
+            "description": "Read one note fresh from disk: frontmatter, Markdown body (or just one `section`/`block`), preserved extra frontmatter keys, outgoing [[wikilinks]], the whole note's `outline` (headings with line ranges) and `content_hash` (pass it as if_hash when editing).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ref": { "type": "string", "description": "Note: vault-relative path (safest), title, alias or UUID" },
+                    "section": { "type": "string", "description": "Only this part: heading (`Status`), heading path (`Proyek#Status`) or `^anchor`" },
+                    "block": { "type": "string", "description": "Only this anchored block (id, with or without ^)" }
+                },
+                "required": ["ref"]
+            }
         }),
         json!({
             "name": "write_note",
-            "description": "Replace the body and/or tags of an existing note (atomic write; unknown frontmatter keys are preserved). With create_if_missing, creates it using `ref` as the title.",
+            "description": "Replace the whole body and/or tags of an existing note (atomic write; unknown frontmatter keys are preserved). Prefer patch_note/append_note for partial edits. With create_if_missing, creates it using `ref` as the title (only when no note has that name).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -235,7 +258,9 @@ pub fn tool_definitions() -> Vec<Value> {
                     "body": { "type": "string", "description": "New Markdown body (omit to keep)" },
                     "tags": { "type": "array", "items": { "type": "string" }, "description": "Replaces the tag list" },
                     "folder": { "type": "string", "description": "Folder for a newly created note" },
-                    "create_if_missing": { "type": "boolean", "default": false }
+                    "create_if_missing": { "type": "boolean", "default": false },
+                    "if_hash": { "type": "string", "description": "content_hash from your last read; the write is refused if the note changed since" },
+                    "agent": { "type": "string", "description": "Your name; recorded as updated_by/created_by" }
                 },
                 "required": ["ref"]
             }
@@ -249,7 +274,8 @@ pub fn tool_definitions() -> Vec<Value> {
                     "title": { "type": "string" },
                     "body": { "type": "string", "default": "" },
                     "folder": { "type": "string", "description": "Vault-relative folder, created if missing" },
-                    "tags": { "type": "array", "items": { "type": "string" } }
+                    "tags": { "type": "array", "items": { "type": "string" } },
+                    "agent": { "type": "string", "description": "Your name; recorded as created_by" }
                 },
                 "required": ["title"]
             }
@@ -261,13 +287,15 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "search_notes",
-            "description": "Hybrid search (BM25 keyword + vector similarity fused with RRF) over indexed note chunks. Falls back to keyword-only when the embedding model is unavailable; the result says which.",
+            "description": "Hybrid search (BM25 keyword + vector similarity fused with RRF) over indexed note chunks, optionally within a folder or tag. Each hit has the section `heading` and `line` it came from (read that section with read_note). Falls back to keyword-only when the embedding model is unavailable; the result says which.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string" },
                     "k": { "type": "integer", "minimum": 1, "default": 10 },
-                    "semantic": { "type": "boolean", "default": true, "description": "false = keyword-only, no model load" }
+                    "semantic": { "type": "boolean", "default": true, "description": "false = keyword-only, no model load" },
+                    "folder": { "type": "string", "description": "Only this vault-relative folder and its subfolders (\".\" = root only)" },
+                    "tag": { "type": "string", "description": "Only notes with this tag (nested tags included)" }
                 },
                 "required": ["query"]
             }
@@ -497,10 +525,11 @@ mod tests {
 
         let reply = handle_message(&mut svc, r#"{"jsonrpc":"2.0","id":"a","method":"tools/list"}"#).unwrap();
         let tools = reply["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), TOOL_NAMES.len());
+        assert_eq!(tools.len(), TOOL_NAMES.len() + memory_tools::TOOL_NAMES.len());
         for t in tools {
             assert!(t["inputSchema"]["type"] == "object");
-            assert!(TOOL_NAMES.contains(&t["name"].as_str().unwrap()));
+            let name = t["name"].as_str().unwrap();
+            assert!(TOOL_NAMES.contains(&name) || memory_tools::TOOL_NAMES.contains(&name));
         }
     }
 
@@ -561,6 +590,44 @@ mod tests {
         assert_eq!(r["columns"][1]["sum"], 26000.0);
         call(&mut svc, "create_sheet", json!({"path":"Baru.csv","headers":["A"]}));
         assert_eq!(call(&mut svc, "list_sheets", json!({})).as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn memory_tools_round_trip() {
+        let (d, mut svc) = service();
+        std::fs::create_dir_all(d.path().join("Kuliah")).unwrap();
+        Note::create(&d.path().join("Kuliah"), "Dua", "# Catatan\nlama\n").unwrap();
+        svc.reindex(ReindexOptions { full: false, keyword_only: true }).unwrap();
+        let call = |svc: &mut VaultService, name: &str, args: Value| {
+            let msg = json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":name,"arguments":args}});
+            let reply = handle_message(svc, &msg.to_string()).unwrap();
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap().to_string();
+            (reply["result"]["isError"] == true, serde_json::from_str::<Value>(&text).unwrap())
+        };
+        let (_, o) = call(&mut svc, "vault_overview", json!({}));
+        assert_eq!(o["duplicate_titles"][0]["title"], "Dua");
+        // The shared title is ambiguous; the path is not.
+        let (err, e) = call(&mut svc, "read_note", json!({"ref":"Dua"}));
+        assert!(err && e["error"].as_str().unwrap().contains("ambiguous"));
+        let (_, n) = call(&mut svc, "read_note", json!({"ref":"Kuliah/Dua.md","section":"Catatan"}));
+        assert_eq!(n["body"], "# Catatan\nlama");
+        let hash = n["content_hash"].as_str().unwrap().to_string();
+        let (err, p) = call(
+            &mut svc,
+            "patch_note",
+            json!({"ref":"Kuliah/Dua","section":"Catatan","new_str":"baru","if_hash":hash,"agent":"t"}),
+        );
+        assert!(!err, "{p}");
+        let (err, _) = call(&mut svc, "append_note", json!({"ref":"Kuliah/Dua","text":"x","if_hash":hash}));
+        assert!(err, "stale if_hash must be refused");
+        let (_, r) = call(&mut svc, "recall", json!({"query":"baru","semantic":false}));
+        assert_eq!(r["items"][0]["path"], "Kuliah/Dua.md");
+        let (_, m) = call(&mut svc, "remember", json!({"text":"fakta unik","semantic":false}));
+        assert_eq!(m["status"], "created");
+        let (_, f) = call(&mut svc, "list_folders", json!({}));
+        assert!(f["folders"].as_array().unwrap().iter().any(|x| x["path"] == "Memory"));
+        let (_, rel) = call(&mut svc, "related_notes", json!({"ref":"Satu"}));
+        assert_eq!(rel["related"][0]["path"], "Dua.md");
     }
 
     #[test]
