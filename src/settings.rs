@@ -31,6 +31,9 @@ pub struct AppSettings {
     /// Reorder search results with the local cross-encoder reranker. Off
     /// by default: it downloads an extra model and adds latency.
     pub rerank_search: bool,
+    /// Id of the reading theme for rendered notes, print and export
+    /// (§3.2.5); a note's `theme:` frontmatter overrides it.
+    pub reading_theme: String,
     /// `[hotkeys]`: action id → chord (`"Cmd+Shift+K"`), overriding the
     /// defaults in `app::hotkeys::DEFAULT_HOTKEYS` (§Fase 1.8).
     pub hotkeys: BTreeMap<String, String>,
@@ -46,6 +49,7 @@ impl Default for AppSettings {
             sidebar_open: true,
             show_outline: true,
             rerank_search: false,
+            reading_theme: crate::reading_theme::DEFAULT_THEME.to_string(),
             hotkeys: BTreeMap::new(),
         }
     }

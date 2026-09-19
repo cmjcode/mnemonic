@@ -307,6 +307,37 @@ fn sheets_query_edit_and_index() {
 }
 
 #[test]
+fn themes_list_and_note_export() {
+    let v = vault();
+    // A plugin theme in the vault's own folder is picked up.
+    write(v.path(), ".mnemonic/themes/kopi.toml", "name = \"Kopi\"\nbase = \"sunset\"\n[light]\nh1 = \"#6f4e37\"\n");
+    let themes = run_json(v.path(), &["themes", "list"]);
+    let ids: Vec<&str> = themes["themes"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
+    for id in ["mnemonic", "pelangi", "ocean", "sunset", "forest", "print-classic", "kopi"] {
+        assert!(ids.contains(&id), "missing theme {id}: {ids:?}");
+    }
+    let kopi = themes["themes"].as_array().unwrap().iter().find(|t| t["id"] == "kopi").unwrap();
+    assert_eq!(kopi["print"]["h1"], "#6f4e37", "print follows the light colours");
+
+    // HTML to stdout, in the requested theme's print colours.
+    let html = run_ok(v.path(), &["notes", "export", "nasgor", "--theme", "kopi"]);
+    assert!(html.starts_with("<!doctype html>"), "{html}");
+    assert!(html.contains("--mn-h1: #6f4e37;"));
+    assert!(html.contains("<span class=\"wikilink\">Belanja Mingguan</span>"));
+
+    // To a file, with a JSON report.
+    let res = run_json(v.path(), &["notes", "export", "Resep Nasi Goreng", "--out", "ekspor/resep.html"]);
+    assert_eq!(res["format"], "html");
+    assert_eq!(res["theme"], "mnemonic");
+    assert!(v.path().join("ekspor/resep.html").exists());
+
+    // Unknown formats and themes fail with a message.
+    let bad = run(v.path(), &["notes", "export", "nasgor", "--format", "docx"]);
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("html or pdf"));
+}
+
+#[test]
 fn no_vault_is_an_error() {
     let out = bin()
         .env("HOME", tempdir().unwrap().path())
@@ -374,6 +405,8 @@ fn mcp_round_trip_over_stdio() {
         "get_graph",
         "reindex",
         "ask_vault",
+        "list_themes",
+        "export_note",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }

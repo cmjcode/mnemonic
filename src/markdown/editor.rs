@@ -1,12 +1,12 @@
 //! Editor session state for a single open note (§3.2): mode switching
-//! (Source / Live Preview / Reading / Edgeless Canvas), debounced autosave, coarse undo/redo,
-//! and word count / reading time. Slash-command and wikilink-autocomplete
-//! trigger detection are pure string functions here too, so the popup
-//! logic in `app.rs` stays thin. Also owns a `renderer::RenderCache`
-//! (§Fase 10) — invalidated in `set_body`/`undo`/`redo` and read via
-//! `outline()`/`render()`, so the Live Preview/Reading long-document
-//! memoization lives right next to the only code that mutates the body it's
-//! keyed on. Callers: `app.rs`.
+//! (Live / Source / Edgeless canvas / Split), debounced autosave, coarse
+//! undo/redo, and word count / reading time. Slash-command and
+//! wikilink-autocomplete trigger detection are pure string functions here
+//! too, so the popup logic in `app` stays thin. Also owns a
+//! `renderer::RenderCache` (§Fase 10) — invalidated in `set_body`/`undo`/
+//! `redo` and read via `outline()`/`render()`, so the Live view's
+//! memoization lives right next to the only code that mutates the body
+//! it's keyed on. Callers: `app`.
 
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,8 @@ use crate::notes::Note;
 
 use super::blocks;
 
-use super::renderer::{self, Heading, RenderCache, RenderOutcome};
+use super::live_blocks::LiveBlock;
+use super::renderer::{self, Heading, LiveParams, RenderCache, RenderOutcome};
 
 /// Idle window before an edit is flushed to disk (§3.2.4: "debounce
 /// 500ms-1s").
@@ -31,13 +32,14 @@ const WORDS_PER_MINUTE: usize = 200;
 const MAX_UNDO_HISTORY: usize = 100;
 
 /// How the note body is currently presented.
-/// - `Source`: raw Markdown text editor with slash-commands & wikilink autocomplete.
-/// - `Reading`: clean rendered CommonMark view with interactive checklists & wikilinks.
-/// - `Edgeless`: infinite 2D spatial canvas / whiteboard representation (AFFiNE-style dual mode).
+/// - `Live`: the default (§3.2.1): rendered, and the clicked line turns
+///   into raw Markdown in place (`markdown::renderer`, `app::editor::live`).
+/// - `Source`: the whole body as raw Markdown (power users, palette only).
+/// - `Edgeless`: infinite 2D spatial canvas / whiteboard (AFFiNE-style).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorMode {
+    Live,
     Source,
-    Reading,
     Edgeless,
     /// Markdown on the left, the bound diagram on the right (§Fase 3).
     Split,
@@ -138,7 +140,7 @@ pub struct MarkdownEditor {
     pending_since: Option<Instant>,
     undo_stack: Vec<String>,
     redo_stack: Vec<String>,
-    /// Memoized Live Preview/Reading parse of `note.body` (§Fase 10),
+    /// Memoized Live-view parse of `note.body` (§Fase 10),
     /// invalidated on every body mutation below so it never goes stale.
     render_cache: RenderCache,
     /// Edgeless infinite canvas state when in `EditorMode::Edgeless`.
@@ -166,7 +168,7 @@ impl MarkdownEditor {
         let initial_mode = match canvas_storage {
             CanvasStorage::Sidecar => EditorMode::Split,
             _ if is_canvas => EditorMode::Edgeless,
-            _ => EditorMode::Source,
+            _ => EditorMode::Live,
         };
 
         let canvas = match canvas_storage {
@@ -177,7 +179,7 @@ impl MarkdownEditor {
                 || note.body.starts_with("<?xml") =>
             {
                 let doc = CanvasDocument::from_markdown_body(&note.frontmatter.title, &note.body);
-                // Show a readable projection in Source/Reading mode instead of raw
+                // Show a readable projection in the Live/Source view instead of raw
                 // JSON/XML. The diagram itself lives in `canvas`; `autosave` always
                 // re-serializes from it for Draw.io storage, so this never reaches disk.
                 if note.body.contains("```canvas")
@@ -563,7 +565,7 @@ impl MarkdownEditor {
         // A Draw.io note's body is a readable projection while open (see
         // `open`); the diagram in `canvas` is the source of truth, so it must
         // be re-serialized whatever mode the editor is in (e.g. a title rename
-        // from Reading mode), or the XML on disk would be replaced by text.
+        // from the Live view), or the XML on disk would be replaced by text.
         if self.mode.shows_canvas() || (self.canvas_storage.is_drawio() && self.canvas.is_some()) {
             self.sync_canvas_to_body();
         }
@@ -664,34 +666,35 @@ impl MarkdownEditor {
         self.render_cache.outline(&self.note.body).to_vec()
     }
 
-    /// Renders the body into `ui` (Live Preview/Reading modes), memoized
-    /// and virtualized against `viewport` (content-space, from
-    /// `egui::ScrollArea::show_viewport`) via this editor's own
-    /// `RenderCache` — see `renderer::render_cached` and the module doc
-    /// comment on `markdown::renderer` (§Fase 10, §6 risk 5).
-    /// Scrolls the rendered (Reading) view to the block anchored `^id` the
-    /// next time it is drawn.
+    /// Scrolls the Live view to the block anchored `^id` the next time it
+    /// is drawn.
     pub fn scroll_to_block(&mut self, id: &str) {
-        self.render_cache.scroll_to_block = Some(id.to_string());
+        self.render_cache.scroll_to_block(id);
     }
 
+    /// Scrolls the Live view to the heading with slug `slug` the next time
+    /// it is drawn.
+    pub fn scroll_to_heading(&mut self, slug: &str) {
+        self.render_cache.scroll_to_heading(slug);
+    }
+
+    /// The Live blocks of the current body (memoized).
+    pub fn blocks(&mut self) -> Vec<LiveBlock> {
+        self.render_cache.blocks(&self.note.body).to_vec()
+    }
+
+    /// Renders the body in Live mode into `ui`, memoized and virtualized
+    /// via this editor's own `RenderCache`; `draw_editor` draws the raw
+    /// editor for `params.active` — see `renderer::render_cached`
+    /// (§3.2.1, §Fase 10).
     pub fn render(
         &mut self,
         ui: &mut egui::Ui,
         cache: &mut CommonMarkCache,
-        viewport: egui::Rect,
-        is_resolved: &dyn Fn(&str) -> bool,
-        resolve_embed: &renderer::EmbedResolver<'_>,
+        params: &LiveParams<'_>,
+        draw_editor: &mut dyn FnMut(&mut egui::Ui),
     ) -> RenderOutcome {
-        renderer::render_cached(
-            ui,
-            cache,
-            &mut self.render_cache,
-            &self.note.body,
-            viewport,
-            is_resolved,
-            resolve_embed,
-        )
+        renderer::render_cached(ui, cache, &mut self.render_cache, &self.note.body, params, draw_editor)
     }
 }
 
@@ -904,14 +907,14 @@ mod tests {
     }
 
     #[test]
-    fn drawio_note_keeps_xml_when_saved_from_reading_mode() {
+    fn drawio_note_keeps_xml_when_saved_from_live_view() {
         let dir = tempdir().unwrap();
         let note = Note::create_drawio(dir.path(), "Diagram").unwrap();
         let before = CanvasDocument::from_markdown_body("Diagram", &note.body);
         let mut editor = MarkdownEditor::open(note);
         assert_eq!(editor.canvas_storage(), CanvasStorage::DrawioFence);
 
-        editor.mode = EditorMode::Reading;
+        editor.mode = EditorMode::Live;
         editor.set_title("Diagram Baru".to_string());
         editor.autosave().unwrap();
 

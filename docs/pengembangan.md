@@ -139,9 +139,12 @@ Aplikasi ini adalah tool produktivitas desktop/mobile mandiri (*100% offline & p
 ### 3.2 Modul 2: Markdown Editor & Renderer (Kualitas Setara Obsidian)
 
 #### 3.2.1 Mode Editing
-* **Live Preview Mode** (default, ala Obsidian): elemen markdown dirender langsung inline saat mengetik — heading tampil besar, bold/italic langsung terlihat, `- [ ]` langsung jadi checkbox interaktif — tanpa perlu split pane manual.
-* **Source Mode**: toggle opsional untuk melihat/mengedit teks markdown mentah (berguna untuk power-user/debugging).
-* **Reading Mode**: tampilan *read-only* yang dirender penuh, untuk pratinjau cepat atau presentasi layar penuh.
+* **Satu mode catatan — Live** (default, tidak ada lagi mode Tulis/Baca terpisah): catatan selalu tampil ter-render. **Klik sebuah baris → hanya baris itu** berubah jadi Markdown mentah di tempatnya; baris lain tetap ter-render. Tabel, fenced code, ```` ```mermaid ````, blok `$$` dan callout disunting utuh sebagai satu blok (klik, atau tombol ✎ saat di-hover).
+  * Keyboard ala Obsidian: **Enter** memecah baris (list & checklist berlanjut otomatis; Enter di butir kosong mengakhiri list), **Backspace** di awal baris / **Delete** di akhir baris menggabung dengan baris tetangga, **↑/↓** di tepi pindah ke blok tetangga, **Esc** atau klik di luar kembali membaca. Klik ruang kosong di bawah catatan = tulis baris baru.
+  * Popup `/` dan `[[` tetap bekerja di baris yang sedang disunting; setiap perubahan hanya mengganti baris itu di file (`live_blocks::replace_lines`, line ending asli dipertahankan) lewat undo & autosave yang sama.
+  * Implementasi: `markdown::live_blocks` (pemecahan blok, murni), `markdown::renderer` (render per blok, virtualisasi, tinggi blok diingat per isi), `app::editor::live` (penyuntingan).
+* **Source Mode** (tersembunyi): seluruh body sebagai Markdown mentah, hanya lewat command palette / ⌘E — untuk power-user/debugging.
+* Tab di top bar: **Catatan · Teks + Diagram · Kanvas**.
 
 #### 3.2.2 Elemen Markdown yang Didukung
 | Elemen | Perilaku Rendering |
@@ -164,8 +167,17 @@ Aplikasi ini adalah tool produktivitas desktop/mobile mandiri (*100% offline & p
 
 #### 3.2.3 Tema & Tipografi
 * Font UI kustom (mis. Inter/SF Pro untuk teks, JetBrains Mono untuk code block) melalui *custom font embedding* di `egui`.
-* Tema **Light** & **Dark** bawaan, plus kustomisasi warna aksen (accent color) mirip pengaturan tema Obsidian.
+* Tema aplikasi **Light** & **Dark** bawaan; warna isi catatan diatur oleh **tema baca** (§3.2.5).
 * Line-height & spacing paragraf diatur khusus untuk kenyamanan baca (desain *typography-first*, bukan tampilan monospace default egui).
+
+#### 3.2.5 Tema Baca, Cetak & Ekspor
+* **Tema baca** (`reading_theme`): satu set warna untuk isi catatan — latar, teks, bold, link, `#tag`, H1–H6, kode, quote, garis, tabel, highlight, checkbox, dan aksen callout — dengan varian `[light]`, `[dark]`, dan `[print]`. Dipakai di tampilan Live **dan** saat cetak/ekspor, sehingga kertas, PDF, dan layar berwarna sama.
+* **Bawaan:** `mnemonic` (netral), `pelangi` (tiap level heading berbeda warna), `ocean`, `sunset`, `forest`, `print-classic` (hemat tinta, aksen navy). Dipilih lewat ikon palet di top bar atau command palette; per catatan lewat frontmatter `theme: <id>`.
+* **Plugin tema:** file TOML deklaratif (tanpa kode, aman dibagikan) di `<config_dir>/mnemonic/themes/` atau `<vault>/.mnemonic/themes/`. Warna yang tidak diisi diwarisi dari `base` (default `mnemonic`); `[print]` default = `[light]`. File rusak dilaporkan & dilewati, tidak pernah membuat aplikasi gagal. Panduan: `docs/themes.md`.
+* **Cetak (⌘P):** HTML bertema dibuka di browser dengan dialog cetak otomatis; CSS memakai `print-color-adjust: exact`, jadi latar & aksen ikut tercetak.
+* **Ekspor PDF / HTML:** HTML mandiri (CSS dari tema, Mermaid sebagai SVG inline, gambar sebagai `data:` URI, callout/wikilink/tag/`==highlight==` ikut bergaya). PDF dibuat oleh browser Chromium (Chrome/Edge/Chromium/Brave, atau `MNEMONIC_BROWSER`) secara headless di thread latar; tanpa browser, pengguna diarahkan ke Cetak → Simpan sebagai PDF.
+* Agen: `mnemonic-cli themes list`, `mnemonic-cli notes export`, tool MCP `list_themes` & `export_note` (lihat `docs/agent-interface.md`).
+* Implementasi: `reading_theme` (model, loader, registry), `export` (`html`, `system`), `app::reading`.
 
 #### 3.2.4 Produktivitas Editor
 * Auto-save saat idle (debounce 500ms–1s) langsung ke file `.md` di disk.
@@ -312,6 +324,7 @@ mnemonic/
 │   │   └── llm/              # Qwen2.5-1.5B-Instruct quantized weights
 │   ├── fonts/                 # Inter, JetBrains Mono (custom egui fonts)
 │   └── icons/                # Icon SVG / UI assets
+├── themes/                   # Tema baca bawaan (*.toml), sekaligus contoh plugin
 ├── locales/
 │   ├── id-ID/
 │   │   └── main.ftl           # String UI Bahasa Indonesia (default)
@@ -329,10 +342,13 @@ mnemonic/
 │   │   └── trash.rs          # Soft-delete & auto-cleanup 30 hari
 │   ├── markdown/
 │   │   ├── mod.rs
-│   │   ├── renderer.rs       # Rendering AST -> widget egui (egui_commonmark)
-│   │   ├── editor.rs         # Live preview editor & source mode
+│   │   ├── live_blocks.rs    # Pemecahan body jadi blok Live (per baris / blok atomik)
+│   │   ├── renderer/         # Render Live per blok -> widget egui (egui_commonmark), warna tema baca
+│   │   ├── editor.rs         # Sesi catatan: mode Live/Source/Kanvas, undo, autosave
 │   │   ├── wikilink.rs       # Resolver [[wikilink]], autocomplete, backlink graph
 │   │   └── syntax_highlight.rs # Integrasi syntect untuk code block
+│   ├── reading_theme/        # Tema baca: model warna, loader plugin TOML (§3.2.5)
+│   ├── export/               # Cetak & ekspor HTML/PDF bertema (§3.2.5)
 │   ├── i18n/
 │   │   ├── mod.rs
 │   │   ├── loader.rs         # Load & parse file .ftl per locale (fluent-bundle)

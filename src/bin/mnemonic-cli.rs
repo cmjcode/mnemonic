@@ -78,8 +78,19 @@ enum Command {
         #[command(subcommand)]
         action: SheetsAction,
     },
+    /// Reading themes (§3.2.5): built-ins and plugin *.toml files.
+    Themes {
+        #[command(subcommand)]
+        action: ThemesAction,
+    },
     /// Run as an MCP server over stdio (JSON-RPC 2.0, newline-delimited).
     Mcp,
+}
+
+#[derive(Subcommand)]
+enum ThemesAction {
+    /// Every theme with its id, name and source, plus the plugin folders.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -246,6 +257,20 @@ enum NotesAction {
     Trash {
         r#ref: String,
     },
+    /// Export REF as HTML or PDF in a reading theme's colours (§3.2.5).
+    Export {
+        r#ref: String,
+        /// html or pdf (PDF needs Chrome/Edge/Chromium/Brave).
+        #[arg(long, default_value = "html")]
+        format: String,
+        /// Theme id (see `themes list`); default: the note's `theme:`.
+        #[arg(long)]
+        theme: Option<String>,
+        /// Output file (absolute or vault-relative). HTML without --out
+        /// is printed to stdout.
+        #[arg(long)]
+        out: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -397,6 +422,25 @@ fn run(cli: Cli) -> Result<()> {
                 })?;
                 emit(json, &res, |out| out.push(format!("created {} ({})", res.path, res.id)))
             }
+            NotesAction::Export { r#ref, format, theme, out } => {
+                let res = svc.export_note(&ExportRequest { r#ref, format, theme, out })?;
+                match (&res.html, json) {
+                    (Some(html), false) => {
+                        print!("{html}");
+                        Ok(())
+                    }
+                    _ => emit(json, &res, |out| {
+                        out.push(format!(
+                            "exported {} as {} ({} theme) -> {} ({} bytes)",
+                            res.note,
+                            res.format,
+                            res.theme,
+                            res.path.as_deref().unwrap_or("-"),
+                            res.bytes
+                        ))
+                    }),
+                }
+            }
             NotesAction::Trash { r#ref } => {
                 let res = svc.trash_note(&r#ref)?;
                 emit(json, &res, |out| {
@@ -513,6 +557,17 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Diagram { action } => run_diagram(json, &action, Some(&svc)),
         Command::Sheets { action } => run_sheets(json, action, &mut svc),
+        Command::Themes { action: ThemesAction::List } => {
+            let list = svc.list_themes();
+            emit(json, &list, |out| {
+                for t in &list.themes {
+                    let by = t.author.as_deref().map(|a| format!(" by {a}")).unwrap_or_default();
+                    out.push(format!("{:<16} {}{by} [{}]", t.id, t.name, t.source));
+                }
+                out.push(format!("plugin folders: {}", list.plugin_dirs.join(", ")));
+                out.extend(list.problems.iter().map(|p| format!("warning: {p}")));
+            })
+        }
         Command::Mcp => {
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();

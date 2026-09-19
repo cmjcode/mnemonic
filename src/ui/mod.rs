@@ -38,4 +38,4 @@ pub use sidebar::{
 };
 pub use theme::{ThemeMode, apply_theme, pal};
 pub use toast::{ToastKind, Toasts};
-pub use top_bar::{EditorModeTab, SaveState, TopBar, TopBarContext, TopBarEvent, TopBarState};
+pub use top_bar::{EditorModeTab, ExportKind, SaveState, TopBar, TopBarContext, TopBarEvent, TopBarState};

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use egui::{Event, Key, Modifiers};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use mnemonic::app::MnemonicApp;
 use mnemonic::notes::Note;
 
@@ -69,6 +70,17 @@ fn seed_vault(vault: &Path) {
     )
     .unwrap();
     Note::create_canvas(vault, "Diagram Arsitektur").unwrap();
+    // Every Live block kind, for the reading-theme screenshots.
+    Note::create(
+        vault,
+        "Contoh Format",
+        "## Subjudul Dua\n### Subjudul Tiga\nTeks **tebal**, *miring*, `kode`, dan [[Ide Resep Minggu Ini]].\n\n\
+         - Butir satu\n  - Butir bersarang\n1. Pertama\n2. Kedua\n- [x] Sudah\n- [ ] Belum\n\n\
+         > Kutipan yang bijak.\n\n> [!tip] Tips\n> Isi callout berwarna.\n\n\
+         ```rust\nfn main() {}\n```\n\n| Nama | Nilai |\n| --- | ---: |\n| A | 1 |\n\n---\n\n\
+         ```mermaid\nflowchart LR\n  A[Ide] --> B[Catatan]\n```\n",
+    )
+    .unwrap();
 
     // Sheets (§3.8): an editable CSV and a read-only two-tab workbook.
     std::fs::write(
@@ -192,10 +204,26 @@ fn walk_screens(prefix: &str, vault: &Path) {
     press(&mut h, Key::Enter);
     step(&mut h);
     snapshot(&mut h, &format!("{prefix}-10-note-links-panel"));
-    // Reading mode renders math and tags.
-    cmd(&mut h, Key::E);
+    // Live mode: the note is rendered (math, tags); clicking a line turns
+    // just that line into raw Markdown, Esc renders it again.
+    h.get_by_label_contains("Rata-rata").click();
     step(&mut h);
-    snapshot(&mut h, &format!("{prefix}-10b-note-reading"));
+    step(&mut h);
+    snapshot(&mut h, &format!("{prefix}-10b-live-edit"));
+    press(&mut h, Key::End);
+    type_text(&mut h, " Cepat.");
+    snapshot(&mut h, &format!("{prefix}-10c-live-typing"));
+    press(&mut h, Key::Escape);
+    snapshot(&mut h, &format!("{prefix}-10d-live-after-edit"));
+    press(&mut h, Key::Escape);
+
+    // Every block kind in the reading theme's colours.
+    cmd(&mut h, Key::K);
+    type_text(&mut h, "Contoh Format");
+    press(&mut h, Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    snapshot(&mut h, &format!("{prefix}-10e-theme-blocks"));
     press(&mut h, Key::Escape);
 
     // A diagram-bound note opens in Split mode: Markdown left, canvas right.
@@ -229,11 +257,10 @@ fn walk_screens(prefix: &str, vault: &Path) {
     snapshot(&mut h, &format!("{prefix}-13-workbook"));
     press(&mut h, Key::Escape);
 
-    // A note embedding the CSV renders a preview table in Reading mode.
+    // A note embedding the CSV renders a preview table in the Live view.
     cmd(&mut h, Key::K);
     type_text(&mut h, "Anggaran 2027");
     press(&mut h, Key::Enter);
-    cmd(&mut h, Key::E);
     step(&mut h);
     snapshot(&mut h, &format!("{prefix}-14-sheet-embed"));
     press(&mut h, Key::Escape);
@@ -264,6 +291,11 @@ fn walk_screens(prefix: &str, vault: &Path) {
         std::fs::read(vault.join("Laporan.xlsx")).is_ok_and(|b| !b.is_empty()),
         "workbook must be left untouched"
     );
+    // The Live edit changed only the clicked line.
+    let lecture = Note::load(&vault.join("Catatan Kuliah — Struktur Data.md")).unwrap();
+    assert!(lecture.body.contains("\n# Hash Table\nRata-rata O(1). #struktur-data Cepat."), "{}", lecture.body);
+    assert!(lecture.body.starts_with("# Pohon Biner\nSetiap node punya dua anak"), "{}", lecture.body);
+    assert_eq!(lecture.body.lines().count(), 7, "no line added or removed: {}", lecture.body);
     // The canvas note keeps its diagram in a JSON Canvas sidecar.
     assert!(vault.join("Diagram Arsitektur.canvas").exists(), "canvas sidecar should exist");
 }
@@ -286,7 +318,8 @@ fn ui_walkthrough_renders_every_screen_in_both_themes() {
     write_config(&home, &vault_config(&vault, "dark", "id-ID"));
     walk_screens("dark", &vault);
 
-    write_config(&home, &vault_config(&vault, "light", "en-US"));
+    // Light run in a colourful reading theme (§3.2.5).
+    write_config(&home, &format!("{}reading_theme = \"pelangi\"\n", vault_config(&vault, "light", "en-US")));
     walk_screens("light", &vault);
 
     // Welcome screen (no vault configured).

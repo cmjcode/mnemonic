@@ -143,6 +143,8 @@ const TOOL_NAMES: &[&str] = &[
     "set_sheet_cell",
     "append_sheet_rows",
     "create_sheet",
+    "list_themes",
+    "export_note",
 ];
 
 fn parse_args<T: serde::de::DeserializeOwned>(args: Value) -> Result<T> {
@@ -177,6 +179,8 @@ fn call_tool(service: &mut VaultService, name: &str, args: Value) -> Result<Valu
         "set_sheet_cell" => serde_json::to_value(service.set_sheet_cell(&parse_args::<SheetSetCellRequest>(args)?)?)?,
         "append_sheet_rows" => serde_json::to_value(service.append_sheet_rows(&parse_args::<SheetAppendRequest>(args)?)?)?,
         "create_sheet" => serde_json::to_value(service.create_sheet(&parse_args::<SheetCreateRequest>(args)?)?)?,
+        "list_themes" => serde_json::to_value(service.list_themes())?,
+        "export_note" => serde_json::to_value(service.export_note(&parse_args::<ExportRequest>(args)?)?)?,
         other => anyhow::bail!("unknown tool: {other}"),
     };
     Ok(out)
@@ -298,6 +302,25 @@ pub fn tool_definitions() -> Vec<Value> {
                     "max_tokens": { "type": "integer", "minimum": 1, "default": crate::llm::DEFAULT_MAX_TOKENS }
                 },
                 "required": ["question"]
+            }
+        }),
+        json!({
+            "name": "list_themes",
+            "description": "List the reading themes (built-in and plugin *.toml files) with their light/dark/print colours and the plugin folders. A note picks one with `theme: <id>` in its frontmatter.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "export_note",
+            "description": "Export a note as a standalone HTML page or PDF in a reading theme's print colours (headings, callouts, code, tables, Mermaid as SVG, images inlined). Without `out`, HTML is returned inline; PDF needs `out` and a Chromium-based browser.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ref": { "type": "string", "description": "Note title, alias, vault-relative path or UUID" },
+                    "format": { "type": "string", "enum": ["html", "pdf"], "default": "html" },
+                    "theme": { "type": "string", "description": "Theme id from list_themes (default: the note's frontmatter theme, else mnemonic)" },
+                    "out": { "type": "string", "description": "File to write, absolute or vault-relative" }
+                },
+                "required": ["ref"]
             }
         }),
         json!({

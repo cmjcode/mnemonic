@@ -8,7 +8,7 @@ use egui_icons::icons::{
     ICON_DESCRIPTION, ICON_DRAW, ICON_FOLDER_OPEN, ICON_HUB, ICON_INVENTORY_2, ICON_KEYBOARD,
     ICON_LABEL,
     ICON_LANGUAGE, ICON_LEFT_PANEL_CLOSE, ICON_NOTE_ADD, ICON_PICTURE_AS_PDF, ICON_SEARCH,
-    ICON_TABLE_CHART, ICON_UPLOAD_FILE,
+    ICON_TABLE_CHART, ICON_UPLOAD_FILE, ICON_CODE, ICON_HTML, ICON_PALETTE, ICON_PRINT,
 };
 
 use super::MnemonicApp;
@@ -173,6 +173,35 @@ impl MnemonicApp {
             ),
         ];
 
+        // The open note: print/export in its reading theme (§3.2.5) and the
+        // full-source view (§3.2.1).
+        if self.editor.is_some() {
+            cmds.push(
+                PaletteCommand::new("print_note", &actions, ICON_PRINT.codepoint, t("palette-print"))
+                    .with_hint(self.hotkey_label("print")),
+            );
+            cmds.push(PaletteCommand::new("export_pdf", &actions, ICON_PICTURE_AS_PDF.codepoint, t("palette-export-pdf")));
+            cmds.push(PaletteCommand::new("export_html", &actions, ICON_HTML.codepoint, t("palette-export-html")));
+            cmds.push(
+                PaletteCommand::new("toggle_source", &view, ICON_CODE.codepoint, t("palette-toggle-source"))
+                    .with_hint(self.hotkey_label("toggle_source")),
+            );
+        }
+        for theme in self.themes.list() {
+            cmds.push(PaletteCommand::new(
+                format!("reading_theme:{}", theme.id),
+                &view,
+                ICON_PALETTE.codepoint,
+                self.t_args("palette-reading-theme", &[("name", &theme.name)]),
+            ));
+        }
+        cmds.push(PaletteCommand::new(
+            "open_theme_folder",
+            &view,
+            ICON_FOLDER_OPEN.codepoint,
+            t("palette-open-theme-folder"),
+        ));
+
         // Quick-open: documents whose title matches the typed query.
         let query = self.command_palette.query().trim().to_lowercase();
         if query.is_empty() {
@@ -267,6 +296,10 @@ impl MnemonicApp {
             self.open_file_by_path(path.into());
             return;
         }
+        if let Some(theme) = id.strip_prefix("reading_theme:") {
+            self.set_reading_theme(theme);
+            return;
+        }
         if let Some(path) = id.strip_prefix("template:") {
             self.insert_template(Path::new(path));
             return;
@@ -333,6 +366,18 @@ impl MnemonicApp {
                 self.persist_settings();
             }
             "shortcuts" => self.show_shortcuts = true,
+            "print_note" => self.export_open_note(ui::ExportKind::Print),
+            "export_pdf" => self.export_open_note(ui::ExportKind::Pdf),
+            "export_html" => self.export_open_note(ui::ExportKind::Html),
+            "open_theme_folder" => self.open_theme_folder(),
+            "toggle_source" => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.mode = match editor.mode {
+                        crate::markdown::EditorMode::Source => crate::markdown::EditorMode::Live,
+                        _ => crate::markdown::EditorMode::Source,
+                    };
+                }
+            }
             "switch_vault" => self.pick_and_open_vault(),
             _ => {}
         }

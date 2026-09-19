@@ -9,10 +9,12 @@
 //! Layout: `types` (stable serializable request/response shapes),
 //! `service` (open + note CRUD + links/graph), `index` (reindex, search,
 //! ask), `diagram` (Mermaid list/validate/render, §3.7.7), `sheet`
-//! (CSV/XLSX list/read/query/edit, §3.8.5), `mcp` (JSON-RPC 2.0 over
-//! stdio). Callers: `src/bin/mnemonic-cli.rs`.
+//! (CSV/XLSX list/read/query/edit, §3.8.5), `export` (reading themes,
+//! HTML/PDF export, §3.2.5), `mcp` (JSON-RPC 2.0 over stdio).
+//! Callers: `src/bin/mnemonic-cli.rs`.
 
 pub mod diagram;
+pub mod export;
 pub mod index;
 pub mod mcp;
 pub mod service;
@@ -22,7 +24,7 @@ pub mod types;
 pub use service::VaultService;
 pub use types::{
     AskRequest, AskResult, BacklinksResult, CreateNoteRequest, DiagramCheck, DiagramList, DiagramRender,
-    DiagramRequest, GraphOut, LinksResult, NoteDetail,
+    DiagramRequest, ExportRequest, ExportResult, GraphOut, LinksResult, NoteDetail, ThemeInfo, ThemeList,
     NoteFilter, NoteSummary, ReindexOptions, ReindexReport, SearchRequest, SearchResult,
     TrashResult, WriteNoteRequest, WriteNoteResult,
 };

@@ -12,6 +12,7 @@ mod grid;
 pub mod hotkeys;
 mod palette;
 mod pdf;
+mod reading;
 mod sheet;
 mod sheet_grid;
 mod welcome;
@@ -166,6 +167,10 @@ pub struct MnemonicApp {
     editor: Option<MarkdownEditor>,
     editor_ui: EditorUi,
     markdown_cache: CommonMarkCache,
+    /// Reading themes: built-ins plus plugins (§3.2.5).
+    themes: crate::reading_theme::ThemeRegistry,
+    /// PDF exports rendering in the background.
+    pending_exports: Vec<reading::PendingExport>,
 
     pdf_renderer: PdfRendererState,
     pdf_documents: Vec<PathBuf>,
@@ -247,6 +252,8 @@ impl MnemonicApp {
             editor: None,
             editor_ui: EditorUi::default(),
             markdown_cache: CommonMarkCache::default(),
+            themes: crate::reading_theme::ThemeRegistry::load(&crate::reading_theme::theme_dirs(None)),
+            pending_exports: Vec::new(),
             pdf_renderer: PdfRendererState::Uninit,
             pdf_documents: Vec::new(),
             pdf_viewer: None,
@@ -390,6 +397,7 @@ impl MnemonicApp {
         self.settings.remember_vault(&vault.root);
         self.persist_settings();
         self.vault = Some(vault);
+        self.reload_themes();
         self.refresh_pdf_documents();
         if reindex_pdfs {
             for pdf in self.pdf_documents.clone() {
@@ -649,6 +657,7 @@ impl MnemonicApp {
 
         self.poll_indexer_results();
         self.poll_search_and_chat(ctx);
+        self.poll_exports();
 
         // Idle autosave (§3.2.4 debounce). egui only repaints on input, so
         // schedule a wake-up for when the debounce window elapses.
@@ -1124,9 +1133,6 @@ impl MnemonicApp {
         }
         body.push_str(&expanded);
         editor.set_body(body);
-        if editor.mode == EditorMode::Reading {
-            editor.mode = EditorMode::Source;
-        }
     }
 
     /// Renames every legacy `<uuid>.md` note file after its title
@@ -1354,16 +1360,14 @@ impl MnemonicApp {
             self.open_note(note);
             if let (Some(heading), Some(editor)) = (&link.heading, self.editor.as_mut()) {
                 // Headings and `^block` anchors are scrolled to in the
-                // rendered view.
+                // rendered (Live) view.
                 if editor.mode == EditorMode::Source {
-                    editor.mode = EditorMode::Reading;
+                    editor.mode = EditorMode::Live;
                 }
                 if let Some(block_id) = heading.strip_prefix('^') {
                     editor.scroll_to_block(block_id);
                 } else {
-                    self.markdown_cache
-                        .scroll_to_id_target_mut()
-                        .replace(crate::markdown::renderer::slugify(heading));
+                    editor.scroll_to_heading(&crate::markdown::renderer::slugify(heading));
                 }
             }
             return;
@@ -1953,7 +1957,8 @@ impl MnemonicApp {
         let new_note = pressed(self, "new_note");
         let find = pressed(self, "search");
         let save = pressed(self, "save");
-        let toggle_read = pressed(self, "toggle_read");
+        let toggle_source = pressed(self, "toggle_source");
+        let print = pressed(self, "print");
         let sidebar = pressed(self, "sidebar");
         let ai = pressed(self, "ai");
         let shortcuts = pressed(self, "shortcuts");
@@ -1993,10 +1998,13 @@ impl MnemonicApp {
         if save && self.sheet_viewer.is_some() && self.save_sheet_now() {
             self.toast(ToastKind::Success, "editor-saved", &[]);
         }
-        if toggle_read && let Some(editor) = self.editor.as_mut() {
+        if print && self.editor.is_some() {
+            self.export_open_note(ui::ExportKind::Print);
+        }
+        if toggle_source && let Some(editor) = self.editor.as_mut() {
             editor.mode = match editor.mode {
-                EditorMode::Source => EditorMode::Reading,
-                EditorMode::Reading => EditorMode::Source,
+                EditorMode::Source => EditorMode::Live,
+                EditorMode::Live => EditorMode::Source,
                 other => other,
             };
         }
@@ -2055,14 +2063,14 @@ impl MnemonicApp {
                     format!("{}{dirty}", sheet::file_name(&v.path))
                 })
             });
+        let (reading_themes, note_theme) = self.theme_menu_entries();
         let context = if !vault_open {
             ui::TopBarContext::Welcome
         } else if let Some(editor) = self.editor.as_ref() {
             ui::TopBarContext::Editor {
                 title: &mut self.editor_ui.title_buffer,
                 mode: match editor.mode {
-                    EditorMode::Source => ui::EditorModeTab::Write,
-                    EditorMode::Reading => ui::EditorModeTab::Read,
+                    EditorMode::Live | EditorMode::Source => ui::EditorModeTab::Note,
                     EditorMode::Edgeless => ui::EditorModeTab::Canvas,
                     EditorMode::Split => ui::EditorModeTab::Split,
                 },
@@ -2096,6 +2104,9 @@ impl MnemonicApp {
             graph_open,
             theme_mode: self.theme_mode,
             indexing_jobs: self.index_jobs_pending,
+            reading_themes,
+            reading_theme: self.settings.reading_theme.clone(),
+            note_theme,
         };
         let events = ui::TopBar::show(ui, &self.locales, &mut state);
 
@@ -2140,8 +2151,7 @@ impl MnemonicApp {
                             editor.sync_canvas_to_body();
                         }
                         editor.mode = match tab {
-                            ui::EditorModeTab::Write => EditorMode::Source,
-                            ui::EditorModeTab::Read => EditorMode::Reading,
+                            ui::EditorModeTab::Note => EditorMode::Live,
                             ui::EditorModeTab::Canvas => {
                                 editor.ensure_canvas();
                                 EditorMode::Edgeless
@@ -2167,6 +2177,14 @@ impl MnemonicApp {
                     self.settings.show_outline = !self.settings.show_outline;
                     self.persist_settings();
                 }
+                ui::TopBarEvent::SetReadingTheme(id) => self.set_reading_theme(&id),
+                ui::TopBarEvent::ReloadThemes => {
+                    self.reload_themes();
+                    let count = self.themes.list().len().to_string();
+                    self.toast(ToastKind::Info, "reading-theme-reloaded", &[("count", &count)]);
+                }
+                ui::TopBarEvent::OpenThemeFolder => self.open_theme_folder(),
+                ui::TopBarEvent::Export(kind) => self.export_open_note(kind),
             }
         }
 

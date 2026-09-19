@@ -584,3 +584,64 @@ pub struct SheetWriteResult {
     /// Cells written (set-cell/append) or rows created.
     pub changed: usize,
 }
+
+// ─── Reading themes & export (§3.2.5) ─────────────────────────────────────
+
+/// Export a note in a reading theme's print colours.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExportRequest {
+    #[serde(alias = "reference", alias = "title", alias = "path")]
+    pub r#ref: String,
+    /// `html` (default) or `pdf`.
+    #[serde(default = "default_export_format")]
+    pub format: String,
+    /// Theme id; default: the note's `theme:` frontmatter, else `mnemonic`.
+    #[serde(default)]
+    pub theme: Option<String>,
+    /// File to write (absolute, or relative to the vault). Required for
+    /// PDF; without it HTML is returned inline.
+    #[serde(default)]
+    pub out: Option<String>,
+}
+
+fn default_export_format() -> String {
+    "html".into()
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportResult {
+    /// The note that was exported (vault-relative).
+    pub note: String,
+    pub format: String,
+    /// Theme id actually used.
+    pub theme: String,
+    /// Where the file was written, when `out` was given.
+    pub path: Option<String>,
+    /// The page itself, when no `out` was given (HTML only).
+    pub html: Option<String>,
+    pub bytes: u64,
+}
+
+/// One reading theme: its id (what `theme:` and `--theme` use) and colours.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThemeInfo {
+    pub id: String,
+    pub name: String,
+    pub author: Option<String>,
+    pub description: Option<String>,
+    /// `built-in`, or the plugin file it was loaded from.
+    pub source: String,
+    /// `field -> #rrggbb` for the light, dark and print variants.
+    pub light: std::collections::BTreeMap<String, String>,
+    pub dark: std::collections::BTreeMap<String, String>,
+    pub print: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThemeList {
+    pub themes: Vec<ThemeInfo>,
+    /// Folders searched for plugin `*.toml` themes.
+    pub plugin_dirs: Vec<String>,
+    /// Plugin files that failed to load or had warnings.
+    pub problems: Vec<String>,
+}

@@ -6,6 +6,7 @@
 pub mod blocks;
 pub mod editor;
 pub mod highlight;
+pub mod live_blocks;
 pub mod math;
 pub mod renderer;
 pub mod sheet_embed;

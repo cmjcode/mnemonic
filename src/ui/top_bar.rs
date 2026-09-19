@@ -2,8 +2,9 @@
 //! screen so navigation never "disappears".
 //!
 //! - Home: sidebar toggle + one global search field (⌘F).
-//! - Editor: back, inline-editable title (single click), Write/Read/Canvas
-//!   switcher, undo/redo, outline toggle, and a live save indicator.
+//! - Editor: back, inline-editable title (single click), Note/Split/Canvas
+//!   switcher, undo/redo, outline toggle, reading-theme picker, print /
+//!   export menu (§3.2.5), and a live save indicator.
 //! - PDF: back + file name.
 //!
 //! The right side always has the indexing status, AI assistant toggle,
@@ -12,9 +13,10 @@
 use egui::{Align, Id, Layout, RichText, Ui};
 use egui_icons::icons::{
     ICON_ARROW_BACK, ICON_AUTO_AWESOME, ICON_CHECK, ICON_CLOUD_DONE, ICON_DARK_MODE, ICON_DRAW,
-    ICON_EDIT_NOTE, ICON_ERROR, ICON_FOLDER_OPEN, ICON_HUB, ICON_KEYBOARD, ICON_LEFT_PANEL_CLOSE,
-    ICON_LEFT_PANEL_OPEN, ICON_LIGHT_MODE, ICON_REDO, ICON_SEARCH, ICON_SETTINGS, ICON_SYNC,
-    ICON_TOC, ICON_UNDO, ICON_VERTICAL_SPLIT, ICON_VISIBILITY,
+    ICON_EDIT_NOTE, ICON_ERROR, ICON_FOLDER_OPEN, ICON_HTML, ICON_HUB, ICON_IOS_SHARE, ICON_KEYBOARD,
+    ICON_LEFT_PANEL_CLOSE, ICON_LEFT_PANEL_OPEN, ICON_LIGHT_MODE, ICON_PALETTE,
+    ICON_PICTURE_AS_PDF, ICON_PRINT, ICON_REDO, ICON_REFRESH, ICON_SEARCH, ICON_SETTINGS, ICON_SYNC,
+    ICON_TOC, ICON_UNDO, ICON_VERTICAL_SPLIT,
 };
 
 use crate::i18n::LocaleManager;
@@ -31,13 +33,23 @@ pub fn title_field_id() -> Id {
     Id::new("mnemonic_title_edit")
 }
 
+/// The note switcher. `Note` is the Live view (rendered, the clicked line
+/// editable in place, §3.2.1) — there is no separate write/read mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorModeTab {
-    Write,
-    Read,
+    Note,
     Canvas,
     /// Markdown beside its diagram.
     Split,
+}
+
+/// Where the open note goes, in its reading theme's colours (§3.2.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportKind {
+    /// The system print dialog (via the browser), colours kept.
+    Print,
+    Pdf,
+    Html,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +94,13 @@ pub enum TopBarEvent {
     Redo,
     ToggleOutline,
     ToggleGraph,
+    /// App-wide reading theme, by id.
+    SetReadingTheme(String),
+    /// Re-read the theme plugin folders.
+    ReloadThemes,
+    /// Show the per-user theme plugin folder.
+    OpenThemeFolder,
+    Export(ExportKind),
 }
 
 pub struct TopBarState<'a> {
@@ -94,6 +113,11 @@ pub struct TopBarState<'a> {
     pub theme_mode: ThemeMode,
     /// Background indexing jobs still running (0 hides the indicator).
     pub indexing_jobs: usize,
+    /// Reading themes as `(id, name)`, and the app-wide choice.
+    pub reading_themes: Vec<(String, String)>,
+    pub reading_theme: String,
+    /// Name of the theme the open note picks in its frontmatter, if any.
+    pub note_theme: Option<String>,
 }
 
 pub struct TopBar;
@@ -281,9 +305,9 @@ impl TopBar {
                                 tr,
                                 *mode,
                                 *save_state,
-                                *can_undo,
-                                *can_redo,
+                                (*can_undo, *can_redo),
                                 *outline_open,
+                                state,
                                 &mut events,
                             );
                         }
@@ -300,9 +324,9 @@ impl TopBar {
         tr: &LocaleManager,
         mode: EditorModeTab,
         save_state: SaveState,
-        can_undo: bool,
-        can_redo: bool,
+        (can_undo, can_redo): (bool, bool),
         outline_open: bool,
+        state: &TopBarState,
         events: &mut Vec<TopBarEvent>,
     ) {
         let t = |key: &str| tr.t(key, &[]);
@@ -319,7 +343,11 @@ impl TopBar {
         {
             events.push(TopBarEvent::ToggleOutline);
         }
-        if mode == EditorModeTab::Write {
+        if mode != EditorModeTab::Canvas {
+            Self::export_menu(ui, tr, events);
+            Self::theme_menu(ui, tr, state, events);
+        }
+        if mode == EditorModeTab::Note {
             ui.add_enabled_ui(can_redo, |ui| {
                 if widgets::icon_button(
                     ui,
@@ -347,29 +375,21 @@ impl TopBar {
         }
         ui.add_space(6.0);
 
-        let labels = [
-            t("editor-mode-write"),
-            t("editor-mode-read"),
-            t("editor-mode-split"),
-            t("editor-mode-edgeless"),
-        ];
+        let labels = [t("editor-mode-note"), t("editor-mode-split"), t("editor-mode-edgeless")];
         let options = [
             (ICON_EDIT_NOTE.codepoint, labels[0].as_str()),
-            (ICON_VISIBILITY.codepoint, labels[1].as_str()),
-            (ICON_VERTICAL_SPLIT.codepoint, labels[2].as_str()),
-            (ICON_DRAW.codepoint, labels[3].as_str()),
+            (ICON_VERTICAL_SPLIT.codepoint, labels[1].as_str()),
+            (ICON_DRAW.codepoint, labels[2].as_str()),
         ];
         let selected = match mode {
-            EditorModeTab::Write => 0,
-            EditorModeTab::Read => 1,
-            EditorModeTab::Split => 2,
-            EditorModeTab::Canvas => 3,
+            EditorModeTab::Note => 0,
+            EditorModeTab::Split => 1,
+            EditorModeTab::Canvas => 2,
         };
         if let Some(i) = widgets::segmented(ui, Id::new("editor_mode_switch"), &options, selected) {
             events.push(TopBarEvent::SetEditorMode(match i {
-                0 => EditorModeTab::Write,
-                1 => EditorModeTab::Read,
-                2 => EditorModeTab::Split,
+                0 => EditorModeTab::Note,
+                1 => EditorModeTab::Split,
                 _ => EditorModeTab::Canvas,
             }));
         }
@@ -382,6 +402,59 @@ impl TopBar {
         };
         ui.label(RichText::new(label).size(theme::TEXT_XS).color(color));
         ui.label(RichText::new(icon).size(15.0).color(color));
+    }
+
+    /// Print / export the note in its reading theme's colours.
+    fn export_menu(ui: &mut Ui, tr: &LocaleManager, events: &mut Vec<TopBarEvent>) {
+        let t = |key: &str| tr.t(key, &[]);
+        let resp = widgets::icon_button(ui, ICON_IOS_SHARE.codepoint, &t("export-menu"), false);
+        egui::Popup::menu(&resp).show(|ui| {
+            ui.set_min_width(220.0);
+            for (kind, icon, key, hint) in [
+                (ExportKind::Print, ICON_PRINT.codepoint, "export-print", Some("⌘P")),
+                (ExportKind::Pdf, ICON_PICTURE_AS_PDF.codepoint, "export-pdf", None),
+                (ExportKind::Html, ICON_HTML.codepoint, "export-html", None),
+            ] {
+                if widgets::menu_item(ui, icon, &t(key), hint).clicked() {
+                    events.push(TopBarEvent::Export(kind));
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    /// Reading-theme picker: built-ins and plugins, plus the plugin folder.
+    fn theme_menu(ui: &mut Ui, tr: &LocaleManager, state: &TopBarState, events: &mut Vec<TopBarEvent>) {
+        let t = |key: &str| tr.t(key, &[]);
+        let resp = widgets::icon_button(ui, ICON_PALETTE.codepoint, &t("reading-theme"), false);
+        egui::Popup::menu(&resp).show(|ui| {
+            ui.set_min_width(240.0);
+            widgets::section_header(ui, &t("reading-theme"));
+            for (id, name) in &state.reading_themes {
+                let checked = id.eq_ignore_ascii_case(&state.reading_theme);
+                if widgets::menu_item(ui, "", name, checked.then_some(ICON_CHECK.codepoint)).clicked() {
+                    events.push(TopBarEvent::SetReadingTheme(id.clone()));
+                    ui.close();
+                }
+            }
+            if let Some(name) = &state.note_theme {
+                ui.label(
+                    RichText::new(tr.t("reading-theme-note-override", &[("name", name)]))
+                        .size(theme::TEXT_XS)
+                        .color(pal().text_faint),
+                );
+            }
+            ui.add_space(4.0);
+            ui.separator();
+            if widgets::menu_item(ui, ICON_FOLDER_OPEN.codepoint, &t("reading-theme-open-folder"), None).clicked() {
+                events.push(TopBarEvent::OpenThemeFolder);
+                ui.close();
+            }
+            if widgets::menu_item(ui, ICON_REFRESH.codepoint, &t("reading-theme-reload"), None).clicked() {
+                events.push(TopBarEvent::ReloadThemes);
+                ui.close();
+            }
+        });
     }
 
     fn settings_menu(
@@ -474,7 +547,8 @@ mod tests {
 
     #[test]
     fn editor_mode_tabs_are_distinct() {
-        assert_ne!(EditorModeTab::Write, EditorModeTab::Read);
+        assert_ne!(EditorModeTab::Note, EditorModeTab::Split);
+        assert_ne!(ExportKind::Pdf, ExportKind::Html);
         assert_ne!(SaveState::Saved, SaveState::Pending);
     }
 }

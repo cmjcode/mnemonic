@@ -50,6 +50,8 @@ stderr and exit non-zero; stdout carries only results. Logs go to stderr
 | `sheets set <SHEET> <ROW> <COLUMN> <VALUE>` | Set one cell of a CSV/TSV (row 1-based, column by name or 0-based index). |
 | `sheets append <SHEET> --row JSON...` | Append rows: a JSON array (positional) or object keyed by column name. |
 | `sheets create <PATH> --header H...` | New `.csv`/`.tsv` (fails if it exists). |
+| `themes list` | Reading themes (built-in + plugin `*.toml`) with their source, plus the plugin folders and any load problems. `--json` includes every light/dark/print colour. |
+| `notes export <REF> [--format html\|pdf] [--theme ID] [--out F]` | The note as a standalone HTML page (stdout without `--out`) or PDF (`--out` required; needs Chrome/Edge/Chromium/Brave, or `MNEMONIC_BROWSER`), in the theme's print colours. `--out` may be vault-relative. |
 | `mcp` | Serve MCP over stdio until stdin closes. |
 
 `<REF>` resolves, in order: UUID (`id` frontmatter), then wikilink rules
@@ -146,6 +148,8 @@ holding the same JSON the CLI prints):
 | `set_sheet_cell` | `ref`, `row` (1-based), `column`, `value` |
 | `append_sheet_rows` | `ref`, `rows` (arrays or objects) |
 | `create_sheet` | `path`, `headers`, `rows?` |
+| `list_themes` | – |
+| `export_note` | `ref`, `format?` (`html`), `theme?`, `out?` (required for `pdf`; without it HTML is returned in `html`) |
 
 ### Claude Code
 
@@ -323,10 +327,27 @@ copy; *Export as XLSX* writes a new workbook from a CSV.
 - In notes, link a sheet with `[[Budget.csv]]` or embed a preview table with
   `![[Budget.csv]]`.
 
+## Reading themes and export
+
+A rendered note, its printout and its HTML/PDF export share one colour
+set: the note's reading theme (spec §3.2.5). A note picks one with
+`theme: <id>` in its frontmatter (ignored when no such theme exists);
+otherwise the app uses `reading_theme` from `config.toml`, and the CLI/MCP
+use `mnemonic` unless `--theme`/`theme` is given. Exports use the theme's
+`[print]` colours.
+
+Themes are declarative TOML files — no code runs — in
+`<config_dir>/mnemonic/themes/` (per user) or `<vault>/.mnemonic/themes/`
+(travels with the vault; wins on equal ids). The file stem is the id.
+Built-ins: `mnemonic`, `pelangi`, `ocean`, `sunset`, `forest`,
+`print-classic` (sources in `themes/`). Format and every colour key:
+[`docs/themes.md`](themes.md).
+
 ## User configuration (`config.toml`)
 
 `<config_dir>/mnemonic/config.toml` (macOS: `~/Library/Application Support/mnemonic/config.toml`).
-Besides `vault_path`, `theme`, `locale`, an optional `[hotkeys]` table remaps app shortcuts;
+Besides `vault_path`, `theme`, `locale`, `reading_theme` (reading theme id,
+default `mnemonic`), an optional `[hotkeys]` table remaps app shortcuts;
 any action left out keeps its default:
 
 ```toml
@@ -335,7 +356,8 @@ palette = "Cmd+P"        # default Cmd+K
 new_note = "Cmd+N"
 search = "Cmd+Shift+F"
 save = "Cmd+S"
-toggle_read = "Cmd+E"
+toggle_source = "Cmd+E"  # full Markdown source ⇄ Live view
+print = "Cmd+P"
 sidebar = "Cmd+\\"
 ai = "Cmd+J"
 shortcuts = "Cmd+/"

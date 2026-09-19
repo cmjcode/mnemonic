@@ -3,7 +3,7 @@ id: b2c3d4e5-f6a7-8901-bcde-f23456789012
 title: Proyek Startup AI
 type: note
 created: 2026-08-01T02:00:00+00:00
-modified: 2026-09-18T16:49:13.838878+00:00
+modified: 2026-09-19T06:00:09.547581+00:00
 pinned: true
 color: purple
 tags:
@@ -55,7 +55,7 @@ saran bisnis — **tanpa perlu internet**. Itulah yang kami bangun. ^visi
 ## Riset Teknis ^iyu26s
 
 Catatan riset terkait: ^1fu7bm
-- [[Jurnal Riset NLP]] — survey model bahasa lokal ^inq7rh
+- **[[Jurnal Riset NLP]]** — survey model bahasa lokal ^inq7rh
 - [[Machine Learning 101]] — dasar teori yang direferensikan ^bxx7i3
 - [[Algoritma Graph]] — untuk knowledge graph produk ^lg50qo
 - [[Database Schema]] — skema penyimpanan data ^rq9cxx
