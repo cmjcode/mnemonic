@@ -8,11 +8,13 @@
 //!
 //! Layout: `types` (stable serializable request/response shapes),
 //! `service` (open + note CRUD + links/graph), `index` (reindex, search,
-//! ask), `diagram` (Mermaid list/validate/render, §3.7.7), `sheet`
+//! ask), `diagram` (Mermaid list/validate/render, §3.7.7), `canvas`
+//! (section outline + canvas → Mermaid, §3.9.5), `sheet`
 //! (CSV/XLSX list/read/query/edit, §3.8.5), `export` (reading themes,
 //! HTML/PDF export, §3.2.5), `mcp` (JSON-RPC 2.0 over stdio).
 //! Callers: `src/bin/mnemonic-cli.rs`.
 
+pub mod canvas;
 pub mod diagram;
 pub mod export;
 pub mod index;

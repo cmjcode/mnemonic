@@ -1,3 +1,9 @@
 /target
 /.fastembed_cache
 .agent
+MyVault
+MyVault/*
+MyVault/Arsitektur Microservice.canvas
+MyVault/Arsitektur Microservice.md
+MyVault/Belanja Mingguan.md
+MyVault/Database Schema.md

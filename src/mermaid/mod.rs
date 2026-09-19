@@ -14,6 +14,7 @@ pub mod diag;
 pub mod er;
 pub mod flowchart;
 pub mod layout;
+pub mod mindmap;
 pub mod paint;
 pub mod pie;
 pub mod route;
@@ -124,7 +125,16 @@ impl DiagramKind {
 
     /// Whether this build can lay out and draw the type.
     pub fn is_supported(self) -> bool {
-        matches!(self, DiagramKind::Flowchart | DiagramKind::Sequence | DiagramKind::Pie | DiagramKind::State | DiagramKind::Class | DiagramKind::Er)
+        matches!(
+            self,
+            DiagramKind::Flowchart
+                | DiagramKind::Sequence
+                | DiagramKind::Pie
+                | DiagramKind::State
+                | DiagramKind::Class
+                | DiagramKind::Er
+                | DiagramKind::Mindmap
+        )
     }
 }
 
@@ -176,6 +186,7 @@ fn dispatch(
         DiagramKind::State => {
             diagram!(state, |d, t, m| state::build(&d, &src.config, src.title.as_deref(), t, m))
         }
+        DiagramKind::Mindmap => diagram!(mindmap, |d, t, m| mindmap::build(&d, &src.config, t, m)),
         _ => None,
     }
 }

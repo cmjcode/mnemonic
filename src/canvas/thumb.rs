@@ -47,11 +47,17 @@ impl CanvasThumb {
                     items.push(Item::Box {
                         rect: rect4(r),
                         fill: fill_color.unwrap_or(*stroke_color),
-                        ellipse: matches!(kind, ShapeKind::Ellipse),
+                        ellipse: matches!(
+                            kind,
+                            ShapeKind::Ellipse | ShapeKind::Circle | ShapeKind::StateStart | ShapeKind::StateEnd
+                        ),
                         diamond: matches!(kind, ShapeKind::Diamond),
                     });
                 }
-                CanvasElement::Frame { .. } | CanvasElement::DocCard { .. } => {
+                CanvasElement::Frame { .. }
+                | CanvasElement::DocCard { .. }
+                | CanvasElement::Entity { .. }
+                | CanvasElement::ClassBox { .. } => {
                     grow(r);
                     let fill = color_of(elem).unwrap_or([0.6, 0.6, 0.65]);
                     items.push(Item::Box { rect: rect4(r), fill, ellipse: false, diamond: false });
@@ -144,7 +150,9 @@ fn rgb(c: [f32; 3], alpha: u8) -> Color32 {
 
 fn color_of(elem: &CanvasElement) -> Option<[f32; 3]> {
     match elem {
-        CanvasElement::Frame { color, .. } => Some(*color),
+        CanvasElement::Frame { color, .. }
+        | CanvasElement::Entity { color, .. }
+        | CanvasElement::ClassBox { color, .. } => Some(*color),
         _ => None,
     }
 }
@@ -177,6 +185,7 @@ mod tests {
             label: String::new(),
             arrow_end: true,
             waypoints: vec![[100.0, 0.0]],
+            meta: Default::default(),
         });
         let thumb = CanvasThumb::from_doc(&doc);
         assert_eq!(thumb.items.len(), 3);

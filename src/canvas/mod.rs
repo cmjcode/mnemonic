@@ -3,16 +3,22 @@
 //! Provides the data structures, coordinate transforms, interactive toolbars,
 //! and vector painters for a 2D spatial canvas that unifies with Markdown documents.
 
+pub mod diagram_kinds;
 pub mod drawio;
 pub mod thumb;
 pub mod element;
 pub mod jsoncanvas;
+pub mod mermaid_export;
+pub mod mermaid_import;
+pub mod outline;
 pub mod painter;
+pub mod painter_content;
+pub mod painter_diagram;
 pub mod tools;
 pub mod viewport;
 
 pub use drawio::{DrawioExporter, DrawioImporter};
-pub use element::{BlockBinding, CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
+pub use element::{BindingScope, BlockBinding, CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
 pub use jsoncanvas::{from_json_canvas, to_json_canvas, JsonCanvas};
 pub use painter::draw_element;
 pub use tools::{CanvasTool, InteractionState};
@@ -30,16 +36,15 @@ pub struct CanvasDocument {
     pub title: String,
     pub elements: Vec<CanvasElement>,
     pub viewport: Viewport,
+    /// Section ids whose box the user removed from the canvas; the outline
+    /// sync (§3.9.2) doesn't bring them back. Their Markdown stays.
+    #[serde(default)]
+    pub hidden_segments: Vec<String>,
 }
 
 impl Default for CanvasDocument {
     fn default() -> Self {
-        CanvasDocument {
-            id: Uuid::new_v4(),
-            title: "Untitled Canvas".to_string(),
-            elements: Vec::new(),
-            viewport: Viewport::default(),
-        }
+        CanvasDocument::new("Untitled Canvas")
     }
 }
 
@@ -50,6 +55,7 @@ impl CanvasDocument {
             title: title.to_string(),
             elements: Vec::new(),
             viewport: Viewport::default(),
+            hidden_segments: Vec::new(),
         }
     }
 
@@ -227,26 +233,18 @@ impl CanvasDocument {
         // Sort elements by top-to-bottom (min y), then left-to-right (min x)
         let mut sorted_elements = self.elements.clone();
         sorted_elements.sort_by(|a, b| {
-            let (ay, ax) = match a {
-                CanvasElement::StickyNote { pos, .. } => (pos[1], pos[0]),
-                CanvasElement::Shape { rect, .. } => (rect[1], rect[0]),
-                CanvasElement::DocCard { pos, .. } => (pos[1], pos[0]),
-                CanvasElement::Frame { rect, .. } => (rect[1], rect[0]),
+            let top_left = |e: &CanvasElement| match e {
                 CanvasElement::Connector { from_pos, .. } => (from_pos[1], from_pos[0]),
                 CanvasElement::FreehandStroke { points, .. } => {
                     points.first().map(|p| (p[1], p[0])).unwrap_or((0.0, 0.0))
                 }
-            };
-            let (by, bx) = match b {
-                CanvasElement::StickyNote { pos, .. } => (pos[1], pos[0]),
-                CanvasElement::Shape { rect, .. } => (rect[1], rect[0]),
-                CanvasElement::DocCard { pos, .. } => (pos[1], pos[0]),
-                CanvasElement::Frame { rect, .. } => (rect[1], rect[0]),
-                CanvasElement::Connector { from_pos, .. } => (from_pos[1], from_pos[0]),
-                CanvasElement::FreehandStroke { points, .. } => {
-                    points.first().map(|p| (p[1], p[0])).unwrap_or((0.0, 0.0))
+                other => {
+                    let r = other.bounding_rect();
+                    (r.min.y, r.min.x)
                 }
             };
+            let (ay, ax) = top_left(a);
+            let (by, bx) = top_left(b);
             ay.partial_cmp(&by)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal))

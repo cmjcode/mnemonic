@@ -645,3 +645,50 @@ pub struct ThemeList {
     /// Plugin files that failed to load or had warnings.
     pub problems: Vec<String>,
 }
+
+/// One section segment of a note — one canvas box (§3.9.1).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SectionInfo {
+    /// Anchor id (`^id`); `null` until the note is opened as a canvas.
+    pub id: Option<String>,
+    /// `section` | `table` | `mermaid` | `code` | `text`.
+    pub kind: String,
+    /// Heading level of a `section`.
+    pub level: Option<u8>,
+    /// Id of the enclosing section.
+    pub parent: Option<String>,
+    /// 1-based inclusive line range in the note body.
+    pub line: usize,
+    pub end_line: usize,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SectionList {
+    pub path: String,
+    pub sections: Vec<SectionInfo>,
+}
+
+/// Export a note's canvas as Mermaid (§3.9.4).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CanvasMermaidRequest {
+    #[serde(alias = "reference", alias = "note", alias = "title", alias = "path")]
+    pub r#ref: String,
+    /// Also emit a `mindmap` of the section outline.
+    pub mindmap: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CanvasMermaid {
+    pub path: String,
+    /// The note has a `.canvas` sidecar (else the outline was built in memory).
+    pub has_sidecar: bool,
+    /// One per diagram family: `flowchart`, `erDiagram`, `classDiagram`,
+    /// `stateDiagram-v2`, `embedded` (a copied fence), `mindmap`.
+    pub diagrams: Vec<crate::canvas::mermaid_export::ExportedDiagram>,
+    /// What had no Mermaid form (strokes, dangling / cross-type connectors).
+    pub warnings: Vec<String>,
+    /// All diagrams as ```mermaid fences.
+    pub markdown: String,
+}

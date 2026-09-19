@@ -137,6 +137,8 @@ const TOOL_NAMES: &[&str] = &[
     "list_diagrams",
     "validate_diagram",
     "render_diagram",
+    "list_sections",
+    "export_canvas_mermaid",
     "list_sheets",
     "read_sheet",
     "query_sheet",
@@ -173,6 +175,10 @@ fn call_tool(service: &mut VaultService, name: &str, args: Value) -> Result<Valu
         "list_diagrams" => serde_json::to_value(service.list_diagrams(&parse_args::<RefArgs>(args)?.r#ref)?)?,
         "validate_diagram" => serde_json::to_value(service.validate_diagram(&parse_args::<DiagramRequest>(args)?)?)?,
         "render_diagram" => serde_json::to_value(service.render_diagram(&parse_args::<DiagramRequest>(args)?)?)?,
+        "list_sections" => serde_json::to_value(service.list_sections(&parse_args::<RefArgs>(args)?.r#ref)?)?,
+        "export_canvas_mermaid" => {
+            serde_json::to_value(service.canvas_mermaid(&parse_args::<CanvasMermaidRequest>(args)?)?)?
+        }
         "list_sheets" => serde_json::to_value(service.list_sheets())?,
         "read_sheet" => serde_json::to_value(service.read_sheet(&parse_args::<SheetReadRequest>(args)?)?)?,
         "query_sheet" => serde_json::to_value(service.query_sheet(&parse_args::<SheetQueryRequest>(args)?)?)?,
@@ -337,6 +343,23 @@ pub fn tool_definitions() -> Vec<Value> {
             "name": "render_diagram",
             "description": "Render a Mermaid diagram to SVG with MNEMONIC's native renderer. Returns svg, width, height and diagnostics.",
             "inputSchema": diagram_schema(true)
+        }),
+        json!({
+            "name": "list_sections",
+            "description": "List a note's section segments — the boxes its canvas shows: each heading with its own prose, each table, ```mermaid / code fence and trailing prose, with anchor id, kind, heading level, parent section id, 1-based line range and a one-line summary.",
+            "inputSchema": ref_schema("Note to outline")
+        }),
+        json!({
+            "name": "export_canvas_mermaid",
+            "description": "Export a note's canvas (section boxes, shapes, ER entities, UML classes, state dots, connectors, frames) as Mermaid: one diagram per family (flowchart with subgraphs and [[Note#^id]] click links, erDiagram, classDiagram, stateDiagram-v2, copied ```mermaid fences, optional mindmap of the outline). Read-only; warnings list what has no Mermaid form.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ref": { "type": "string", "description": "Note: title, alias, vault-relative path or UUID" },
+                    "mindmap": { "type": "boolean", "default": false, "description": "Also emit a mindmap of the section outline" }
+                },
+                "required": ["ref"]
+            }
         }),
         json!({
             "name": "list_sheets",

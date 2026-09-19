@@ -3,7 +3,10 @@
 //! | Canvas element                         | JSON Canvas                                  |
 //! |----------------------------------------|----------------------------------------------|
 //! | bound `StickyNote` / `Shape`           | `file` node (`file` + `subpath = "#^id"`), no text |
+//! | section-bound box (§3.9.2)             | `file` node, `subpath = "#Heading"`, `mnemonic.scope = "segment"` + `block_id` |
 //! | unbound `StickyNote` / `Shape`         | `text` node                                  |
+//! | `Entity` / `ClassBox` (§3.9.3)         | `text` node (readable form) + `mnemonic.kind = "entity"/"class"` data |
+//! | connector relation / outline / dashed  | `mnemonic.meta` on the edge                  |
 //! | `Frame`                                | `group` node                                 |
 //! | `DocCard`                              | `text` node + `mnemonic.kind = "doccard"`    |
 //! | `Connector` attached at both ends      | `edge`                                       |
@@ -17,7 +20,9 @@ use uuid::Uuid;
 
 use super::model::*;
 use crate::canvas::drawio::{parse_hex_color, to_hex_color};
-use crate::canvas::element::{BlockBinding, CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
+use crate::canvas::element::{
+    BindingScope, BlockBinding, CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind,
+};
 use crate::canvas::{tools, CanvasDocument, Viewport};
 
 /// Resolves the text of a bound block; `None` when the block doesn't exist.
@@ -27,6 +32,9 @@ const KIND_STICKY: &str = "sticky";
 const KIND_SHAPE: &str = "shape";
 const KIND_FRAME: &str = "frame";
 const KIND_DOCCARD: &str = "doccard";
+const KIND_ENTITY: &str = "entity";
+const KIND_CLASS: &str = "class";
+const SCOPE_SEGMENT: &str = "segment";
 
 /// Stroke color for edges/connectors that don't carry one.
 const DEFAULT_EDGE_COLOR: [f32; 3] = [0.45, 0.47, 0.50];
@@ -93,23 +101,11 @@ fn natural_sides(from: Rect, to: Rect) -> (&'static str, &'static str) {
 }
 
 fn shape_kind_name(kind: ShapeKind) -> &'static str {
-    match kind {
-        ShapeKind::Rectangle => "Rectangle",
-        ShapeKind::RoundedRect => "RoundedRect",
-        ShapeKind::Ellipse => "Ellipse",
-        ShapeKind::Diamond => "Diamond",
-        ShapeKind::CalloutBubble => "CalloutBubble",
-    }
+    kind.name()
 }
 
 fn shape_kind_from(name: Option<&str>) -> ShapeKind {
-    match name.unwrap_or("") {
-        "RoundedRect" => ShapeKind::RoundedRect,
-        "Ellipse" => ShapeKind::Ellipse,
-        "Diamond" => ShapeKind::Diamond,
-        "CalloutBubble" => ShapeKind::CalloutBubble,
-        _ => ShapeKind::Rectangle,
-    }
+    ShapeKind::from_name(name.unwrap_or(""))
 }
 
 fn routing_name(routing: ConnectorRouting) -> &'static str {
@@ -161,6 +157,7 @@ pub fn to_json_canvas(doc: &CanvasDocument, owner_note: Option<&str>) -> JsonCan
             pan: doc.viewport.pan,
             zoom: doc.viewport.zoom,
         }),
+        hidden_segments: doc.hidden_segments.clone(),
         ..Default::default()
     };
 
@@ -171,12 +168,15 @@ pub fn to_json_canvas(doc: &CanvasDocument, owner_note: Option<&str>) -> JsonCan
                 let rect = rect_i([pos[0], pos[1], pos[0] + size[0], pos[1] + size[1]]);
                 let mut node = bound_or_text_node(&id, rect, text, binding.as_ref(), owner_note, doc);
                 node.color = Some(to_hex_color(*color));
-                node.mnemonic = Some(JcNodeExt {
-                    kind: Some(KIND_STICKY.into()),
-                    color: Some(to_hex_color(*color)),
-                    z: Some(z),
-                    ..Default::default()
-                });
+                node.mnemonic = Some(with_binding_ext(
+                    JcNodeExt {
+                        kind: Some(KIND_STICKY.into()),
+                        color: Some(to_hex_color(*color)),
+                        z: Some(z),
+                        ..Default::default()
+                    },
+                    binding.as_ref(),
+                ));
                 jc.nodes.push(node);
             }
             CanvasElement::Shape {
@@ -192,13 +192,45 @@ pub fn to_json_canvas(doc: &CanvasDocument, owner_note: Option<&str>) -> JsonCan
             } => {
                 let mut node = bound_or_text_node(&id, rect_i(*rect), text, binding.as_ref(), owner_note, doc);
                 node.color = Some(to_hex_color(fill_color.unwrap_or(*stroke_color)));
+                node.mnemonic = Some(with_binding_ext(
+                    JcNodeExt {
+                        kind: Some(KIND_SHAPE.into()),
+                        shape: Some(shape_kind_name(*kind).into()),
+                        stroke_color: Some(to_hex_color(*stroke_color)),
+                        stroke_width: Some(*stroke_width),
+                        fill_color: fill_color.map(to_hex_color),
+                        text_color: text_color.map(to_hex_color),
+                        z: Some(z),
+                        ..Default::default()
+                    },
+                    binding.as_ref(),
+                ));
+                jc.nodes.push(node);
+            }
+            CanvasElement::Entity { rect, name, attributes, color, .. } => {
+                // A text node, so Obsidian shows the entity readably.
+                let mut node = JcNode::new(&id, NODE_TEXT, rect_i(*rect));
+                node.text = elem.edit_text();
+                node.color = Some(to_hex_color(*color));
                 node.mnemonic = Some(JcNodeExt {
-                    kind: Some(KIND_SHAPE.into()),
-                    shape: Some(shape_kind_name(*kind).into()),
-                    stroke_color: Some(to_hex_color(*stroke_color)),
-                    stroke_width: Some(*stroke_width),
-                    fill_color: fill_color.map(to_hex_color),
-                    text_color: text_color.map(to_hex_color),
+                    kind: Some(KIND_ENTITY.into()),
+                    title: Some(name.clone()),
+                    attributes: attributes.clone(),
+                    z: Some(z),
+                    ..Default::default()
+                });
+                jc.nodes.push(node);
+            }
+            CanvasElement::ClassBox { rect, name, annotation, attributes, methods, color, .. } => {
+                let mut node = JcNode::new(&id, NODE_TEXT, rect_i(*rect));
+                node.text = elem.edit_text();
+                node.color = Some(to_hex_color(*color));
+                node.mnemonic = Some(JcNodeExt {
+                    kind: Some(KIND_CLASS.into()),
+                    title: Some(name.clone()),
+                    annotation: (!annotation.is_empty()).then(|| annotation.clone()),
+                    members: attributes.clone(),
+                    methods: methods.clone(),
                     z: Some(z),
                     ..Default::default()
                 });
@@ -241,6 +273,7 @@ pub fn to_json_canvas(doc: &CanvasDocument, owner_note: Option<&str>) -> JsonCan
                 label,
                 arrow_end,
                 waypoints,
+                meta,
                 ..
             } => {
                 let from_rect = from_elem.and_then(|e| node_rects.get(&e).copied());
@@ -263,6 +296,7 @@ pub fn to_json_canvas(doc: &CanvasDocument, owner_note: Option<&str>) -> JsonCan
                             from_pos: Some(*from_pos),
                             to_pos: Some(*to_pos),
                             z: Some(z),
+                            meta: meta.clone(),
                             ..Default::default()
                         }),
                         extra: Default::default(),
@@ -280,6 +314,7 @@ pub fn to_json_canvas(doc: &CanvasDocument, owner_note: Option<&str>) -> JsonCan
                         arrow_end: *arrow_end,
                         waypoints: waypoints.clone(),
                         z: Some(z),
+                        meta: meta.clone(),
                     }),
                 }
             }
@@ -297,6 +332,31 @@ pub fn to_json_canvas(doc: &CanvasDocument, owner_note: Option<&str>) -> JsonCan
     jc
 }
 
+/// Records a section binding's scope and id in the node extension.
+fn with_binding_ext(mut ext: JcNodeExt, binding: Option<&BlockBinding>) -> JcNodeExt {
+    if let Some(b) = binding.filter(|b| b.is_segment()) {
+        ext.scope = Some(SCOPE_SEGMENT.into());
+        ext.block_id = Some(b.block_id.clone());
+    }
+    ext
+}
+
+/// Obsidian subpath of a bound node: a section whose text starts with a
+/// heading embeds as `#Heading` (the whole section, as Obsidian shows
+/// it); everything else as the block reference `#^id`.
+fn bound_subpath(binding: &BlockBinding, text: &str) -> String {
+    if binding.is_segment()
+        && let Some(first) = text.lines().next()
+        && crate::markdown::sections::heading_level(first).is_some()
+    {
+        let heading = first.trim_start().trim_start_matches('#').trim();
+        if !heading.is_empty() {
+            return format!("#{heading}");
+        }
+    }
+    binding.subpath()
+}
+
 /// `file` node (text omitted) for a bound element, `text` node otherwise.
 fn bound_or_text_node(
     id: &str,
@@ -310,7 +370,7 @@ fn bound_or_text_node(
         Some(b) => {
             let mut node = JcNode::new(id, NODE_FILE, rect);
             node.file = Some(bound_file(b, owner_note, doc));
-            node.subpath = Some(b.subpath());
+            node.subpath = Some(bound_subpath(b, text));
             node
         }
         None => {
@@ -337,6 +397,9 @@ pub fn from_json_canvas(
     let mut doc = CanvasDocument::new(title);
     if let Some(id) = jc.mnemonic.as_ref().and_then(|m| m.id.as_deref()).and_then(|s| Uuid::parse_str(s).ok()) {
         doc.id = id;
+    }
+    if let Some(m) = jc.mnemonic.as_ref() {
+        doc.hidden_segments = m.hidden_segments.clone();
     }
     if let Some(vp) = jc.mnemonic.as_ref().and_then(|m| m.viewport.as_ref()) {
         doc.viewport = Viewport {
@@ -400,6 +463,7 @@ pub fn from_json_canvas(
                 label: edge.label.clone().unwrap_or_default(),
                 arrow_end: edge.has_arrow_end(),
                 waypoints: ext.map(|m| m.waypoints.clone()).unwrap_or_default(),
+                meta: ext.map(|m| m.meta.clone()).unwrap_or_default(),
             },
         ));
     }
@@ -422,6 +486,7 @@ pub fn from_json_canvas(
                     label: c.label.clone().unwrap_or_default(),
                     arrow_end: c.arrow_end,
                     waypoints: c.waypoints.clone(),
+                    meta: c.meta.clone(),
                 },
             ));
         }
@@ -489,9 +554,11 @@ fn node_to_element(
         }
     };
 
+    let is_segment = ext.and_then(|m| m.scope.as_deref()) == Some(SCOPE_SEGMENT);
+    let ext_block_id = ext.and_then(|m| m.block_id.as_deref()).filter(|id| !id.is_empty());
     match node.kind() {
         JcNodeKind::File { file, subpath } => {
-            if let Some(block_id) = node.block_ref() {
+            if let Some(block_id) = ext_block_id.or_else(|| node.block_ref()) {
                 // Local when it names the owning note (or the title-derived fallback
                 // `bound_file` writes when no owner is known).
                 let is_local = file.is_empty()
@@ -500,6 +567,7 @@ fn node_to_element(
                 let binding = BlockBinding {
                     file: (!is_local).then(|| file.to_string()),
                     block_id: block_id.to_string(),
+                    scope: if is_segment { BindingScope::Segment } else { BindingScope::Block },
                 };
                 let text = resolve(&binding).unwrap_or_default();
                 return Some(sticky_or_shape(text, Some(binding)));
@@ -522,6 +590,31 @@ fn node_to_element(
             })
         }
         JcNodeKind::Text { text } => {
+            let color = node_color.unwrap_or(tools::PALETTE_STROKE_LIGHT);
+            if kind == Some(KIND_ENTITY) {
+                let (text_name, text_attrs) = crate::canvas::diagram_kinds::entity_from_text(text);
+                let m = ext?;
+                return Some(CanvasElement::Entity {
+                    id,
+                    rect,
+                    name: m.title.clone().unwrap_or(text_name),
+                    attributes: if m.attributes.is_empty() { text_attrs } else { m.attributes.clone() },
+                    color,
+                });
+            }
+            if kind == Some(KIND_CLASS) {
+                let m = ext?;
+                let (text_name, ..) = crate::canvas::diagram_kinds::class_from_text(text);
+                return Some(CanvasElement::ClassBox {
+                    id,
+                    rect,
+                    name: m.title.clone().unwrap_or(text_name),
+                    annotation: m.annotation.clone().unwrap_or_default(),
+                    attributes: m.members.clone(),
+                    methods: m.methods.clone(),
+                    color,
+                });
+            }
             if kind == Some(KIND_DOCCARD) {
                 let m = ext?;
                 return Some(CanvasElement::DocCard {

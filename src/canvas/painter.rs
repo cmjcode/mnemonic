@@ -1,11 +1,15 @@
-//! Rendering engine for whiteboard elements.
+//! Rendering engine for whiteboard elements. Bound boxes draw their
+//! Markdown via `painter_content` (§3.9.2); diagram shapes, entities,
+//! classes and relation markers via `painter_diagram` (§3.9.3).
+//! Callers: `app::editor::canvas_surface`.
 
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, StrokeKind,
+    Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Stroke, StrokeKind,
     Vec2,
 };
 
 use super::element::{CanvasElement, ConnectorRouting, ShapeKind};
+use super::{painter_content, painter_diagram};
 use super::viewport::Viewport;
 use crate::ui::theme;
 
@@ -168,6 +172,7 @@ pub fn draw_element(
             fill_color,
             text,
             text_color,
+            binding,
             ..
         } => {
             let world_rect = Rect::from_min_max(Pos2::new(rect[0], rect[1]), Pos2::new(rect[2], rect[3]));
@@ -180,6 +185,7 @@ pub fn draw_element(
             // A zero stroke width means "no border" (e.g. Draw.io text cells).
             let stroke_w = if *stroke_width <= 0.0 { 0.0 } else { stroke_w };
 
+            let mut label_rect = screen_rect;
             match kind {
                 ShapeKind::Rectangle => {
                     painter.rect_filled(screen_rect, CornerRadius::ZERO, fill);
@@ -236,16 +242,48 @@ pub fn draw_element(
                         (stroke_w, stroke_c),
                     ));
                 }
+                other => {
+                    label_rect =
+                        painter_diagram::draw_shape(painter, *other, screen_rect, fill, Stroke::new(stroke_w, stroke_c));
+                }
             }
 
-            // Shape inner text: wrapped to the shape width and clipped to its bounds.
-            if !text.is_empty() {
+            // Shape inner text: a bound box shows its Markdown (headings,
+            // lists, tables, diagrams); a plain shape a centred label.
+            if !text.is_empty() && label_rect.is_positive() {
                 let text_color = text_color
                     .map(|c| color_from_rgb(c, 255))
                     .or_else(|| fill_color.map(contrasting_text_color))
                     .unwrap_or(if is_dark { Color32::WHITE } else { Color32::BLACK });
-                draw_wrapped_label(painter, screen_rect, text, 13.5 * viewport.zoom, text_color);
+                if binding.is_some() {
+                    let inner = screen_rect.shrink(10.0 * viewport.zoom);
+                    painter_content::draw_box_content(painter, inner, text, viewport.zoom, text_color, is_dark);
+                } else {
+                    draw_wrapped_label(painter, label_rect, text, 13.5 * viewport.zoom, text_color);
+                }
             }
+        }
+
+        CanvasElement::Entity { rect, name, attributes, color, .. } => {
+            let world_rect = Rect::from_min_max(Pos2::new(rect[0], rect[1]), Pos2::new(rect[2], rect[3]));
+            let screen_rect = viewport.world_rect_to_screen(world_rect, origin);
+            painter_diagram::draw_entity(painter, screen_rect, name, attributes, *color, viewport.zoom, is_dark);
+        }
+
+        CanvasElement::ClassBox { rect, name, annotation, attributes, methods, color, .. } => {
+            let world_rect = Rect::from_min_max(Pos2::new(rect[0], rect[1]), Pos2::new(rect[2], rect[3]));
+            let screen_rect = viewport.world_rect_to_screen(world_rect, origin);
+            painter_diagram::draw_class(
+                painter,
+                screen_rect,
+                name,
+                annotation,
+                attributes,
+                methods,
+                *color,
+                viewport.zoom,
+                is_dark,
+            );
         }
 
         CanvasElement::StickyNote {
@@ -287,18 +325,7 @@ pub fn draw_element(
             // long bound paragraphs never spill past the edge.
             let text_rect = screen_rect.shrink(10.0 * viewport.zoom);
             let text_color = Color32::from_rgb(35, 38, 45);
-            let font_size = quantize_font_size((13.0 * viewport.zoom).clamp(8.0, 20.0));
-            if font_size >= MIN_READABLE_FONT && text_rect.width() > 2.0 && text_rect.height() > 2.0 {
-                let galley = painter.layout(
-                    text.to_owned(),
-                    FontId::proportional(font_size),
-                    text_color,
-                    text_rect.width(),
-                );
-                painter
-                    .with_clip_rect(text_rect.intersect(painter.clip_rect()))
-                    .galley(text_rect.min, galley, text_color);
-            }
+            painter_content::draw_box_content(painter, text_rect, text, viewport.zoom, text_color, false);
         }
 
         CanvasElement::DocCard {
@@ -375,21 +402,32 @@ pub fn draw_element(
             label,
             arrow_end,
             waypoints,
+            meta,
             ..
         } => {
             let to_screen = |p: &[f32; 2]| viewport.world_to_screen(Pos2::new(p[0], p[1]), origin);
             let start = to_screen(from_pos);
             let end = to_screen(to_pos);
-            let stroke_c = color_from_rgb(*stroke_color, 255);
-            let stroke_w = (*stroke_width * viewport.zoom).max(1.5);
+            // Outline (mind-map) edges are quieter than drawn connectors.
+            let alpha = if meta.outline { 150 } else { 255 };
+            let stroke_c = color_from_rgba_unmultiplied(*stroke_color, alpha);
+            let stroke_w = (*stroke_width * viewport.zoom).max(if meta.outline { 1.0 } else { 1.5 });
+            let dashed = meta.dashed
+                || match &meta.relation {
+                    Some(crate::canvas::diagram_kinds::EdgeRelation::Er { identifying, .. }) => !identifying,
+                    Some(crate::canvas::diagram_kinds::EdgeRelation::Class { kind, .. }) => kind.is_dashed(),
+                    None => false,
+                };
 
             let mut path: Vec<Pos2> = Vec::with_capacity(waypoints.len() + 4);
             path.push(start);
             path.extend(waypoints.iter().map(to_screen));
             path.push(end);
 
+            let stroke = Stroke::new(stroke_w, stroke_c);
+            let mut marker_path = path.clone();
             match routing {
-                ConnectorRouting::Curved if waypoints.is_empty() => {
+                ConnectorRouting::Curved if waypoints.is_empty() && !dashed => {
                     let ctrl = Pos2::new(
                         (start.x + end.x) * 0.5,
                         start.y.min(end.y) - 30.0 * viewport.zoom,
@@ -398,23 +436,35 @@ pub fn draw_element(
                         [start, ctrl, end],
                         false,
                         Color32::TRANSPARENT,
-                        (stroke_w, stroke_c),
+                        stroke,
                     );
                     painter.add(shape);
-                    // Arrow direction follows the curve tangent at the end.
+                    // Markers follow the curve tangents at both ends.
+                    marker_path = vec![start, ctrl, end];
                     path = vec![ctrl, end];
                 }
                 ConnectorRouting::Orthogonal => {
                     path = orthogonal_path(&path);
-                    painter.add(egui::Shape::line(path.clone(), (stroke_w, stroke_c)));
+                    marker_path = path.clone();
+                    if dashed {
+                        painter_diagram::draw_dashed(painter, &path, stroke, viewport.zoom);
+                    } else {
+                        painter.add(egui::Shape::line(path.clone(), stroke));
+                    }
                 }
+                _ if dashed => painter_diagram::draw_dashed(painter, &path, stroke, viewport.zoom),
                 _ => {
-                    painter.add(egui::Shape::line(path.clone(), (stroke_w, stroke_c)));
+                    painter.add(egui::Shape::line(path.clone(), stroke));
                 }
             }
 
+            let bg = if is_dark { Color32::from_rgb(24, 26, 32) } else { Color32::WHITE };
+            if let Some(relation) = &meta.relation {
+                painter_diagram::draw_relation_markers(painter, &marker_path, relation, stroke, bg, viewport.zoom);
+            }
+
             // Draw arrowhead at end, aligned with the last segment
-            if *arrow_end && path.len() >= 2 {
+            if *arrow_end && meta.relation.is_none() && path.len() >= 2 {
                 let tip = path[path.len() - 1];
                 let before = path[..path.len() - 1]
                     .iter()

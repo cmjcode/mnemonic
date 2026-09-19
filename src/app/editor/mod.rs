@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use egui::{Frame, Id, Margin, RichText, Vec2};
 use uuid::Uuid;
 
+mod canvas_edit;
+mod canvas_io;
 mod canvas_surface;
 mod live;
 mod panel;
@@ -161,10 +163,12 @@ impl MnemonicApp {
                 .frame(egui::Frame::NONE)
                 .show_separator_line(true)
                 .show(ui, |ui| {
+                    let orphans = editor.orphans().clone();
                     if let Some(canvas) = editor.canvas.as_mut() {
                         outcome = Some(show_canvas_surface(
                             canvas,
                             &mut editor.canvas_interaction,
+                            &orphans,
                             ui,
                             p.is_dark,
                             tr,
@@ -172,16 +176,17 @@ impl MnemonicApp {
                     }
                 });
             if let Some(outcome) = outcome {
-                canvas_toast = apply_canvas_outcome(&mut editor, outcome);
+                canvas_toast = apply_canvas_outcome(&mut editor, outcome, tr);
             }
         }
 
         if editor.mode == EditorMode::Edgeless {
             editor.ensure_canvas();
+            let orphans = editor.orphans().clone();
             if let Some(canvas) = editor.canvas.as_mut() {
                 let outcome =
-                    show_canvas_surface(canvas, &mut editor.canvas_interaction, ui, p.is_dark, tr);
-                canvas_toast = apply_canvas_outcome(&mut editor, outcome);
+                    show_canvas_surface(canvas, &mut editor.canvas_interaction, &orphans, ui, p.is_dark, tr);
+                canvas_toast = apply_canvas_outcome(&mut editor, outcome, tr);
             }
             self.editor_ui.popup_visible = false;
         } else {

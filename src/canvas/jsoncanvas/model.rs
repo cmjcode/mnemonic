@@ -9,6 +9,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
+use crate::canvas::diagram_kinds::{ConnectorMeta, EntityAttr};
+
 /// Top-level `.canvas` document: `{"nodes":[...],"edges":[...]}`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct JsonCanvas {
@@ -181,6 +183,23 @@ pub struct JcNodeExt {
     /// Position in the document's z-order (elements are sorted by it on import).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub z: Option<usize>,
+    /// `"segment"` for a section binding (§3.9.1); absent = block binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Anchor id of a bound node, authoritative over `subpath` (a section
+    /// node's subpath is its heading, which a rename changes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<String>,
+    // --- entity ---
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<EntityAttr>,
+    // --- class ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
     pub extra: Map<String, Value>,
 }
@@ -240,6 +259,8 @@ pub struct JcEdgeExt {
     pub to_pos: Option<[f32; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub z: Option<usize>,
+    #[serde(default, skip_serializing_if = "ConnectorMeta::is_default")]
+    pub meta: ConnectorMeta,
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
     pub extra: Map<String, Value>,
 }
@@ -257,6 +278,9 @@ pub struct JcExtension {
     pub strokes: Vec<JcStroke>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewport: Option<JcViewport>,
+    /// Section ids removed from the canvas (kept out of the outline sync).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_segments: Vec<String>,
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
     pub extra: Map<String, Value>,
 }
@@ -267,6 +291,7 @@ impl JcExtension {
             && self.free_connectors.is_empty()
             && self.strokes.is_empty()
             && self.viewport.is_none()
+            && self.hidden_segments.is_empty()
             && self.extra.is_empty()
     }
 }
@@ -295,6 +320,8 @@ pub struct JcFreeConnector {
     pub waypoints: Vec<[f32; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub z: Option<usize>,
+    #[serde(default, skip_serializing_if = "ConnectorMeta::is_default")]
+    pub meta: ConnectorMeta,
 }
 
 /// A freehand stroke.

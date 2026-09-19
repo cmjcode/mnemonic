@@ -2,21 +2,26 @@
 id: 08a9b0c1-d2e3-4567-89ab-cdef01234567
 title: Database Schema
 type: note
-created: 2026-08-20T09:00:00+07:00
-modified: 2026-09-16T11:30:00+07:00
+created: 2026-08-20T02:00:00+00:00
+modified: 2026-09-19T07:17:08.201746+00:00
 pinned: false
 color: default
-tags: [database, schema, backend]
-aliases: [DB Schema, Skema Database]
+tags:
+- database
+- schema
+- backend
+aliases:
+- DB Schema
+- Skema Database
 archived: false
 trashed: false
 ---
 
-# 🗄️ Database Schema — Platform AI
+# 🗄️ Database Schema — Platform AI ^5x2geb
 
-Skema database untuk [[Proyek Startup AI]]. Arsitektur lengkap di [[Arsitektur Microservice]].
+Skema database untuk [[Proyek Startup AI]]. Arsitektur lengkap di [[Arsitektur Microservice]]. ^tr0twt
 
-## ER Diagram
+## ER Diagram ^k8cutd
 
 ```mermaid
 erDiagram
@@ -100,13 +105,13 @@ erDiagram
     }
 ```
 
-## Tabel SQLite Index
+## Tabel SQLite Index ^zmd151
 
-> [!note] Index ≠ Source of Truth
-> SQLite hanya menyimpan **index cache**. Source of truth selalu file `.md`
-> di disk. Index bisa dihapus dan dibangun ulang kapan saja.
+> [!note] Index ≠ Source of Truth ^vd3lik
+> SQLite hanya menyimpan **index cache**. Source of truth selalu file `.md` ^bfxt26
+> di disk. Index bisa dihapus dan dibangun ulang kapan saja. ^o3sjqo
 
-### `notes_index`
+### `notes_index` ^0vwm5f
 
 ```sql
 CREATE TABLE notes_index (
@@ -129,7 +134,7 @@ CREATE INDEX idx_notes_folder ON notes_index(folder);
 CREATE INDEX idx_notes_modified ON notes_index(modified DESC);
 ```
 
-### `chunks` + FTS5
+### `chunks` + FTS5 ^2ucjph
 
 ```sql
 CREATE TABLE chunks (
@@ -157,7 +162,7 @@ CREATE VIRTUAL TABLE chunks_vec USING vec0(
 );
 ```
 
-### `links`
+### `links` ^cnmwoy
 
 ```sql
 CREATE TABLE links (
@@ -172,9 +177,9 @@ CREATE TABLE links (
 CREATE INDEX idx_links_target ON links(target_title);
 ```
 
-## Query Patterns
+## Query Patterns ^2a97cq
 
-### Hybrid Search (RRF)
+### Hybrid Search (RRF) ^x8uk99
 
 ```sql
 -- 1. Keyword search via FTS5
@@ -195,7 +200,7 @@ ORDER BY distance;
 -- 3. Combine with RRF in application layer
 ```
 
-### Backlinks Query
+### Backlinks Query ^tc8le5
 
 ```sql
 SELECT n.id, n.title, n.path, l.line_number
@@ -206,6 +211,6 @@ WHERE l.target_title = ? COLLATE NOCASE
 ORDER BY n.modified DESC;
 ```
 
-Lihat juga: [[Arsitektur Microservice#Entity Relationship — Data Model]]
+Lihat juga: [[Arsitektur Microservice#Entity Relationship — Data Model]] ^kgr579
 
-#database #schema #backend #SQL
+#database #schema #backend #SQL ^85a64a

@@ -44,6 +44,8 @@ stderr and exit non-zero; stdout carries only results. Logs go to stderr
 | `diagram list <REF>` | Every ```` ```mermaid ```` fence of a note: index, fence line, type, source, diagnostics. |
 | `diagram validate (--file F \| --stdin \| --note REF [--index N])` | Syntax check; exits non-zero on errors. `--file`/`--stdin` need no vault. |
 | `diagram render (--file F \| --stdin \| --note REF [--index N]) [--out F] [--dark]` | Render to SVG (stdout, or `--out`; `--json` wraps it with size and diagnostics). |
+| `canvas sections <REF>` | The note's section segments — the boxes its canvas shows: `id` (anchor, `null` until the note is opened as a canvas), `kind` (`section`/`table`/`mermaid`/`code`/`text`), `level`, `parent` (section id), 1-based `line`/`end_line`, `summary`. |
+| `canvas mermaid <REF> [--mindmap] [--out F]` | The note's canvas as Mermaid, one diagram per family (see "Section canvas" below). Read-only. Prints the fences (or writes them to `--out`); `--json` gives `{path, has_sidecar, diagrams: [{kind, source}], warnings, markdown}`. |
 | `sheets list` | Every CSV/TSV (editable) and XLSX/XLSM/XLSB/XLS/ODS (read-only) file in the vault. |
 | `sheets read <SHEET> [--sheet W] [--offset N] [--limit N]` | Headers, a page of rows (1-based `row` numbers) and per-column stats. `--sheet` picks a worksheet (name or 0-based index). |
 | `sheets query <SHEET> [--where COL:OP:VALUE]... [--column C]... [--sort C] [--desc] [--limit N]` | Filter (all conditions AND) + sort + project; `columns` stats cover every matched row. OP: `eq ne contains not_contains gt gte lt lte empty not_empty`. |
@@ -142,6 +144,8 @@ holding the same JSON the CLI prints):
 | `list_diagrams` | `ref` |
 | `validate_diagram` | `source?` or `ref` + `index?` (0) |
 | `render_diagram` | `source?` or `ref` + `index?` (0), `dark?` (false) |
+| `list_sections` | `ref` |
+| `export_canvas_mermaid` | `ref`, `mindmap?` (false) |
 | `list_sheets` | – |
 | `read_sheet` | `ref`, `sheet?`, `offset?` (0), `limit?` (100) |
 | `query_sheet` | `ref`, `sheet?`, `filters?` (`[{column, op?, value?}]`), `columns?`, `sort_by?`, `descending?`, `limit?` (100) |
@@ -275,9 +279,39 @@ A note may carry a diagram layer in `<Title>.canvas` next to `<Title>.md`, in th
   paragraphs appended to the note); other vertices stay diagram-only. Export writes
   `mnemonicBlock=<id>` into the style of bound vertices.
 - Renaming, trashing, restoring and deleting a note moves its sidecar with it.
-- To turn any note into a diagram, open it in the app in "Text + Diagram" mode:
-  every block gets an anchor and one node; or create the sidecar yourself with
-  `file` nodes pointing at anchors you added.
+- To turn any note into a diagram, open it in the app in "Text + Diagram" mode
+  (see "Section canvas"); or create the sidecar yourself with `file` nodes
+  pointing at anchors you added.
+
+### Section canvas (spec §3.9)
+
+Opening a plain note as a canvas gives one box per **section segment**: a
+heading with its own prose (up to the next heading, table or fence), each
+table, each ```` ```mermaid ```` / code fence, and prose that follows a
+component. Segments never overlap. Anchors: ` ^id` at the end of the heading
+line, at the end of the last line of trailing prose, and on a line of its own
+right below a table or fence. Boxes are laid out as a mind map following the
+heading nesting (edges with `mnemonic.meta.outline: true`).
+
+- Section nodes are `file` nodes with `subpath: "#Heading text"` (Obsidian
+  embeds the whole section) plus `"mnemonic": {"scope": "segment",
+  "block_id": "<id>"}`; the id is authoritative (a renamed heading still
+  resolves). Tables and fences use `subpath: "#^id"`.
+- Add a section as an agent by writing Markdown (a new heading with text); the
+  app anchors it and adds its box on the next save. Removing a section's
+  Markdown leaves its box marked as an orphan; nothing is deleted silently.
+- Boxes removed from the canvas are listed in `mnemonic.hidden_segments`.
+- Entity (`mnemonic.kind: "entity"`, `attributes: [{ty, name, keys, comment}]`)
+  and class (`"class"`, `annotation`, `members`, `methods`) nodes are `text`
+  nodes whose text is a readable form of the same data. Edges may carry
+  `mnemonic.meta.relation`: `{"type":"er","from":"exactly_one","to":"zero_or_more","identifying":true}`
+  or `{"type":"class","kind":"inheritance","card_from":"1","card_to":"*"}`,
+  and `mnemonic.meta.dashed`.
+- `export_canvas_mermaid` returns one diagram per family: `flowchart`
+  (boxes, shapes, frames as subgraphs, `click … href "[[Note#^id]]"`),
+  `erDiagram`, `classDiagram`, `stateDiagram-v2` (shapes connected to a `[*]`
+  dot), `embedded` (a fence box, copied verbatim) and, with `mindmap`, a
+  `mindmap` of the outline. Everything it returns passes `validate_diagram`.
 
 
 ## Mermaid diagrams
@@ -285,7 +319,7 @@ A note may carry a diagram layer in `<Title>.canvas` next to `<Title>.md`, in th
 Structured diagrams belong in the note itself, as ```` ```mermaid ```` fences
 (the same syntax Obsidian and GitHub render). MNEMONIC parses and draws them
 natively (spec §3.7). Rendered types: flowchart/graph, sequence, class, state,
-ER, pie; other Mermaid types are recognised and shown as source until
+ER, pie, mindmap; other Mermaid types are recognised and shown as source until
 supported (`supported: false` in the JSON).
 
 Recommended agent loop: write the diagram text, run `validate_diagram`

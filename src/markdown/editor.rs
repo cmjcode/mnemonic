@@ -15,10 +15,14 @@ use egui_commonmark::CommonMarkCache;
 
 use std::path::{Path, PathBuf};
 
-use crate::canvas::{BlockBinding, CanvasDocument, InteractionState};
+use std::collections::HashSet;
+
+use crate::canvas::{BindingScope, BlockBinding, CanvasDocument, CanvasElementId, InteractionState};
 use crate::notes::Note;
 
-use super::blocks;
+use super::{blocks, sections};
+
+mod canvas_sync;
 
 use super::live_blocks::LiveBlock;
 use super::renderer::{self, Heading, LiveParams, RenderCache, RenderOutcome};
@@ -151,6 +155,8 @@ pub struct MarkdownEditor {
     pub is_editing_title: bool,
     /// Working buffer during inline title editing.
     pub title_edit_buffer: String,
+    /// Section boxes whose segment no longer exists (§3.9.2).
+    orphans: HashSet<CanvasElementId>,
 }
 
 impl MarkdownEditor {
@@ -218,6 +224,7 @@ impl MarkdownEditor {
             canvas_interaction,
             is_editing_title: false,
             title_edit_buffer: title,
+            orphans: HashSet::new(),
         }
     }
 
@@ -263,24 +270,22 @@ impl MarkdownEditor {
     }
 
     /// Ensure the canvas document exists. A plain note (no diagram layer
-    /// yet) becomes a diagram-bound note: every block gets an anchor, one
-    /// node per block, and the layer is stored as a `.canvas` sidecar from
-    /// the next save (§Fase 3).
+    /// yet) becomes a section canvas: every section / table / fence gets an
+    /// anchor and one box, laid out as a mind map, stored as a `.canvas`
+    /// sidecar from the next save (§3.9.2).
     pub fn ensure_canvas(&mut self) -> &mut CanvasDocument {
         if self.canvas.is_none() {
             let canvas = match self.canvas_storage {
                 CanvasStorage::Sidecar => load_sidecar(&self.note, self.vault_root.as_deref())
                     .unwrap_or_else(|| CanvasDocument::new(&self.note.frontmatter.title)),
                 CanvasStorage::Markdown => {
-                    let (body, anchors) = blocks::anchor_all_blocks(&self.note.body);
-                    if body != self.note.body {
-                        self.set_body(body);
-                    }
+                    let doc = self.build_section_canvas();
                     self.canvas_storage = CanvasStorage::Sidecar;
                     self.sidecar_dirty = true;
                     self.dirty = true;
                     self.pending_since = Some(Instant::now());
-                    CanvasDocument::from_bound_blocks(&self.note.frontmatter.title, &anchors)
+                    self.canvas_interaction.pending_fit = true;
+                    doc
                 }
                 _ => CanvasDocument::from_markdown_body(
                     &self.note.frontmatter.title,
@@ -390,7 +395,9 @@ impl MarkdownEditor {
         resolve_binding_text(&self.note, self.vault_root.as_deref(), binding)
     }
 
-    /// After a Markdown edit: re-derive the text of bound nodes.
+    /// After a Markdown edit: re-derive the text of bound nodes (except the
+    /// one being typed in, whose buffer is ahead of the body) and, for a
+    /// section canvas, its boxes and outline edges.
     fn refresh_canvas_from_body(&mut self) {
         if !self.canvas_storage.is_sidecar() {
             return;
@@ -398,7 +405,9 @@ impl MarkdownEditor {
         let Some(mut canvas) = self.canvas.take() else {
             return;
         };
-        let changed = canvas.refresh_bound_text(&|b| self.resolve_binding(b));
+        let editing = self.canvas_interaction.editing_text_elem;
+        let mut changed = canvas.refresh_bound_text_except(&|b| self.resolve_binding(b), editing);
+        changed |= self.reconcile_segments(&mut canvas);
         if changed {
             self.sidecar_dirty = true;
         }
@@ -428,29 +437,15 @@ impl MarkdownEditor {
     }
 
     /// Mark canvas as dirty and schedule debounced sync/autosave. For a
-    /// sidecar note the Markdown is the source of truth for text: edited
-    /// bound nodes write their text back into their blocks, geometry goes
-    /// to the sidecar on save.
+    /// sidecar note the Markdown is the source of truth for text: an edited
+    /// bound node writes back through `write_back_element` (only that
+    /// node, so a stale copy can never overwrite newer Markdown); geometry
+    /// goes to the sidecar on save.
     pub fn mark_dirty_canvas(&mut self) {
         let Some(canvas) = &self.canvas else {
             return;
         };
         if self.canvas_storage.is_sidecar() {
-            let mut body = self.note.body.clone();
-            for elem in &canvas.elements {
-                let (Some(binding), Some(text)) = (elem.binding(), elem.text()) else {
-                    continue;
-                };
-                if binding.file.is_some() {
-                    continue; // another note's block: edit it there
-                }
-                if let Some(updated) = blocks::replace_block_text(&body, &binding.block_id, text) {
-                    body = updated;
-                }
-            }
-            if body != self.note.body {
-                self.set_body(body);
-            }
             self.sidecar_dirty = true;
             self.dirty = true;
             self.pending_since = Some(Instant::now());
@@ -513,6 +508,7 @@ impl MarkdownEditor {
         self.dirty = true;
         self.pending_since = Some(Instant::now());
         self.render_cache.invalidate();
+        self.refresh_canvas_from_body();
         true
     }
 
@@ -527,6 +523,7 @@ impl MarkdownEditor {
         self.dirty = true;
         self.pending_since = Some(Instant::now());
         self.render_cache.invalidate();
+        self.refresh_canvas_from_body();
         true
     }
 
@@ -571,6 +568,9 @@ impl MarkdownEditor {
         if self.mode.shows_canvas() || (self.canvas_storage.is_drawio() && self.canvas.is_some()) {
             self.sync_canvas_to_body();
         }
+        // New sections typed in the Markdown get their anchor (and box)
+        // now, at idle time, never mid-keystroke (§3.9.2).
+        self.anchor_new_segments();
         // `Note::save` stamps `modified` on the copy it writes; mirror that
         // here so sorting by "last modified" is right without a rescan.
         self.note.frontmatter.modified = chrono::Utc::now();
@@ -777,15 +777,19 @@ fn load_sidecar(note: &Note, vault_root: Option<&Path>) -> Option<CanvasDocument
 /// Text of the block `binding` points at: in `note` itself, or in the
 /// vault note named by `binding.file`.
 fn resolve_binding_text(note: &Note, vault_root: Option<&Path>, binding: &BlockBinding) -> Option<String> {
+    let text_in = |body: &str| match binding.scope {
+        BindingScope::Block => blocks::block_text(body, &binding.block_id),
+        BindingScope::Segment => sections::segment_text(body, &binding.block_id),
+    };
     match &binding.file {
-        None => blocks::block_text(&note.body, &binding.block_id),
+        None => text_in(&note.body),
         Some(file) => {
             let path = vault_root.map(|r| r.join(file))?;
             if path == note.path {
-                return blocks::block_text(&note.body, &binding.block_id);
+                return text_in(&note.body);
             }
             let other = Note::load(&path).ok()?;
-            blocks::block_text(&other.body, &binding.block_id)
+            text_in(&other.body)
         }
     }
 }
@@ -818,10 +822,11 @@ mod tests {
 
     #[test]
     fn edgeless_mode_and_canvas_initialization() {
+        // One section box: the heading owns the task under it.
         let (_dir, mut editor) = editor_with_body("# Title\n\n- [ ] Task 1");
         editor.mode = EditorMode::Edgeless;
         let canvas = editor.ensure_canvas();
-        assert_eq!(canvas.elements.len(), 2);
+        assert_eq!(canvas.elements.len(), 1);
     }
 
     fn rect_of(elem: &crate::canvas::CanvasElement) -> egui::Rect {
@@ -882,7 +887,7 @@ mod tests {
 
         // Canvas → Markdown.
         editor.canvas.as_mut().unwrap().get_element_mut(id).unwrap().set_text("Teks dari kanvas".into());
-        editor.sync_canvas_to_body();
+        editor.write_back_element(id, true);
         assert_eq!(
             crate::markdown::blocks::block_text(&editor.note.body, &block_id).as_deref(),
             Some("Teks dari kanvas")
@@ -896,13 +901,13 @@ mod tests {
             Some("Teks dari markdown")
         );
 
-        // A plain note opened as a diagram gets its blocks bound.
-        let plain = Note::create(dir.path(), "Polos", "# Judul\n\nSatu paragraf.\n\n- item\n").unwrap();
+        // A plain note opened as a diagram gets its sections bound.
+        let plain = Note::create(dir.path(), "Polos", "Pembuka.\n\n# Judul\n\nSatu paragraf.\n\n- item\n").unwrap();
         let mut e2 = MarkdownEditor::open_in(plain, Some(dir.path()));
         assert_eq!(e2.canvas_storage(), CanvasStorage::Markdown);
         e2.ensure_canvas();
         assert_eq!(e2.canvas_storage(), CanvasStorage::Sidecar);
-        assert_eq!(e2.canvas.as_ref().unwrap().elements.len(), 3);
+        assert_eq!(e2.canvas.as_ref().unwrap().elements.len(), 2);
         assert!(e2.canvas.as_ref().unwrap().elements.iter().all(|e| e.is_bound()));
         e2.autosave().unwrap();
         assert!(e2.note.sidecar_path().exists());

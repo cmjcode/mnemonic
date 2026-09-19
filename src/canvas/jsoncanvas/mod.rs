@@ -55,8 +55,21 @@ impl CanvasDocument {
     /// Re-derive the text of every bound element from the markdown. Elements whose
     /// block no longer resolves keep their current text. Returns whether anything changed.
     pub fn refresh_bound_text(&mut self, resolve: &BlockResolver<'_>) -> bool {
+        self.refresh_bound_text_except(resolve, None)
+    }
+
+    /// [`Self::refresh_bound_text`], leaving `skip` (the element being
+    /// typed in, whose buffer is ahead of the Markdown) alone.
+    pub fn refresh_bound_text_except(
+        &mut self,
+        resolve: &BlockResolver<'_>,
+        skip: Option<super::CanvasElementId>,
+    ) -> bool {
         let mut changed = false;
         for elem in &mut self.elements {
+            if Some(elem.id()) == skip {
+                continue;
+            }
             let Some(binding) = elem.binding() else { continue };
             let Some(new_text) = resolve(binding) else { continue };
             if elem.text() != Some(new_text.as_str()) {

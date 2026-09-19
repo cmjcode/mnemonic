@@ -44,6 +44,12 @@ fn fingerprint(e: &CanvasElement) -> String {
         CanvasElement::FreehandStroke { points, color, width, .. } => {
             format!("freehand {points:?} {:?} {width}", c8(color))
         }
+        CanvasElement::Entity { rect, name, attributes, color, .. } => {
+            format!("entity {rect:?} {name:?} {attributes:?} {:?}", c8(color))
+        }
+        CanvasElement::ClassBox { rect, name, annotation, attributes, methods, color, .. } => {
+            format!("class {rect:?} {name:?} {annotation:?} {attributes:?} {methods:?} {:?}", c8(color))
+        }
         CanvasElement::Connector {
             from_elem, to_elem, from_pos, to_pos, routing, stroke_color, stroke_width, label, arrow_end, waypoints, ..
         } => format!(
@@ -87,6 +93,7 @@ fn full_document() -> CanvasDocument {
         label: "dangling".to_string(),
         arrow_end: false,
         waypoints: Vec::new(),
+        meta: Default::default(),
     });
     doc.add_element(CanvasElement::Frame {
         id: CanvasElementId::new(),
@@ -146,6 +153,7 @@ fn full_document() -> CanvasDocument {
         label: "a→b".to_string(),
         arrow_end: true,
         waypoints: vec![[200.0, 20.0], [560.0, 20.0]],
+        meta: Default::default(),
     });
     doc
 }

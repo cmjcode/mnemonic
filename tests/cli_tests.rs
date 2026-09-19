@@ -272,6 +272,63 @@ fn diagram_list_reads_note_fences() {
 }
 
 #[test]
+fn canvas_sections_and_mermaid_export() {
+    let v = vault();
+    write(
+        v.path(),
+        "Proyek.md",
+        "# Produk\nVisi.\n\n## Data\n\n| Tabel | Kolom |\n|---|---|\n\n```mermaid\nerDiagram\n  A ||--o{ B : has\n```\n\n## Tim\nOrang.\n",
+    );
+    let sections = run_json(v.path(), &["canvas", "sections", "Proyek"]);
+    let kinds: Vec<&str> =
+        sections["sections"].as_array().unwrap().iter().map(|s| s["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, vec!["section", "section", "table", "mermaid", "section"]);
+
+    let export = run_json(v.path(), &["canvas", "mermaid", "Proyek", "--mindmap"]);
+    let kinds: Vec<&str> =
+        export["diagrams"].as_array().unwrap().iter().map(|d| d["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, vec!["flowchart", "embedded", "mindmap"]);
+    assert!(export["markdown"].as_str().unwrap().contains("```mermaid\nerDiagram"));
+    // Read-only: no anchors written, no sidecar created.
+    assert!(!std::fs::read_to_string(v.path().join("Proyek.md")).unwrap().contains(" ^"));
+    assert!(!v.path().join("Proyek.canvas").exists());
+
+    let out_file = v.path().join("out.md");
+    run_ok(v.path(), &["canvas", "mermaid", "Proyek", "--out", out_file.to_str().unwrap()]);
+    let written = std::fs::read_to_string(&out_file).unwrap();
+    assert_eq!(written.matches("```mermaid").count(), 2, "{written}");
+
+    // Same through MCP.
+    let mut child = bin()
+        .arg("--vault")
+        .arg(v.path())
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let requests = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"export_canvas_mermaid","arguments":{"ref":"Proyek"}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_sections","arguments":{"ref":"Proyek"}}}"#,
+    ];
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for r in requests {
+            writeln!(stdin, "{r}").unwrap();
+        }
+    }
+    drop(child.stdin.take());
+    let out = child.wait_with_output().unwrap();
+    let lines: Vec<Value> =
+        String::from_utf8(out.stdout).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let text = |i: usize| lines[i]["result"]["content"][0]["text"].as_str().unwrap().to_string();
+    assert_eq!(lines[1]["result"]["isError"], false);
+    assert!(text(1).contains("flowchart"), "{}", text(1));
+    assert!(text(2).contains("\"kind\": \"table\""), "{}", text(2));
+}
+
+#[test]
 fn sheets_query_edit_and_index() {
     let dir = vault();
     let v = dir.path();

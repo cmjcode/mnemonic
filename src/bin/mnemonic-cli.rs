@@ -73,6 +73,11 @@ enum Command {
         #[command(subcommand)]
         action: DiagramAction,
     },
+    /// A note's canvas: its section outline, or the whole canvas as Mermaid.
+    Canvas {
+        #[command(subcommand)]
+        action: CanvasCmd,
+    },
     /// List, read, query or edit CSV/XLSX sheets (§3.8; XLSX is read-only).
     Sheets {
         #[command(subcommand)]
@@ -85,6 +90,22 @@ enum Command {
     },
     /// Run as an MCP server over stdio (JSON-RPC 2.0, newline-delimited).
     Mcp,
+}
+
+#[derive(Subcommand)]
+enum CanvasCmd {
+    /// Section segments of a note (the boxes its canvas shows).
+    Sections { r#ref: String },
+    /// Export the canvas as Mermaid (one diagram per family).
+    Mermaid {
+        r#ref: String,
+        /// Also emit a mindmap of the section outline.
+        #[arg(long)]
+        mindmap: bool,
+        /// Write the ```mermaid fences to FILE instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -556,6 +577,42 @@ fn run(cli: Cli) -> Result<()> {
             })
         }
         Command::Diagram { action } => run_diagram(json, &action, Some(&svc)),
+        Command::Canvas { action: CanvasCmd::Sections { r#ref } } => {
+            let list = svc.list_sections(&r#ref)?;
+            emit(json, &list, |out| {
+                for s in &list.sections {
+                    let depth = std::iter::successors(s.parent.as_deref(), |p| {
+                        list.sections.iter().find(|x| x.id.as_deref() == Some(*p)).and_then(|x| x.parent.as_deref())
+                    })
+                    .count();
+                    let id = s.id.as_deref().map(|i| format!("^{i}")).unwrap_or_else(|| "(no anchor)".into());
+                    out.push(format!(
+                        "{}{:<8} {} [{}-{}] {id}",
+                        "  ".repeat(depth),
+                        s.kind,
+                        s.summary,
+                        s.line,
+                        s.end_line
+                    ));
+                }
+            })
+        }
+        Command::Canvas { action: CanvasCmd::Mermaid { r#ref, mindmap, out } } => {
+            let res = svc.canvas_mermaid(&CanvasMermaidRequest { r#ref, mindmap })?;
+            for w in &res.warnings {
+                log::warn!("{w}");
+            }
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, &res.markdown).with_context(|| format!("writing {}", path.display()))?;
+                    emit(json, &res, |o| o.push(format!("{} diagram(s) → {}", res.diagrams.len(), path.display())))
+                }
+                None => emit(json, &res, |o| {
+                    o.push(res.markdown.trim_end().to_string());
+                    o.extend(res.warnings.iter().map(|w| format!("%% warning: {w}")));
+                }),
+            }
+        }
         Command::Sheets { action } => run_sheets(json, action, &mut svc),
         Command::Themes { action: ThemesAction::List } => {
             let list = svc.list_themes();

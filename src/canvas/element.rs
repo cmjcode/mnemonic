@@ -3,6 +3,10 @@
 use egui::{Pos2, Rect, Vec2};
 use uuid::Uuid;
 
+use super::diagram_kinds::{
+    ConnectorMeta, EntityAttr, class_from_text, class_to_text, entity_from_text, entity_to_text,
+};
+
 /// Unique identifier for an element on the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CanvasElementId(pub Uuid);
@@ -25,7 +29,8 @@ impl std::fmt::Display for CanvasElementId {
     }
 }
 
-/// Geometric shape types.
+/// Geometric shape types. The later ones mirror the Mermaid flowchart /
+/// state vocabulary so a canvas exports without loss (§3.9.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ShapeKind {
     Rectangle,
@@ -33,6 +38,64 @@ pub enum ShapeKind {
     Ellipse,
     Diamond,
     CalloutBubble,
+    Stadium,
+    Circle,
+    Hexagon,
+    Cylinder,
+    Parallelogram,
+    Subroutine,
+    /// State diagram `[*]` start (filled dot).
+    StateStart,
+    /// State diagram `[*]` end (ringed dot).
+    StateEnd,
+}
+
+impl ShapeKind {
+    /// Every kind, in palette order.
+    pub const ALL: [ShapeKind; 13] = [
+        ShapeKind::Rectangle,
+        ShapeKind::RoundedRect,
+        ShapeKind::Stadium,
+        ShapeKind::Ellipse,
+        ShapeKind::Circle,
+        ShapeKind::Diamond,
+        ShapeKind::Hexagon,
+        ShapeKind::Cylinder,
+        ShapeKind::Parallelogram,
+        ShapeKind::Subroutine,
+        ShapeKind::CalloutBubble,
+        ShapeKind::StateStart,
+        ShapeKind::StateEnd,
+    ];
+
+    /// Stable variant name (sidecar `mnemonic.shape`).
+    pub fn name(self) -> &'static str {
+        match self {
+            ShapeKind::Rectangle => "Rectangle",
+            ShapeKind::RoundedRect => "RoundedRect",
+            ShapeKind::Ellipse => "Ellipse",
+            ShapeKind::Diamond => "Diamond",
+            ShapeKind::CalloutBubble => "CalloutBubble",
+            ShapeKind::Stadium => "Stadium",
+            ShapeKind::Circle => "Circle",
+            ShapeKind::Hexagon => "Hexagon",
+            ShapeKind::Cylinder => "Cylinder",
+            ShapeKind::Parallelogram => "Parallelogram",
+            ShapeKind::Subroutine => "Subroutine",
+            ShapeKind::StateStart => "StateStart",
+            ShapeKind::StateEnd => "StateEnd",
+        }
+    }
+
+    /// Inverse of [`Self::name`]; unknown names are rectangles.
+    pub fn from_name(name: &str) -> ShapeKind {
+        ShapeKind::ALL.into_iter().find(|k| k.name() == name).unwrap_or(ShapeKind::Rectangle)
+    }
+
+    /// Start/end pseudo-states: fixed small dots without a label.
+    pub fn is_state_marker(self) -> bool {
+        matches!(self, ShapeKind::StateStart | ShapeKind::StateEnd)
+    }
 }
 
 /// Connection line routing styles.
@@ -41,6 +104,24 @@ pub enum ConnectorRouting {
     Straight,
     Curved,
     Orthogonal,
+}
+
+/// How much Markdown a binding covers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingScope {
+    /// One Obsidian block (paragraph, list item, heading line…): `markdown::blocks`.
+    #[default]
+    Block,
+    /// A whole section segment — heading plus its prose, or a table /
+    /// fence (§3.9.1): `markdown::sections`.
+    Segment,
+}
+
+impl BindingScope {
+    pub fn is_block(&self) -> bool {
+        *self == BindingScope::Block
+    }
 }
 
 /// Link between a canvas element and a markdown block (`^<block_id>` anchor).
@@ -54,6 +135,8 @@ pub struct BlockBinding {
     pub file: Option<String>,
     /// Block anchor id without the leading `^`.
     pub block_id: String,
+    #[serde(default, skip_serializing_if = "BindingScope::is_block")]
+    pub scope: BindingScope,
 }
 
 impl BlockBinding {
@@ -62,6 +145,16 @@ impl BlockBinding {
         BlockBinding {
             file: None,
             block_id: block_id.into(),
+            scope: BindingScope::Block,
+        }
+    }
+
+    /// Binding to a section segment of the note that owns the canvas.
+    pub fn segment(block_id: impl Into<String>) -> Self {
+        BlockBinding {
+            file: None,
+            block_id: block_id.into(),
+            scope: BindingScope::Segment,
         }
     }
 
@@ -70,7 +163,12 @@ impl BlockBinding {
         BlockBinding {
             file: Some(file.into()),
             block_id: block_id.into(),
+            scope: BindingScope::Block,
         }
+    }
+
+    pub fn is_segment(&self) -> bool {
+        self.scope == BindingScope::Segment
     }
 
     /// Obsidian-style subpath: `#^<block_id>`.
@@ -138,6 +236,28 @@ pub enum CanvasElement {
         /// Intermediate bend points between `from_pos` and `to_pos`.
         #[serde(default)]
         waypoints: Vec<[f32; 2]>,
+        /// Outline edge / dashed / ER or class relation (§3.9.3).
+        #[serde(default, skip_serializing_if = "ConnectorMeta::is_default")]
+        meta: ConnectorMeta,
+    },
+    /// ER entity: a titled table of attributes (Mermaid `erDiagram`).
+    Entity {
+        id: CanvasElementId,
+        rect: [f32; 4],
+        name: String,
+        attributes: Vec<EntityAttr>,
+        color: [f32; 3],
+    },
+    /// UML class box (Mermaid `classDiagram`).
+    ClassBox {
+        id: CanvasElementId,
+        rect: [f32; 4],
+        name: String,
+        #[serde(default)]
+        annotation: String,
+        attributes: Vec<String>,
+        methods: Vec<String>,
+        color: [f32; 3],
     },
     DocCard {
         id: CanvasElementId,
@@ -170,7 +290,45 @@ impl CanvasElement {
             | CanvasElement::Connector { id, .. }
             | CanvasElement::DocCard { id, .. }
             | CanvasElement::Frame { id, .. }
-            | CanvasElement::FreehandStroke { id, .. } => *id,
+            | CanvasElement::FreehandStroke { id, .. }
+            | CanvasElement::Entity { id, .. }
+            | CanvasElement::ClassBox { id, .. } => *id,
+        }
+    }
+
+    /// Text the inline editor shows: the label, or for entity / class boxes
+    /// their Mermaid-like editing form (see `diagram_kinds`).
+    pub fn edit_text(&self) -> Option<String> {
+        match self {
+            CanvasElement::Entity { name, attributes, .. } => Some(entity_to_text(name, attributes)),
+            CanvasElement::ClassBox { name, annotation, attributes, methods, .. } => {
+                Some(class_to_text(name, annotation, attributes, methods))
+            }
+            _ => self.text().map(str::to_string),
+        }
+    }
+
+    /// Applies an edit made on [`Self::edit_text`]. Entity / class boxes
+    /// grow to fit their rows.
+    pub fn apply_edit_text(&mut self, text: &str) {
+        match self {
+            CanvasElement::Entity { name, attributes, rect, .. } => {
+                let (n, a) = entity_from_text(text);
+                *name = n;
+                *attributes = a;
+                let min_h = 40.0 + attributes.len() as f32 * 24.0;
+                rect[3] = rect[3].max(rect[1] + min_h);
+            }
+            CanvasElement::ClassBox { name, annotation, attributes, methods, rect, .. } => {
+                let (n, ann, a, m) = class_from_text(text);
+                *name = n;
+                *annotation = ann;
+                *attributes = a;
+                *methods = m;
+                let rows = attributes.len() + methods.len() + usize::from(!annotation.is_empty());
+                rect[3] = rect[3].max(rect[1] + 52.0 + rows as f32 * 22.0);
+            }
+            _ => self.set_text(text.to_string()),
         }
     }
 
@@ -204,6 +362,7 @@ impl CanvasElement {
             CanvasElement::StickyNote { text, .. } | CanvasElement::Shape { text, .. } => Some(text),
             CanvasElement::Connector { label, .. } => Some(label),
             CanvasElement::Frame { title, .. } | CanvasElement::DocCard { title, .. } => Some(title),
+            CanvasElement::Entity { name, .. } | CanvasElement::ClassBox { name, .. } => Some(name),
             CanvasElement::FreehandStroke { .. } => None,
         }
     }
@@ -214,8 +373,14 @@ impl CanvasElement {
             CanvasElement::StickyNote { text, .. } | CanvasElement::Shape { text, .. } => *text = new_text,
             CanvasElement::Connector { label, .. } => *label = new_text,
             CanvasElement::Frame { title, .. } | CanvasElement::DocCard { title, .. } => *title = new_text,
+            CanvasElement::Entity { name, .. } | CanvasElement::ClassBox { name, .. } => *name = new_text,
             CanvasElement::FreehandStroke { .. } => {}
         }
+    }
+
+    /// Nodes that connectors can attach to (everything but connectors and strokes).
+    pub fn is_node(&self) -> bool {
+        !matches!(self, CanvasElement::Connector { .. } | CanvasElement::FreehandStroke { .. })
     }
 
     /// World-space bounding rectangle of the element.
@@ -224,7 +389,10 @@ impl CanvasElement {
             CanvasElement::StickyNote { pos, size, .. } => {
                 Rect::from_min_size(Pos2::new(pos[0], pos[1]), Vec2::new(size[0], size[1]))
             }
-            CanvasElement::Shape { rect, .. } | CanvasElement::Frame { rect, .. } => {
+            CanvasElement::Shape { rect, .. }
+            | CanvasElement::Frame { rect, .. }
+            | CanvasElement::Entity { rect, .. }
+            | CanvasElement::ClassBox { rect, .. } => {
                 Rect::from_min_max(Pos2::new(rect[0], rect[1]), Pos2::new(rect[2], rect[3]))
             }
             CanvasElement::DocCard { pos, size, .. } => {
@@ -276,7 +444,10 @@ impl CanvasElement {
                 pos[0] += delta.x;
                 pos[1] += delta.y;
             }
-            CanvasElement::Shape { rect, .. } | CanvasElement::Frame { rect, .. } => {
+            CanvasElement::Shape { rect, .. }
+            | CanvasElement::Frame { rect, .. }
+            | CanvasElement::Entity { rect, .. }
+            | CanvasElement::ClassBox { rect, .. } => {
                 rect[0] += delta.x;
                 rect[1] += delta.y;
                 rect[2] += delta.x;

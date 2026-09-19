@@ -141,6 +141,7 @@ fn test_drawio_export_and_roundtrip() {
         label: "HTTPS/gRPC".to_string(),
         arrow_end: true,
         waypoints: Vec::new(),
+        meta: Default::default(),
     });
 
     original_doc.add_element(CanvasElement::StickyNote {
@@ -408,6 +409,7 @@ fn test_export_roundtrip_keeps_waypoints_text_color_and_special_chars() {
         label: String::new(),
         arrow_end: true,
         waypoints: vec![[350.0, 25.0]],
+        meta: Default::default(),
     });
 
     let back = DrawioImporter::from_xml("rt", &DrawioExporter::to_xml(&doc)).unwrap();
@@ -498,6 +500,9 @@ fn fingerprint(e: &CanvasElement) -> String {
         CanvasElement::FreehandStroke { points, color, width, .. } => {
             format!("freehand {:?} {:?} {width}", pts(points), c8(color))
         }
+        CanvasElement::Entity { .. } | CanvasElement::ClassBox { .. } => {
+            format!("diagram {:?}", e.edit_text())
+        }
         CanvasElement::Connector {
             from_elem, to_elem, from_pos, to_pos, routing, stroke_color, stroke_width, label, arrow_end, waypoints, ..
         } => format!(
@@ -544,6 +549,7 @@ fn full_document() -> CanvasDocument {
         label: "dangling".to_string(),
         arrow_end: false,
         waypoints: Vec::new(),
+        meta: Default::default(),
     });
     doc.add_element(CanvasElement::Frame {
         id: mnemonic::canvas::CanvasElementId::new(),
@@ -591,6 +597,7 @@ fn full_document() -> CanvasDocument {
         label: "a→b".to_string(),
         arrow_end: true,
         waypoints: vec![[160.0, 20.0], [450.0, 20.0]],
+        meta: Default::default(),
     });
     doc
 }

@@ -294,6 +294,7 @@ impl Note {
             label: "".to_string(),
             arrow_end: true,
             waypoints: Vec::new(),
+            meta: Default::default(),
         });
 
         canvas.add_element(crate::canvas::CanvasElement::Connector {
@@ -308,6 +309,7 @@ impl Note {
             label: "Ya".to_string(),
             arrow_end: true,
             waypoints: Vec::new(),
+            meta: Default::default(),
         });
 
         let xml = canvas.to_drawio_xml();

@@ -283,7 +283,7 @@ Diagram disimpan sebagai fence ```` ```mermaid ```` di dalam catatan `.md` — f
 3. **Layout (§3.7.3):** keluarga *layered* (Sugiyama, setara dagre) untuk flowchart, class, state, ER: penghapusan siklus DFS, ranking longest-path + balancing, rank digandakan agar setiap edge punya slot label, dummy node untuk edge panjang, minimisasi persilangan barycenter yang menjaga subgraph tetap kontigu (border node per rank, seperti dagre), koordinat via regresi isotonik (pool-adjacent-violators) per layer. Subgraph tanpa edge lintas-batas di-layout rekursif dengan `direction`-nya sendiri. Sequence, pie, dan tipe linear/chart memakai layout khusus yang kecil. Pengukuran teks lewat trait `TextMeasure`: di aplikasi memakai lebar glyph egui asli (`GlyphTable`, dikumpulkan sekali per diagram), di CLI/test memakai tabel aproksimasi deterministik.
 4. **Tema & gaya (§3.7.4):** tema `default`/`dark`/`forest`/`neutral`/`base` + `themeVariables`; `classDef`/`class`/`:::`/`style`/`linkStyle`. Tanpa tema eksplisit, diagram mengikuti mode terang/gelap aplikasi.
 5. **Rendering (§3.7.5):** `Scene` digambar langsung ke shape epaint (tanpa tekstur/SVG), dengan culling di luar layar, kuantisasi ukuran font, dan triangulasi poligon non-konveks. Hasil parse+layout di-cache per sumber (`RenderCache`), jadi frame yang tidak berubah tidak mem-parse ulang. Klik node dengan `click … href` membuka URL atau `[[wikilink]]`; hover menampilkan tooltip. Ekspor SVG untuk agent/CLI.
-6. **Tipe yang didukung (§3.7.6):** flowchart/graph (semua bentuk klasik + `@{ shape }` v11, semua jenis link, subgraph bersarang), sequence, class, state, ER, pie. Tipe lain (gantt, journey, gitGraph, mindmap, timeline, quadrant, requirement, C4, sankey, xychart, block, packet, kanban, architecture, radar, treemap, zenuml) sudah dikenali; sampai diimplementasikan, catatan menampilkan sumbernya sebagai code block plus diagnostik — tidak pernah crash.
+6. **Tipe yang didukung (§3.7.6):** flowchart/graph (semua bentuk klasik + `@{ shape }` v11, semua jenis link, subgraph bersarang), sequence, class, state, ER, pie, mindmap (§3.9.4). Tipe lain (gantt, journey, gitGraph, timeline, quadrant, requirement, C4, sankey, xychart, block, packet, kanban, architecture, radar, treemap, zenuml) sudah dikenali; sampai diimplementasikan, catatan menampilkan sumbernya sebagai code block plus diagnostik — tidak pernah crash.
 7. **Antarmuka agent (§3.7.7):** `mnemonic-cli diagram list|validate|render` (validate/render berkas `.mmd` atau stdin tanpa vault) dan tool MCP `list_diagrams`, `validate_diagram`, `render_diagram`. Lihat `docs/agent-interface.md`.
 8. **Target performa:** parse+layout+SVG flowchart 550 node / 743 edge ≈ 20 ms (release, termasuk start proses); diagram tipikal < 1 ms. Mermaid.js membutuhkan ratusan ms–detik untuk ukuran yang sama karena mengukur teks lewat DOM.
 
@@ -310,6 +310,37 @@ Posisi: data tabular yang *hidup di vault* dan terhubung ke catatan, RAG dan age
 5. **Agent Interface (§Fase 2):**
    * `VaultService` + CLI + MCP: `sheets list`, `sheet read` (paging, pilih worksheet), `sheet query` (filter kolom sederhana), `sheet set-cell`, `sheet append-row` (hanya CSV/TSV).
 6. **Batas Cakupan:** tidak ada formula per sel, styling sel, chart, pivot, merge cell, atau penulisan XLSX in-place.
+
+### 3.9 Modul 9: Catatan ⇄ Kanvas Menyatu (Sub Bab sebagai Kotak) & Ekspor Mermaid
+
+Posisi: satu catatan, dua tampilan. Teks tetap di `.md` (sumber kebenaran tunggal); kanvas adalah cara lain menyusun dan menghubungkan isi yang sama, lalu seluruhnya bisa keluar sebagai Mermaid.
+
+1. **Segmen section (§3.9.1, `markdown::sections`):** body dipotong menjadi segmen yang **tidak tumpang tindih**:
+   * `Section` = heading beserta prosa miliknya sendiri sampai heading berikutnya (level apa pun) atau komponen berikutnya;
+   * komponen `Table`, fence ```` ```mermaid ```` (`Mermaid`) dan fence lain (`Code`);
+   * `Text` = prosa sesudah komponen (atau sebelum heading pertama).
+   Identitas memakai anchor Obsidian `^id`: di baris heading (section), di baris terakhir (text), pada baris sendiri tepat di bawah tabel/fence (komponen). Nesting heading memberi setiap segmen `parent` → struktur mind map. Karena rentang tidak tumpang tindih, mengedit satu kotak tidak pernah bisa menimpa teks kotak lain.
+2. **Sinkronisasi dua arah (§3.9.2, `markdown::editor::canvas_sync`, `canvas::outline`):**
+   * Catatan biasa yang dibuka di mode Kanvas/Split menjadi *section canvas*: satu kotak terikat per segmen (`BlockBinding` ber-`scope: segment`), ditata sebagai mind map kiri→kanan, dengan edge `outline` induk→anak.
+   * Kanvas → Markdown: hanya kotak yang sedang diedit yang menulis balik, per ketikan selama teksnya tetap satu segmen sejenis. Bila edit memecah segmen (mengetik `## Sub baru`, menempel tabel), penulisan ditunda sampai editor ditutup, lalu segmen baru mendapat anchor dan kotak sendiri.
+   * Markdown → kanvas: setiap perubahan body menurunkan ulang teks semua kotak (kecuali yang sedang diketik), menambah kotak untuk segmen baru di sebelah induknya, menyelaraskan edge outline dengan nesting heading, dan memperbesar kotak yang teksnya bertambah. Undo/redo juga menyegarkan kanvas.
+   * Segmen baru mendapat anchor saat simpan/idle (autosave), tidak pernah di tengah ketikan.
+   * Kotak bebas digeser (posisi hanya di sidecar, urutan Markdown tidak berubah); connector yang terpasang ikut bergeser. "Rapikan sebagai mind map" menata ulang (dan mengonversi kanvas per-blok lama).
+   * Menghapus kotak di kanvas hanya menyembunyikannya (`hidden_segments` di sidecar); teksnya tetap. "Hapus dari catatan" adalah aksi eksplisit yang bisa di-undo. Kotak yang segmennya hilang dari Markdown ditandai *yatim* (garis merah putus-putus), tidak dihapus diam-diam.
+   * Isi kotak dirender sebagai Markdown ringkas: heading, list/checkbox, kutipan, tabel sebagai grid, dan fence ```` ```mermaid ```` sebagai diagram aslinya (sehingga kotak ERD bisa diletakkan di sebelah penjelasannya).
+   * Sidecar: node `file` dengan `subpath` `#Judul Heading` untuk section (Obsidian menampilkan seluruh section) atau `#^id` untuk komponen; `mnemonic.block_id` + `mnemonic.scope = "segment"` menjadi acuan yang tahan rename heading.
+3. **Kosakata diagram di kanvas (§3.9.3, `canvas::diagram_kinds`, `canvas::painter_diagram`):**
+   * Bentuk flowchart: persegi, membulat, stadion, lingkaran/elips, belah ketupat, heksagon, silinder, jajar genjang, subrutin, callout; frame = subgraph.
+   * ER: `Entity` (nama + atribut `tipe nama PK/FK "komentar"`), connector ber-relasi ER (kardinalitas kaki gagak di kedua ujung, identifying/non-identifying).
+   * Class: `ClassBox` (anotasi `<<…>>`, atribut, metode), relasi UML (pewarisan, komposisi, agregasi, asosiasi, dependensi, realisasi, tautan) dengan kardinalitas.
+   * State: titik `[*]` awal/akhir; bentuk yang terhubung dengannya menjadi state.
+   * Entity dan class diedit dalam bentuk teks mirip Mermaid (satu baris per atribut) di popover yang sama dengan kotak catatan.
+4. **Ekspor & impor Mermaid (§3.9.4, `canvas::mermaid_export`, `canvas::mermaid_import`):**
+   * Ekspor mempartisi kanvas per keluarga, satu diagram per keluarga: `flowchart` (kotak section, catatan tempel, bentuk, doc card; frame → `subgraph`; kotak terikat mendapat `click … href "[[Catatan#^id]]"`; edge outline menjadi link biasa), `erDiagram`, `classDiagram`, `stateDiagram-v2`, fence ```` ```mermaid ```` yang ada disalin apa adanya, dan opsional `mindmap` dari outline section.
+   * Yang tidak punya bentuk Mermaid (posisi, coretan bebas, connector yang tidak terpasang, connector antar-keluarga) dilaporkan sebagai `warnings`, tidak hilang diam-diam. Setiap diagram hasil ekspor lolos `mermaid::validate` tanpa error (diuji).
+   * Impor ("Ubah diagram Mermaid catatan jadi objek kanvas") mengubah fence `flowchart`/`erDiagram`/`classDiagram`/`stateDiagram` menjadi objek kanvas native yang bisa diedit, diposisikan oleh layout Mermaid (`Scene::hits`). Fence tetap di Markdown. Ekspor → impor → ekspor menghasilkan diagram yang sama (kecuali id dan posisi).
+   * Tipe `mindmap` dirender native (`mermaid::mindmap`).
+5. **Agent Interface (§3.9.5):** `mnemonic-cli canvas sections <REF>` / tool MCP `list_sections` (segmen, anchor, parent, rentang baris) dan `mnemonic-cli canvas mermaid <REF> [--mindmap] [--out F]` / `export_canvas_mermaid` (read-only; catatan tanpa sidecar diekspor dari outline yang dibangun di memori).
 
 ---
 

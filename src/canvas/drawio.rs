@@ -308,6 +308,7 @@ impl ParsedStyle {
             .map(|id| BlockBinding {
                 file: self.mnemonic_block_file.clone(),
                 block_id: id.clone(),
+                scope: Default::default(),
             })
     }
 }
@@ -1054,6 +1055,7 @@ impl DrawioImporter {
             label,
             arrow_end: style.end_arrow.as_deref() != Some("none"),
             waypoints: waypoints.iter().map(|p| [p.x, p.y]).collect(),
+            meta: Default::default(),
         })
     }
 }
@@ -1150,6 +1152,14 @@ impl DrawioExporter {
                         ShapeKind::Ellipse => "ellipse",
                         ShapeKind::Diamond => "rhombus",
                         ShapeKind::CalloutBubble => "shape=callout",
+                        ShapeKind::Stadium => "rounded=1;arcSize=50",
+                        ShapeKind::Circle => "ellipse;aspect=fixed",
+                        ShapeKind::Hexagon => "shape=hexagon;perimeter=hexagonPerimeter2",
+                        ShapeKind::Cylinder => "shape=cylinder3;boundedLbl=1",
+                        ShapeKind::Parallelogram => "shape=parallelogram;perimeter=parallelogramPerimeter",
+                        ShapeKind::Subroutine => "shape=process",
+                        ShapeKind::StateStart => "ellipse;fillColor=#000000",
+                        ShapeKind::StateEnd => "ellipse;shape=endState",
                     };
 
                     let stroke_hex = if *stroke_width <= 0.0 {
@@ -1219,6 +1229,16 @@ impl DrawioExporter {
                     );
                     let rect = [pos[0], pos[1], pos[0] + size[0], pos[1] + size[1]];
                     Self::push_vertex(&mut xml, cell_id, &text, &style, rect);
+                }
+                CanvasElement::Entity { rect, color, .. } | CanvasElement::ClassBox { rect, color, .. } => {
+                    // Draw.io has no lossless ER/UML type: a swimlane whose
+                    // label holds the Mermaid-like editing form.
+                    let text = elem.edit_text().unwrap_or_default();
+                    let style = format!(
+                        "swimlane;fontStyle=1;childLayout=stackLayout;startSize=26;html=1;whiteSpace=wrap;align=left;spacingLeft=6;fillColor={};",
+                        to_hex_color(*color)
+                    );
+                    Self::push_vertex(&mut xml, cell_id, &text, &style, *rect);
                 }
                 CanvasElement::FreehandStroke {
                     points,

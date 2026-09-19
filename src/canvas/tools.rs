@@ -12,6 +12,12 @@ pub enum CanvasTool {
     Connector,
     Pen,
     Eraser,
+    /// A box that is a new Markdown section of the note (§3.9.2).
+    Section,
+    /// ER entity table (§3.9.3).
+    Entity,
+    /// UML class box (§3.9.3).
+    ClassBox,
 }
 
 impl Default for CanvasTool {
