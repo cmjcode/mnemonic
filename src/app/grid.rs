@@ -657,12 +657,16 @@ fn card_shell(
             stroke_color,
         ))
         .show(ui, |ui| {
+            ui.style_mut().interaction.selectable_labels = false;
             ui.set_width(ui.available_width());
             add_contents(ui, hovered);
         })
         .response;
     ui.ctx().data_mut(|d| d.insert_temp(id, resp.rect));
     let bg_resp = bg.map(|r| r.on_hover_cursor(egui::CursorIcon::PointingHand));
+    if hovered && !menu_open {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     (bg_resp, menu_open)
 }
 
@@ -1201,6 +1205,7 @@ fn semantic_row(
         .corner_radius(theme::RADIUS_MD)
         .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
+            ui.style_mut().interaction.selectable_labels = false;
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon).size(16.0).color(color));
@@ -1305,5 +1310,73 @@ mod tests {
             relative_time(&tr, now + Duration::hours(1), now),
             tr.t("time-just-now", &[])
         );
+    }
+
+    #[test]
+    fn card_shell_text_is_not_selectable_and_clicks_card() {
+        let ctx = egui::Context::default();
+        let card_id = Id::new("test_card");
+        let mut clicked = false;
+
+        // Pass 1: measure and lay out card_shell so temp rect is stored
+        let mut out1 = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let _ = card_shell(ui, card_id, egui::Color32::WHITE, false, |ui, _| {
+                assert!(!ui.style().interaction.selectable_labels);
+                ui.label("Clickable Card Title");
+            });
+        });
+        out1.textures_delta.clear();
+
+        let rect = ctx.data(|d| d.get_temp::<Rect>(card_id)).expect("rect stored");
+        let click_pos = rect.min + egui::vec2(10.0, 10.0); // directly over the label text
+
+        // Pass 2: register bg widget with the stored rect so it enters prev_pass.widgets
+        let mut input2 = egui::RawInput::default();
+        input2.events.push(egui::Event::PointerMoved(click_pos));
+        let mut out2 = ctx.run_ui(input2, |ui| {
+            let (bg, _) = card_shell(ui, card_id, egui::Color32::WHITE, false, |ui, _| {
+                ui.label("Clickable Card Title");
+            });
+            assert!(bg.is_some(), "bg should now be registered");
+        });
+        out2.textures_delta.clear();
+
+        // Pass 3: pointer button press over the text
+        let mut input3 = egui::RawInput::default();
+        input3.events.push(egui::Event::PointerButton {
+            pos: click_pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        let mut out3 = ctx.run_ui(input3, |ui| {
+            let _ = card_shell(ui, card_id, egui::Color32::WHITE, false, |ui, _| {
+                ui.label("Clickable Card Title");
+            });
+        });
+        out3.textures_delta.clear();
+
+        // Pass 4: pointer button release -> click triggers
+        let mut input4 = egui::RawInput::default();
+        input4.events.push(egui::Event::PointerButton {
+            pos: click_pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        let mut out4 = ctx.run_ui(input4, |ui| {
+            let (bg, _) = card_shell(ui, card_id, egui::Color32::WHITE, false, |ui, _| {
+                ui.label("Clickable Card Title");
+            });
+            if let Some(bg) = bg
+                && bg.clicked()
+            {
+                clicked = true;
+            }
+        });
+
+        assert!(clicked, "Card background should be clicked even when clicking over text");
+        assert_eq!(out4.platform_output.cursor_icon, egui::CursorIcon::PointingHand);
+        out4.textures_delta.clear();
     }
 }
