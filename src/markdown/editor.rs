@@ -11,6 +11,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+#[cfg(feature = "gui")]
 use egui_commonmark::CommonMarkCache;
 
 use std::path::{Path, PathBuf};
@@ -25,7 +26,9 @@ use super::{blocks, sections};
 mod canvas_sync;
 
 use super::live_blocks::LiveBlock;
-use super::renderer::{self, Heading, LiveParams, RenderCache, RenderOutcome};
+use super::renderer::{Heading, RenderCache};
+#[cfg(feature = "gui")]
+use super::renderer::{self, LiveParams, RenderOutcome};
 
 /// Idle window before an edit is flushed to disk (§3.2.4: "debounce
 /// 500ms-1s").
@@ -690,6 +693,7 @@ impl MarkdownEditor {
     /// via this editor's own `RenderCache`; `draw_editor` draws the raw
     /// editor for `params.active` — see `renderer::render_cached`
     /// (§3.2.1, §Fase 10).
+    #[cfg(feature = "gui")]
     pub fn render(
         &mut self,
         ui: &mut egui::Ui,
@@ -830,7 +834,7 @@ mod tests {
         assert_eq!(canvas.elements.len(), 1);
     }
 
-    fn rect_of(elem: &crate::canvas::CanvasElement) -> egui::Rect {
+    fn rect_of(elem: &crate::canvas::CanvasElement) -> emath::Rect {
         elem.bounding_rect()
     }
 
@@ -853,7 +857,7 @@ mod tests {
             </root></mxGraphModel></diagram></mxfile>"#;
         let (imported, new_blocks) = crate::canvas::DrawioImporter::from_xml_bound("Papan", xml).unwrap();
         assert_eq!(new_blocks.len(), 1, "only the text shape is bound");
-        let expected: Vec<egui::Rect> = imported.elements.iter().map(rect_of).collect();
+        let expected: Vec<emath::Rect> = imported.elements.iter().map(rect_of).collect();
 
         // What `show_editor` does after an import.
         editor.import_bound_canvas(imported, new_blocks);
@@ -865,7 +869,7 @@ mod tests {
         let reopened = MarkdownEditor::open_in(Note::load(&editor.note.path).unwrap(), Some(dir.path()));
         assert_eq!(reopened.canvas_storage(), CanvasStorage::Sidecar);
         let canvas = reopened.canvas.as_ref().unwrap();
-        let got: Vec<egui::Rect> = canvas.elements.iter().map(rect_of).collect();
+        let got: Vec<emath::Rect> = canvas.elements.iter().map(rect_of).collect();
         assert_eq!(got.len(), expected.len());
         for (g, e) in got.iter().zip(&expected) {
             assert!((g.min - e.min).length() < 0.6 && (g.max - e.max).length() < 0.6, "{g:?} != {e:?}");

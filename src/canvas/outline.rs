@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use egui::{Pos2, Rect};
+use emath::{Pos2, Rect};
 
 use super::diagram_kinds::ConnectorMeta;
 use super::element::{BlockBinding, CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
@@ -315,7 +315,7 @@ pub fn reattach_connectors(doc: &mut CanvasDocument, moved: Option<CanvasElement
         }
         let fr = from_elem.and_then(|id| rects.get(&id).copied());
         let tr = to_elem.and_then(|id| rects.get(&id).copied());
-        let point = |p: &[f32; 2]| Rect::from_center_size(Pos2::new(p[0], p[1]), egui::Vec2::ZERO);
+        let point = |p: &[f32; 2]| Rect::from_center_size(Pos2::new(p[0], p[1]), emath::Vec2::ZERO);
         match (fr, tr) {
             (Some(f), Some(t)) => {
                 (*from_pos, *to_pos) = attach_points(f, t);
@@ -365,7 +365,7 @@ pub fn relayout(doc: &mut CanvasDocument, segments: &[Segment]) {
     for (k, (_, eid)) in present.iter().enumerate() {
         if let Some(e) = doc.get_element_mut(*eid) {
             let r = e.bounding_rect();
-            e.translate(egui::Vec2::new(positions[k][0] - r.min.x, positions[k][1] - r.min.y));
+            e.translate(emath::Vec2::new(positions[k][0] - r.min.x, positions[k][1] - r.min.y));
         }
     }
     sync_outline_edges(doc, segments);
@@ -417,7 +417,7 @@ mod tests {
         let segs = segments(BODY);
         let mut doc = build_outline_canvas("N", &segs);
         let d = segment_elements(&doc)["d"];
-        doc.get_element_mut(d).unwrap().translate(egui::Vec2::new(0.0, 500.0));
+        doc.get_element_mut(d).unwrap().translate(emath::Vec2::new(0.0, 500.0));
         reattach_connectors(&mut doc, Some(d));
         let r = doc.get_element(d).unwrap().bounding_rect().expand(1.0);
         let glued = doc.elements.iter().any(|e| match e {
@@ -434,7 +434,7 @@ mod tests {
         let segs = segments(BODY);
         let mut doc = build_outline_canvas("N", &segs);
         for e in &mut doc.elements {
-            e.translate(egui::Vec2::new(999.0, 999.0));
+            e.translate(emath::Vec2::new(999.0, 999.0));
         }
         relayout(&mut doc, &segs);
         assert_eq!(segment_elements(&doc).len(), 4);

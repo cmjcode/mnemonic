@@ -7,10 +7,15 @@
 //! editor (Title/Author/Keywords) plus "save in place with auto-backup".
 //! Callers: `core::ingestion`, `app.rs`.
 
+/// Butuh PDFium; hanya pada build `gui`.
+#[cfg(feature = "gui")]
 pub mod annotator;
 pub mod editor;
 pub mod extractor;
+/// Butuh PDFium; hanya pada build `gui`.
+#[cfg(feature = "gui")]
 pub mod renderer;
 
 pub use extractor::extract_pages;
+#[cfg(feature = "gui")]
 pub use renderer::{PdfRenderer, RenderedPage};

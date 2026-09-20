@@ -257,6 +257,7 @@ fn transform_wikilinks_in_line(line: &str, is_resolved: &dyn Fn(&str) -> bool) -
 }
 
 /// Flips the `[ ]`/`[x]` marker on body line `line_idx`.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub(crate) fn toggle_checklist_line(body: &str, line_idx: usize) -> String {
     let had_trailing_newline = body.ends_with('\n');
     let eol = if body.contains("\r\n") { "\r\n" } else { "\n" };
@@ -272,6 +273,7 @@ pub(crate) fn toggle_checklist_line(body: &str, line_idx: usize) -> String {
     joined
 }
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 fn flip_checkbox_marker(line: &str) -> String {
     if let Some(pos) = line.find("[ ]") {
         format!("{}[x]{}", &line[..pos], &line[pos + 3..])

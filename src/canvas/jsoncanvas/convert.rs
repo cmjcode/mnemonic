@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use egui::{Pos2, Rect};
+use emath::{Pos2, Rect};
 use uuid::Uuid;
 
 use super::model::*;

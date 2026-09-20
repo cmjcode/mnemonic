@@ -1,6 +1,6 @@
 //! Graphic elements and whiteboard primitives on the infinite 2D canvas.
 
-use egui::{Pos2, Rect, Vec2};
+use emath::{Pos2, Rect, Vec2};
 use uuid::Uuid;
 
 use super::diagram_kinds::{

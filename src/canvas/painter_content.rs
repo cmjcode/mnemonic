@@ -17,6 +17,7 @@ use egui::{Color32, FontId, Painter, Pos2, Rect, Stroke, TextFormat, Vec2};
 use crate::markdown::blocks::split_anchor;
 use crate::markdown::sections::heading_level;
 use crate::mermaid::{self, Rendered};
+use crate::canvas::mermaid_export::mermaid_source;
 use crate::ui::theme;
 
 /// Base text size in world units.
@@ -53,18 +54,6 @@ pub fn draw_box_content(painter: &Painter, rect: Rect, text: &str, zoom: f32, co
         let galley = clipped.layout_job(job);
         clipped.galley(rect.min, galley, color);
     }
-}
-
-/// Inner source of a ```` ```mermaid ```` fence, if `text` is one.
-pub fn mermaid_source(text: &str) -> Option<String> {
-    let mut lines = text.lines();
-    let first = lines.next()?.trim();
-    let marker = if first.starts_with("```") { "```" } else if first.starts_with("~~~") { "~~~" } else { return None };
-    if first.trim_start_matches(['`', '~']).split_whitespace().next() != Some("mermaid") {
-        return None;
-    }
-    let body: Vec<&str> = lines.take_while(|l| !l.trim().starts_with(marker)).collect();
-    Some(body.join("\n"))
 }
 
 /// Parsed + laid out diagram for `source`, cached.
@@ -241,13 +230,6 @@ fn markdown_job(text: &str, zoom: f32, color: Color32, width: f32) -> LayoutJob 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mermaid_source_extracts_fence_body() {
-        assert_eq!(mermaid_source("```mermaid\nflowchart LR\n  A-->B\n```").as_deref(), Some("flowchart LR\n  A-->B"));
-        assert_eq!(mermaid_source("```rust\nx\n```"), None);
-        assert_eq!(mermaid_source("# Judul"), None);
-    }
 
     #[test]
     fn inline_plain_strips_markup() {

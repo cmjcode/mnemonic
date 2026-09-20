@@ -4,6 +4,17 @@ version = "0.1.0"
 edition = "2024"
 default-run = "mnemonic"
 
+# Binary desktop hanya dibangun bila fitur `gui` aktif; `mnemonic-cli`
+# (agent interface) tetap bisa dibangun headless.
+[[bin]]
+name = "mnemonic"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "mnemonic-cli"
+path = "src/bin/mnemonic-cli/main.rs"
+
 # §Fase 10 ("build release cross-platform"): the debug-profile defaults are
 # fine for `cargo run` during development, but a distributed release binary
 # benefits from LTO + a single codegen unit for a Candle-CPU-inference-heavy
@@ -58,13 +69,20 @@ clap = { version = "4", features = ["derive", "env"] }
 csv = "1.4"
 dhat = { version = "0.3.3", optional = true }
 dirs = "6.0.0"
-eframe = "0.36.1"
-egui = "0.36.1"
+eframe = { version = "0.36.1", optional = true }
+egui = { version = "0.36.1", optional = true }
 # Virtualized `TableBuilder` for the sheet grid (§3.8); already pulled in
 # transitively by `egui_commonmark`, pinned to the same egui release.
-egui_extras = "0.36.1"
-egui_icons = "0.0.1"
-egui_commonmark = { version = "0.25.0", features = [
+egui_extras = { version = "0.36.1", optional = true }
+# Geometri (`Pos2`/`Rect`/`Vec2`) dan warna egui yang dipakai tipe DATA —
+# elemen canvas, tema baca, scene mermaid. Crate kecil tanpa jendela/GPU,
+# jadi lapisan headless (`api`, `core`, `notes`) tetap bisa dibangun
+# dengan `--no-default-features` sementara tipenya tetap SAMA dengan yang
+# dipakai lapisan UI (egui memang mengekspor ulang keduanya).
+emath = "0.36.1"
+ecolor = "0.36.1"
+egui_icons = { version = "0.0.1", optional = true }
+egui_commonmark = { version = "0.25.0", optional = true, features = [
     "better_syntax_highlighting",
 ] }
 env_logger = "0.11.11"
@@ -91,11 +109,11 @@ pulldown-cmark = { version = "0.13.4", default-features = false, features = ["ht
 # missing). `image_latest`/`thread_safe` (the other two default features)
 # are dropped since we only need raw RGBA bytes for an egui texture, not
 # `image::DynamicImage` conversion or cross-thread bitmap handles.
-pdfium-render = { version = "0.9", default-features = false, features = [
+pdfium-render = { version = "0.9", optional = true, default-features = false, features = [
     "pdfium_latest",
 ] }
 quick-xml = "0.41.0"
-rfd = "0.17.2"
+rfd = { version = "0.17.2", optional = true }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # `vec0` virtual table for in-SQLite KNN over chunk/document embeddings
 # (cosine distance). Statically compiled C, registered process-wide via
@@ -120,4 +138,20 @@ filetime = "0.2.29"
 tempfile = "3.27.0"
 
 [features]
+# `gui` menggerbangi seluruh lapisan desktop (eframe/egui/pdfium/rfd) dan
+# modul `app`/`ui`. Aktif secara default supaya `cargo run`/`cargo build`
+# biasa tetap membangun aplikasi desktop; `--no-default-features`
+# menyisakan pustaka headless (`api`, `core`, `notes`, `graph`,
+# `markdown` non-UI, `llm`) yang dipakai host lain — mis. DUCAD di iPad
+# yang memanggil `VaultService` langsung, bukan lewat server MCP.
+default = ["gui"]
+gui = [
+    "dep:eframe",
+    "dep:egui",
+    "dep:egui_extras",
+    "dep:egui_icons",
+    "dep:egui_commonmark",
+    "dep:rfd",
+    "dep:pdfium-render",
+]
 dhat-heap = ["dep:dhat"]

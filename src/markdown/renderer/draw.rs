@@ -24,7 +24,7 @@ pub(super) const BODY_SIZE: f32 = 15.5;
 /// H1–H6 between this and `BODY_SIZE`.
 const HEADING_SIZE: f32 = 30.0;
 /// Height of an empty line.
-pub(super) const BLANK_HEIGHT: f32 = 12.0;
+pub(super) use super::BLANK_HEIGHT;
 /// Horizontal offset per column of list indentation.
 const INDENT_PX_PER_COLUMN: f32 = 7.0;
 

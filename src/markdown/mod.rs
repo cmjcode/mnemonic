@@ -5,6 +5,8 @@
 
 pub mod blocks;
 pub mod editor;
+/// Penggambaran/teks egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
 pub mod highlight;
 pub mod live_anchors;
 pub mod live_blocks;

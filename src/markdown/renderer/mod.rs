@@ -17,6 +17,8 @@
 //! Callers: `markdown::editor::MarkdownEditor::render` (which owns a
 //! `RenderCache` per open note), `export` (via `transform`).
 
+/// Penggambaran egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
 mod draw;
 pub(crate) mod transform;
 
@@ -26,6 +28,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::Arc;
 
+#[cfg(feature = "gui")]
 use egui_commonmark::CommonMarkCache;
 
 use super::blocks;
@@ -62,7 +65,7 @@ pub struct EditRequest {
     pub lines: Range<usize>,
     /// Where the click landed (screen space), to place the text cursor;
     /// `None` when the block's edit button was used.
-    pub pos: Option<egui::Pos2>,
+    pub pos: Option<emath::Pos2>,
 }
 
 /// What happened during a render that the caller needs to act on.
@@ -93,7 +96,7 @@ pub struct RenderOutcome {
 pub struct LiveParams<'a> {
     /// Visible region in the renderer's content space (from
     /// `ScrollArea::show_viewport`, shifted to the body's first line).
-    pub viewport: egui::Rect,
+    pub viewport: emath::Rect,
     /// Whether a link target exists (unresolved links render in italics).
     pub is_resolved: &'a dyn Fn(&str) -> bool,
     pub resolve_embed: &'a EmbedResolver<'a>,
@@ -109,10 +112,15 @@ pub struct LiveParams<'a> {
 /// Extra content-space padding rendered above/below the visible viewport
 /// (§6 risk 5 "virtualized scrolling"), so a block already has its real
 /// layout by the time it scrolls fully into view.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 const VIRTUALIZATION_BUFFER: f32 = 600.0;
+/// Tinggi blok kosong (dipakai penaksir tinggi dan penggambar).
+pub(super) const BLANK_HEIGHT: f32 = 12.0;
 /// Clickable space under the last block ("click to keep writing").
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 const TAIL_HEIGHT: f32 = 160.0;
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 enum ScrollTarget {
     /// A `^block-id` anchor.
     Block(String),
@@ -136,6 +144,7 @@ pub struct RenderCache {
     tag_targets: Vec<String>,
     scroll_to: Option<ScrollTarget>,
     /// Decoded image embeds, by file path (`None` = failed to decode).
+    #[cfg(feature = "gui")]
     textures: HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
     /// Estimated-then-measured height per block, content-space pixels,
     /// parallel to `blocks`. Drives `visible_block_range`.
@@ -149,6 +158,7 @@ pub struct RenderCache {
     /// Markdown runs drawn so far in the current block. `egui_commonmark`
     /// numbers its tables from 0 on every `show`, so each run gets an id
     /// scope of its own or two tables in one block clash (`draw::flush`).
+    #[cfg(feature = "gui")]
     md_runs: usize,
 }
 
@@ -261,7 +271,7 @@ fn estimate_height(block: &LiveBlock) -> f32 {
     const LINE_HEIGHT: f32 = 24.0;
     let lines = block.lines.len() as f32;
     match block.kind {
-        BlockKind::Blank => draw::BLANK_HEIGHT + 4.0,
+        BlockKind::Blank => BLANK_HEIGHT + 4.0,
         BlockKind::Heading(1 | 2) => 48.0,
         BlockKind::Heading(_) => 36.0,
         BlockKind::Mermaid => 320.0,
@@ -274,6 +284,7 @@ fn estimate_height(block: &LiveBlock) -> f32 {
 /// `[viewport_top, viewport_bottom]`, returns the index range of blocks
 /// that overlap the viewport padded by `buffer` on both sides. Pure and
 /// independent of `egui` so it's directly unit-testable.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 fn visible_block_range(heights: &[f32], viewport_top: f32, viewport_bottom: f32, buffer: f32) -> Range<usize> {
     let lo = viewport_top - buffer;
     let hi = viewport_bottom + buffer;
@@ -293,6 +304,7 @@ fn visible_block_range(heights: &[f32], viewport_top: f32, viewport_bottom: f32,
 }
 
 /// `active` widened to the whole blocks it touches.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 fn widen_to_blocks(blocks: &[LiveBlock], active: &Range<usize>) -> Range<usize> {
     let mut span = active.clone();
     for b in blocks.iter().filter(|b| b.lines.start < active.end && active.start < b.lines.end) {
@@ -306,6 +318,7 @@ fn widen_to_blocks(blocks: &[LiveBlock], active: &Range<usize>) -> Range<usize> 
 /// against `params.viewport`. The lines in `params.active` are not
 /// rendered: `draw_editor` is called once, in their place, to draw the raw
 /// Markdown editor. Returns clicks the caller must act on.
+#[cfg(feature = "gui")]
 pub fn render_cached(
     ui: &mut egui::Ui,
     cache: &mut CommonMarkCache,
@@ -425,6 +438,7 @@ pub fn render_cached(
     outcome
 }
 
+#[cfg(feature = "gui")]
 fn capture_clicked_tag(cache: &CommonMarkCache, tags: &[String], outcome: &mut RenderOutcome) {
     if outcome.clicked_tag.is_some() {
         return;
@@ -434,6 +448,7 @@ fn capture_clicked_tag(cache: &CommonMarkCache, tags: &[String], outcome: &mut R
     }
 }
 
+#[cfg(feature = "gui")]
 fn capture_clicked_wikilink(cache: &CommonMarkCache, targets: &[String], outcome: &mut RenderOutcome) {
     if outcome.clicked_wikilink.is_some() {
         return;

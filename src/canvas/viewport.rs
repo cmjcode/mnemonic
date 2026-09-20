@@ -1,6 +1,8 @@
 //! 2D infinite viewport with coordinate transforms (Screen <-> World) and zoom/pan.
 
-use egui::{Color32, Painter, Pos2, Rect, Vec2};
+use emath::{Pos2, Rect, Vec2};
+#[cfg(feature = "gui")]
+use ecolor::Color32;
 
 /// 2D Infinite Viewport transformation state.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -105,7 +107,9 @@ impl Viewport {
     }
 
     /// Render infinite background dot matrix or subtle grid.
-    pub fn draw_grid(&self, painter: &Painter, screen_rect: Rect, is_dark: bool) {
+    /// Grid latar; menggambar, jadi hanya ada pada build `gui`.
+    #[cfg(feature = "gui")]
+    pub fn draw_grid(&self, painter: &egui::Painter, screen_rect: Rect, is_dark: bool) {
         let dot_color = if is_dark {
             Color32::from_white_alpha(35)
         } else {

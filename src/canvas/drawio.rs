@@ -17,7 +17,7 @@ use std::io::Read;
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
-use egui::{Pos2, Rect, Vec2};
+use emath::{Pos2, Rect, Vec2};
 use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};

@@ -5,14 +5,22 @@
 
 pub mod diagram_kinds;
 pub mod drawio;
+/// Penggambaran egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
 pub mod thumb;
 pub mod element;
 pub mod jsoncanvas;
 pub mod mermaid_export;
 pub mod mermaid_import;
 pub mod outline;
+/// Penggambaran egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
 pub mod painter;
+/// Penggambaran egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
 pub mod painter_content;
+/// Penggambaran egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
 pub mod painter_diagram;
 pub mod tools;
 pub mod viewport;
@@ -20,6 +28,7 @@ pub mod viewport;
 pub use drawio::{DrawioExporter, DrawioImporter};
 pub use element::{BindingScope, BlockBinding, CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
 pub use jsoncanvas::{from_json_canvas, to_json_canvas, JsonCanvas};
+#[cfg(feature = "gui")]
 pub use painter::draw_element;
 pub use tools::{CanvasTool, InteractionState};
 pub use viewport::Viewport;
@@ -82,7 +91,7 @@ impl CanvasDocument {
     }
 
     /// Find the topmost element hit by a world position.
-    pub fn element_at(&self, world_pos: egui::Pos2) -> Option<&CanvasElement> {
+    pub fn element_at(&self, world_pos: emath::Pos2) -> Option<&CanvasElement> {
         self.elements
             .iter()
             .rev()
@@ -90,7 +99,7 @@ impl CanvasDocument {
     }
 
     /// Find all element IDs enclosed or intersecting with a world rectangle.
-    pub fn elements_in_rect(&self, world_rect: egui::Rect) -> HashSet<CanvasElementId> {
+    pub fn elements_in_rect(&self, world_rect: emath::Rect) -> HashSet<CanvasElementId> {
         self.elements
             .iter()
             .filter(|e| world_rect.intersects(e.bounding_rect()))
@@ -492,11 +501,11 @@ mod tests {
         });
 
         assert_eq!(canvas.elements.len(), 1);
-        let hit = canvas.element_at(egui::Pos2::new(150.0, 150.0));
+        let hit = canvas.element_at(emath::Pos2::new(150.0, 150.0));
         assert!(hit.is_some());
         assert_eq!(hit.unwrap().id(), elem_id);
 
-        let miss = canvas.element_at(egui::Pos2::new(50.0, 50.0));
+        let miss = canvas.element_at(emath::Pos2::new(50.0, 50.0));
         assert!(miss.is_none());
     }
 
@@ -530,9 +539,9 @@ mod tests {
             binding: None,
         });
 
-        let in_rect = canvas.elements_in_rect(egui::Rect::from_min_max(
-            egui::pos2(0.0, 0.0),
-            egui::pos2(200.0, 200.0),
+        let in_rect = canvas.elements_in_rect(emath::Rect::from_min_max(
+            emath::pos2(0.0, 0.0),
+            emath::pos2(200.0, 200.0),
         ));
         assert!(in_rect.contains(&elem1));
         assert!(!in_rect.contains(&elem2));

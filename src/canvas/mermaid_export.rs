@@ -17,13 +17,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use egui::{Pos2, Rect};
+use emath::{Pos2, Rect};
 
 use super::CanvasDocument;
 use super::diagram_kinds::{ClassRelKind, EdgeRelation, EntityAttr, ErCardinality};
 use super::drawio::to_hex_color;
 use super::element::{CanvasElement, CanvasElementId, ShapeKind};
-use super::painter_content::mermaid_source;
 use crate::markdown::blocks::strip_anchors;
 use crate::markdown::sections::{SegmentKind, heading_level, summary_of};
 
@@ -596,6 +595,18 @@ fn mindmap(doc: &CanvasDocument, opts: &ExportOptions) -> Option<String> {
     Some(lines.join("\n"))
 }
 
+/// Inner source of a ```` ```mermaid ```` fence, if `text` is one.
+pub fn mermaid_source(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    let first = lines.next()?.trim();
+    let marker = if first.starts_with("```") { "```" } else if first.starts_with("~~~") { "~~~" } else { return None };
+    if first.trim_start_matches(['`', '~']).split_whitespace().next() != Some("mermaid") {
+        return None;
+    }
+    let body: Vec<&str> = lines.take_while(|l| !l.trim().starts_with(marker)).collect();
+    Some(body.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,5 +750,20 @@ mod tests {
         assert_eq!(ids.make("A b", "n"), "A_b_2");
         assert_eq!(ids.make("123", "n"), "n123");
         assert_eq!(ids.make("", "n"), "n");
+    }
+}
+
+#[cfg(test)]
+mod mermaid_source_tests {
+    use super::mermaid_source;
+
+    #[test]
+    fn mermaid_source_extracts_fence_body() {
+        assert_eq!(
+            mermaid_source("```mermaid\nflowchart LR\n  A-->B\n```").as_deref(),
+            Some("flowchart LR\n  A-->B")
+        );
+        assert_eq!(mermaid_source("```rust\nx\n```"), None);
+        assert_eq!(mermaid_source("# Judul"), None);
     }
 }

@@ -15,6 +15,8 @@ pub mod er;
 pub mod flowchart;
 pub mod layout;
 pub mod mindmap;
+/// Backend egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
 pub mod paint;
 pub mod pie;
 pub mod route;

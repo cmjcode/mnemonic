@@ -1,3 +1,6 @@
+//! Hanya untuk build `gui` (butuh eframe/egui + egui_kittest).
+#![cfg(feature = "gui")]
+
 //! Headless UI smoke test: runs the real app against a throwaway vault,
 //! walks through the main screens with simulated keyboard input, and makes
 //! sure every frame lays out without panicking — in both themes.

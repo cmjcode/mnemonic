@@ -12,7 +12,9 @@
 //! `<vault>/.mnemonic/themes/` (see `theme_dirs`, `docs/themes.md`). A
 //! broken file is reported and skipped, never fatal.
 //!
-//! Pure and egui-free apart from the `Color` → `egui::Color32` conversion.
+//! Pure and egui-free apart from the `Color` → `ecolor::Color32` conversion
+//! (`ecolor` is the crate egui itself re-exports `Color32` from, so the
+//! type is identical without pulling in egui).
 //! Callers: `markdown::renderer` (Live view), `export` (HTML/PDF),
 //! `app` (theme picker), `api` (CLI/MCP `themes list`, `notes export`).
 
@@ -70,9 +72,9 @@ impl Color {
     }
 }
 
-impl From<Color> for egui::Color32 {
-    fn from(c: Color) -> egui::Color32 {
-        egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
+impl From<Color> for ecolor::Color32 {
+    fn from(c: Color) -> ecolor::Color32 {
+        ecolor::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
     }
 }
 
