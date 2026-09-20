@@ -26,6 +26,7 @@ pub struct VaultService {
     pub(super) index: IndexStore,
     pub(super) links: WikilinkIndex,
     pub(super) embedder: LazyEmbedder,
+    #[cfg_attr(not(feature = "semantic"), allow(dead_code))]
     pub(super) generator: LazyGenerator,
 }
 

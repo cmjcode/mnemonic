@@ -8,7 +8,9 @@
 //! `cosine_similarity`/`top_k` stay pure and testable offline. Callers:
 //! `core::indexer` (embedding chunks, queries, reranking).
 
+#[cfg(feature = "semantic")]
 use anyhow::{Context, Result};
+#[cfg(feature = "semantic")]
 use fastembed::{
     EmbeddingModel, RerankInitOptions, RerankerModel, TextEmbedding, TextInitOptions, TextRerank,
 };
@@ -30,15 +32,19 @@ pub const RELATED_DOC_SIMILARITY: f32 = 0.91;
 /// E5 models are trained with asymmetric prefixes: stored text is a
 /// "passage", search input a "query". Omitting them measurably hurts
 /// retrieval quality.
+#[cfg_attr(not(feature = "semantic"), allow(dead_code))]
 const PASSAGE_PREFIX: &str = "passage: ";
+#[cfg_attr(not(feature = "semantic"), allow(dead_code))]
 const QUERY_PREFIX: &str = "query: ";
 
 /// A loaded FastEmbed text embedding model. Construction is the only
 /// network/IO-touching part of this module.
+#[cfg(feature = "semantic")]
 pub struct EmbeddingEngine {
     model: TextEmbedding,
 }
 
+#[cfg(feature = "semantic")]
 impl EmbeddingEngine {
     /// Loads `multilingual-e5-small` — downloads it into the FastEmbed
     /// cache directory on first run, then loads from there on subsequent
@@ -75,10 +81,12 @@ impl EmbeddingEngine {
 /// A local cross-encoder that scores (query, passage) pairs jointly —
 /// slower than vector similarity but noticeably more precise, so it only
 /// reorders the top hybrid-search candidates. Optional (off by default).
+#[cfg(feature = "semantic")]
 pub struct RerankEngine {
     model: TextRerank,
 }
 
+#[cfg(feature = "semantic")]
 impl RerankEngine {
     /// Loads `jina-reranker-v2-base-multilingual` (downloads on first use).
     pub fn new() -> Result<RerankEngine> {
@@ -235,7 +243,7 @@ mod tests {
 /// by default — it downloads/loads the multilingual-e5-small weights and
 /// needs network on first run; run explicitly with
 /// `cargo test -- --ignored embedding_ranks_semantically_similar_text_higher`.
-#[cfg(test)]
+#[cfg(all(test, feature = "semantic"))]
 mod model_tests {
     use super::*;
 

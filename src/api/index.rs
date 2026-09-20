@@ -14,8 +14,12 @@ use super::service::VaultService;
 use super::types::*;
 use crate::core::search::{HybridOptions, MatchKind, SearchHit, hybrid_rank};
 use crate::core::storage::{HIGHLIGHT_END, HIGHLIGHT_START};
-use crate::core::{EMBEDDING_DIM, EMBEDDING_MODEL_ID, EmbeddingEngine, ingestion};
-use crate::llm::{self, CandleEngine, Generator};
+use crate::core::{EMBEDDING_DIM, EMBEDDING_MODEL_ID, ingestion};
+#[cfg(feature = "semantic")]
+use crate::core::EmbeddingEngine;
+use crate::llm;
+#[cfg(feature = "semantic")]
+use crate::llm::{CandleEngine, Generator};
 
 /// KNN / FTS candidate pool fed to RRF (same as `app::RETRIEVAL_CANDIDATES`).
 const RETRIEVAL_CANDIDATES: usize = 30;
@@ -23,6 +27,7 @@ const RETRIEVAL_CANDIDATES: usize = 30;
 /// narrow filter still finds its matches.
 const FILTERED_CANDIDATES: usize = 300;
 /// Chunks retrieved for the RAG prompt (same as `app::CHAT_TOP_K`).
+#[cfg_attr(not(feature = "semantic"), allow(dead_code))]
 const ASK_TOP_K: usize = 5;
 /// Prefix of a `document_hashes` entry written by a keyword-only run: the
 /// note is chunked and FTS-indexed but its vectors are zeros, so a later
@@ -32,6 +37,7 @@ pub(super) const KEYWORD_ONLY_HASH_PREFIX: &str = "kw:";
 /// A model that is loaded on first use and, once it failed, is not
 /// retried for the lifetime of the service (loading is slow).
 #[derive(Default)]
+#[cfg_attr(not(feature = "semantic"), allow(dead_code))]
 pub(super) enum Lazy<T> {
     #[default]
     Unloaded,
@@ -39,6 +45,7 @@ pub(super) enum Lazy<T> {
     Failed(String),
 }
 
+#[cfg_attr(not(feature = "semantic"), allow(dead_code))]
 impl<T> Lazy<T> {
     fn get_or_load(&mut self, load: impl FnOnce() -> Result<T>) -> Result<&mut T, String> {
         if matches!(self, Lazy::Unloaded) {
@@ -55,8 +62,25 @@ impl<T> Lazy<T> {
     }
 }
 
+/// Tanpa fitur `semantic` tidak ada model yang bisa dimuat; tipe kosong
+/// ini menjaga bentuk `VaultService` tetap sama sehingga jalur leksikal
+/// (FTS SQLite) tidak perlu percabangan di mana-mana.
+#[cfg(not(feature = "semantic"))]
+pub(super) enum NoModel {}
+
+#[cfg(feature = "semantic")]
 pub(super) type LazyEmbedder = Lazy<EmbeddingEngine>;
+#[cfg(not(feature = "semantic"))]
+pub(super) type LazyEmbedder = Lazy<NoModel>;
+#[cfg(feature = "semantic")]
 pub(super) type LazyGenerator = Lazy<CandleEngine>;
+#[cfg(not(feature = "semantic"))]
+pub(super) type LazyGenerator = Lazy<NoModel>;
+
+/// Pesan seragam saat build tidak memuat model di perangkat.
+#[cfg(not(feature = "semantic"))]
+pub(super) const NO_SEMANTIC: &str =
+    "build ini tanpa fitur `semantic`: pencarian vektor dan `ask` tidak tersedia, pakai pencarian kata kunci";
 
 fn is_sheet(path: &std::path::Path) -> bool {
     crate::sheet::is_sheet_path(path)
@@ -102,11 +126,19 @@ impl HitFilter {
 }
 
 impl VaultService {
+    #[cfg(feature = "semantic")]
     fn embedder(&mut self) -> Result<&mut EmbeddingEngine, String> {
         self.embedder.get_or_load(|| {
             log::info!("api: loading embedding model {EMBEDDING_MODEL_ID}");
             EmbeddingEngine::new()
         })
+    }
+
+    /// Tanpa model di perangkat: selalu gagal, dan pemanggilnya jatuh ke
+    /// jalur kata kunci sambil menambahkan peringatan.
+    #[cfg(not(feature = "semantic"))]
+    fn embedder(&mut self) -> Result<&mut NoModel, String> {
+        Err(NO_SEMANTIC.to_string())
     }
 
     // ─── Reindex ─────────────────────────────────────────────────────────
@@ -197,18 +229,30 @@ impl VaultService {
     /// Chunk vectors for `inputs`: real embeddings when `semantic`, zero
     /// vectors for a keyword-only pass.
     pub(super) fn vectors_for(&mut self, inputs: &[String], semantic: bool) -> Result<Vec<Vec<f32>>> {
+        // Tanpa model di perangkat, setiap pass adalah pass kata kunci.
+        #[cfg(not(feature = "semantic"))]
+        let semantic = {
+            let _ = semantic;
+            false
+        };
         if !semantic || inputs.is_empty() {
             return Ok(vec![vec![0.0; EMBEDDING_DIM]; inputs.len()]);
         }
+        #[cfg(not(feature = "semantic"))]
+        unreachable!("tanpa fitur semantic, `semantic` selalu false");
+        #[cfg(feature = "semantic")]
         let embedder = self.embedder().map_err(anyhow::Error::msg)?;
-        let v = embedder.embed(inputs).context("embedding chunks")?;
-        anyhow::ensure!(
-            v.len() == inputs.len(),
-            "embedder returned {} vectors for {} chunks",
-            v.len(),
-            inputs.len()
-        );
-        Ok(v)
+        #[cfg(feature = "semantic")]
+        {
+            let v = embedder.embed(inputs).context("embedding chunks")?;
+            anyhow::ensure!(
+                v.len() == inputs.len(),
+                "embedder returned {} vectors for {} chunks",
+                v.len(),
+                inputs.len()
+            );
+            Ok(v)
+        }
     }
 
     /// Re-chunks note `i` after an agent edit so `search`/`recall` see it
@@ -269,10 +313,13 @@ impl VaultService {
         let mut used_semantic = false;
         let mut vector_hits = Vec::new();
         if semantic {
-            let embedding = match self.embedder() {
+            let embedding: Result<Vec<f32>, String> = match self.embedder() {
+                #[cfg(feature = "semantic")]
                 Ok(embedder) => embedder
                     .embed_query(query)
                     .map_err(|e| format!("query embedding failed: {e:#}")),
+                #[cfg(not(feature = "semantic"))]
+                Ok(_) => unreachable!("tanpa fitur semantic tidak ada model"),
                 Err(msg) => Err(format!("embedding model unavailable, keyword-only: {msg}")),
             };
             match embedding.and_then(|e| {
@@ -405,6 +452,13 @@ impl VaultService {
     /// Retrieves context for `question`, builds the grounded prompt and
     /// runs the local LLM to completion. Loads the model on first call.
     pub fn ask(&mut self, req: &AskRequest) -> Result<AskResult> {
+        #[cfg(not(feature = "semantic"))]
+        {
+            let _ = req;
+            anyhow::bail!(NO_SEMANTIC);
+        }
+        #[cfg(feature = "semantic")]
+        {
         let question = req.question.trim().to_string();
         anyhow::ensure!(!question.is_empty(), "empty question");
         let (hits, semantic, warnings) = self.retrieve(&question, ASK_TOP_K, true, false, &HitFilter::default())?;
@@ -443,6 +497,7 @@ impl VaultService {
             semantic,
             warnings,
         })
+        }
     }
 }
 
