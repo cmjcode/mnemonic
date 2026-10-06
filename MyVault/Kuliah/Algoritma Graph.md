@@ -2,24 +2,28 @@
 id: 28b9c0d1-e2f3-4567-bcde-890123456789
 title: Algoritma Graph
 type: note
-created: 2026-08-10T09:00:00+07:00
-modified: 2026-09-15T14:00:00+07:00
+created: 2026-08-10T02:00:00+00:00
+modified: 2026-09-19T13:11:10.251630+00:00
 pinned: false
 color: default
-tags: [kuliah, algoritma, graph, CS]
+tags:
+- kuliah
+- algoritma
+- graph
+- CS
 archived: false
 trashed: false
 ---
 
-# 📐 Algoritma Graph — Catatan Kuliah
+# 📐 Algoritma Graph — Catatan Kuliah ^rg0noe
 
-## Definisi Dasar
+## Definisi Dasar ^z3i3j8
 
 **Graph** G = (V, E) terdiri dari:
 - **V** = himpunan vertex (node) ^def-vertex
 - **E** = himpunan edge (sisi) yang menghubungkan pasangan vertex ^def-edge
 
-## Jenis Graph
+## Jenis Graph ^b4qpfq
 
 | Jenis              | Directed? | Weighted? | Contoh                  |
 |---------------------|-----------|-----------|-------------------------|
@@ -29,10 +33,11 @@ trashed: false
 | DAG                 | ✅        | ❌        | Dependency resolution   |
 | Bipartite           | ❌        | ❌        | Matching pekerjaan      |
 | Complete (Kₙ)       | ❌        | ❌        | Round-robin tournament  |
+^dveq0f
 
-## Representasi Graph
+## Representasi Graph ^na9rjp
 
-### Adjacency List (yang digunakan Mnemonic)
+### Adjacency List (yang digunakan Mnemonic) ^tjtsbr
 
 ```rust
 use std::collections::HashMap;
@@ -56,8 +61,9 @@ impl Graph {
     }
 }
 ```
+^2bmy00
 
-### Adjacency Matrix
+### Adjacency Matrix ^3ypz6s
 
 ```rust
 struct MatrixGraph {
@@ -65,13 +71,14 @@ struct MatrixGraph {
     size: usize,
 }
 ```
+^h180ss
 
 > [!note] Mnemonic menggunakan adjacency list
 > Knowledge graph di Mnemonic menggunakan adjacency list karena
 > graph catatan biasanya sparse (setiap catatan hanya terhubung
-> ke beberapa catatan lain, bukan semua).
+> ke beberapa catatan lain, bukan semua). ^335jk7
 
-## Algoritma Traversal
+## Algoritma Traversal ^3kovqk
 
 ### BFS (Breadth-First Search) ^bfs-algo
 
@@ -100,8 +107,9 @@ fn bfs(graph: &Graph, start: NodeId) -> Vec<NodeId> {
     order
 }
 ```
+^iw5lnr
 
-**Kompleksitas:** O(V + E) waktu, O(V) ruang
+**Kompleksitas:** O(V + E) waktu, O(V) ruang ^ezb6kc
 
 ### DFS (Depth-First Search) ^dfs-algo
 
@@ -127,8 +135,9 @@ fn dfs(graph: &Graph, start: NodeId) -> Vec<NodeId> {
     order
 }
 ```
+^w70bsv
 
-**Kompleksitas:** O(V + E) waktu, O(V) ruang
+**Kompleksitas:** O(V + E) waktu, O(V) ruang ^x8iznw
 
 ## Shortest Path — Dijkstra ^dijkstra
 
@@ -145,8 +154,9 @@ flowchart LR
     style A fill:#4CAF50,color:#fff
     style F fill:#F44336,color:#fff
 ```
+^bxrk7s
 
-Jalur terpendek A → F: **A → B → E → F** (total: 4 + 1 + 3 = **8**)
+Jalur terpendek A → F: **A → B → E → F** (total: 4 + 1 + 3 = **8**) ^3tqrqk
 
 ```rust
 use std::collections::BinaryHeap;
@@ -189,8 +199,9 @@ fn dijkstra(graph: &Graph, start: NodeId, end: NodeId) -> Option<(f32, Vec<NodeI
     None
 }
 ```
+^d36xiy
 
-## Canvas & Block Binding
+## Canvas & Block Binding ^ykv1jp
 
 > Di Mnemonic, buka **Canvas mode** untuk melihat diagram visual dari catatan ini.
 > Node-node canvas **terikat ke block reference** di atas:
@@ -200,7 +211,7 @@ fn dijkstra(graph: &Graph, start: NodeId, end: NodeId) -> Option<(f32, Vec<NodeI
 > - Node "Vertex" terikat ke `^def-vertex`
 > - Node "Edge" terikat ke `^def-edge`
 
-## Aplikasi di Mnemonic
+## Aplikasi di Mnemonic ^3bl2ii
 
 Graph digunakan di Mnemonic untuk:
 1. **Knowledge Graph** — catatan = node, wikilink = edge

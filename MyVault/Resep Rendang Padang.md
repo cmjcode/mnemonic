@@ -2,17 +2,23 @@
 id: 39a0b1c2-d3e4-5678-9abc-def012345678
 title: Resep Rendang Padang
 type: note
-created: 2026-07-20T11:00:00+07:00
-modified: 2026-09-10T15:30:00+07:00
+created: 2026-07-20T04:00:00+00:00
+modified: 2026-09-19T13:12:02.317692+00:00
 pinned: false
 color: coral
-tags: [resep, masakan, padang, favorit]
-aliases: [Rendang, Rendang Daging]
+tags:
+- resep
+- masakan
+- padang
+- favorit
+aliases:
+- Rendang
+- Rendang Daging
 archived: false
 trashed: false
 ---
 
-# 🍲 Resep Rendang Padang Autentik
+# 🍲 Resep Rendang Padang Autentik ^b7oifd
 
 Resep warisan Nenek dari Bukittinggi, dimodifikasi sedikit untuk dapur modern.
 
@@ -20,15 +26,15 @@ Resep warisan Nenek dari Bukittinggi, dimodifikasi sedikit untuk dapur modern.
 > Kunci rendang yang lezat adalah **kesabaran** — masak dengan api kecil
 > selama 4-5 jam hingga santan meresap sempurna dan daging empuk.
 
-## Bahan-bahan (untuk 6 porsi)
+## Bahan-bahan (untuk 6 porsi) ^j4wyu7
 
-### Bahan Utama
+### Bahan Utama ^4zd5kb
 - [ ] Daging sapi (has dalam) — 1 kg, potong dadu 4cm
 - [ ] Santan kental — 1 liter (dari 2 butir kelapa)
 - [ ] Santan encer — 500 ml
 - [ ] Minyak goreng — 3 sdm
 
-### Bumbu Halus
+### Bumbu Halus ^on53r8
 - [ ] Bawang merah — 15 butir
 - [ ] Bawang putih — 8 siung
 - [ ] Cabai merah keriting — 15 buah
@@ -37,7 +43,7 @@ Resep warisan Nenek dari Bukittinggi, dimodifikasi sedikit untuk dapur modern.
 - [ ] Lengkuas — 5 cm
 - [ ] Kunyit — 3 cm
 
-### Bumbu Tambahan
+### Bumbu Tambahan ^h7ew3i
 - [ ] Serai — 3 batang, memarkan
 - [ ] Daun kunyit — 2 lembar
 - [ ] Daun jeruk purut — 5 lembar
@@ -46,7 +52,7 @@ Resep warisan Nenek dari Bukittinggi, dimodifikasi sedikit untuk dapur modern.
 - [ ] Garam secukupnya
 - [ ] Gula merah — 1 sdm
 
-## Langkah Memasak
+## Langkah Memasak ^xjmj1d
 
 1. **Tumis bumbu** (15 menit)
    Panaskan minyak, tumis bumbu halus bersama serai, daun kunyit,
@@ -68,7 +74,7 @@ Resep warisan Nenek dari Bukittinggi, dimodifikasi sedikit untuk dapur modern.
    Masukkan kelapa sangrai, aduk rata. Masak hingga bumbu
    kering dan minyak keluar. Rendang siap! 🎉
 
-## Tips & Trik
+## Tips & Trik ^l9hs1h
 
 > [!warning] Jangan Ditinggal!
 > Saat santan mulai menyusut, jangan tinggalkan kompor.
@@ -79,7 +85,7 @@ Resep warisan Nenek dari Bukittinggi, dimodifikasi sedikit untuk dapur modern.
 - Rendang makin enak setelah didiamkan semalaman
 - Simpan di freezer tahan hingga 1 bulan
 
-## Informasi Gizi (per porsi)
+## Informasi Gizi (per porsi) ^hsueo6
 
 | Nutrisi      | Jumlah  |
 |-------------|---------|
@@ -88,7 +94,8 @@ Resep warisan Nenek dari Bukittinggi, dimodifikasi sedikit untuk dapur modern.
 | Lemak       | 30g     |
 | Karbohidrat | 8g      |
 | Serat       | 2g      |
+^5ocni5
 
 Pastikan bahan-bahan ada di [[Belanja Mingguan]]!
 
-#resep #masakan #padang #favorit
+#resep #masakan #padang #favorit ^3pqkeu

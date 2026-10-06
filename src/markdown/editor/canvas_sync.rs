@@ -450,7 +450,11 @@ mod tests {
             file("n3", "cccccc", 160),
         );
         std::fs::write(note.sidecar_path(), json).unwrap();
+        // Reload so the note sees its sidecar, like opening it in the app.
+        let note = Note::load(&note.path).unwrap();
+        assert!(note.has_sidecar);
         let mut e = MarkdownEditor::open_in(note, Some(dir.path()));
+        assert!(!e.is_section_canvas(), "sidecar is loaded as the old block canvas");
         e.ensure_canvas();
         assert!(e.is_section_canvas());
         let diagram = box_of(&e, "erDiagram");

@@ -3,7 +3,7 @@ id: d4e5f6a7-b8c9-0123-defa-456789012345
 title: Arsitektur Microservice
 type: note
 created: 2026-08-15T03:00:00+00:00
-modified: 2026-09-19T08:15:36.045449+00:00
+modified: 2026-09-19T13:10:29.835682+00:00
 pinned: false
 color: teal
 tags:
@@ -63,6 +63,7 @@ flowchart TB
     AISvc --> Vec
     AISvc --> Redis
 ```
+^7pvdcy
 
 ## Alur Autentikasi ^byy4d9
 
@@ -93,6 +94,7 @@ sequenceDiagram
     A-->>G: New access_token
     G-->>C: 200 + new token
 ```
+^15g3rf
 
 ## Entity Relationship — Data Model ^hinida
 
@@ -149,6 +151,7 @@ erDiagram
         bigint size_bytes
     }
 ```
+^tz73n4
 
 ## Status Deployment Pipeline ^5dzmey
 
@@ -165,6 +168,7 @@ stateDiagram-v2
     Rollback --> Staging : Hotfix Applied
     Production --> [*] : Stable Release 🎉
 ```
+^kz2vxp
 
 ## Distribusi Trafik ^kiav5p
 
@@ -176,6 +180,7 @@ pie title Distribusi Request per Service (September 2026)
     "Auth Service" : 8
     "File Upload" : 4
 ```
+^2u7hun
 
 ## Class Diagram — Core Domain ^e32ehx
 
@@ -220,6 +225,7 @@ classDiagram
     SearchEngine --> EmbeddingEngine
     LLMEngine --> SearchEngine : uses retrieval
 ```
+^rq7o4r
 
 > [!note] Performa Rendering Mermaid ^q5927v
 > Semua diagram di atas dirender **native dalam Rust** tanpa JavaScript/WebView. ^vdlgwc

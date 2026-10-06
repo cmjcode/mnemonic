@@ -135,6 +135,9 @@ pub struct MarkdownEditor {
     pub mode: EditorMode,
     /// Serialization format used by `mark_dirty_canvas`.
     canvas_storage: CanvasStorage,
+    /// Whether an older per-block sidecar was already checked for the
+    /// section upgrade (once per editor, on first canvas use).
+    block_upgrade_checked: bool,
     /// Vault root, for vault-relative paths in the sidecar and for
     /// resolving bindings into other notes.
     vault_root: Option<PathBuf>,
@@ -215,6 +218,7 @@ impl MarkdownEditor {
             note,
             mode: initial_mode,
             canvas_storage,
+            block_upgrade_checked: false,
             vault_root,
             sidecar_dirty: false,
             disk_fingerprint,
@@ -296,6 +300,11 @@ impl MarkdownEditor {
                 ),
             };
             self.canvas = Some(canvas);
+        }
+        // `open_in` loads a sidecar eagerly, so check here — not only when
+        // the canvas is first built — and only once.
+        if !self.block_upgrade_checked {
+            self.block_upgrade_checked = true;
             self.upgrade_block_canvas();
         }
         self.canvas.as_mut().unwrap()
