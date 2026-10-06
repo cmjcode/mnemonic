@@ -1,0 +1,635 @@
+{
+  "nodes": [
+    {
+      "id": "b82149bc-c515-4a38-9263-6f9028f6152d",
+      "type": "file",
+      "x": 60,
+      "y": 1151,
+      "width": 420,
+      "height": 124,
+      "color": "#E6F0FF",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#🏗️ Arsitektur Microservice Platform AI",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#66A6FF",
+        "stroke_width": 2.0,
+        "fill_color": "#E6F0FF",
+        "z": 13,
+        "scope": "segment",
+        "block_id": "sgeysr"
+      }
+    },
+    {
+      "id": "745ac2b6-6b87-4ea4-9a07-cbc49abc147c",
+      "type": "file",
+      "x": 491,
+      "y": 126,
+      "width": 314,
+      "height": 104,
+      "color": "#F2F5FC",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#Diagram Utama",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 14,
+        "scope": "segment",
+        "block_id": "8hzvg7"
+      }
+    },
+    {
+      "id": "1b0a6208-47b8-48e1-be7f-f40401ff7262",
+      "type": "file",
+      "x": 926,
+      "y": 19,
+      "width": 460,
+      "height": 320,
+      "color": "#FFFFFF",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^7pvdcy",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "Rectangle",
+        "stroke_color": "#9E85D9",
+        "stroke_width": 1.4,
+        "fill_color": "#FFFFFF",
+        "z": 15,
+        "scope": "segment",
+        "block_id": "7pvdcy"
+      }
+    },
+    {
+      "id": "7396d8ce-80d7-432e-a6d3-96e1d147c9a8",
+      "type": "file",
+      "x": 607,
+      "y": 544,
+      "width": 260,
+      "height": 64,
+      "color": "#F2F5FC",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#Alur Autentikasi",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 16,
+        "scope": "segment",
+        "block_id": "byy4d9"
+      }
+    },
+    {
+      "id": "d1d5b8ac-c2a6-4afa-a7bc-7b10e364b4ec",
+      "type": "file",
+      "x": 974,
+      "y": 408,
+      "width": 460,
+      "height": 320,
+      "color": "#FFFFFF",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^15g3rf",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "Rectangle",
+        "stroke_color": "#9E85D9",
+        "stroke_width": 1.4,
+        "fill_color": "#FFFFFF",
+        "z": 17,
+        "scope": "segment",
+        "block_id": "15g3rf"
+      }
+    },
+    {
+      "id": "a943255d-3067-4bfc-bb9d-07b8c8e9fe11",
+      "type": "file",
+      "x": 570,
+      "y": 884,
+      "width": 292,
+      "height": 64,
+      "color": "#F2F5FC",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#Entity Relationship — Data Model",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 18,
+        "scope": "segment",
+        "block_id": "hinida"
+      }
+    },
+    {
+      "id": "54b7d2bc-1de3-469b-8d9e-2dee6219a760",
+      "type": "file",
+      "x": 974,
+      "y": 756,
+      "width": 460,
+      "height": 320,
+      "color": "#FFFFFF",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^tz73n4",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "Rectangle",
+        "stroke_color": "#9E85D9",
+        "stroke_width": 1.4,
+        "fill_color": "#FFFFFF",
+        "z": 19,
+        "scope": "segment",
+        "block_id": "tz73n4"
+      }
+    },
+    {
+      "id": "2817723f-5703-45c7-874f-f5ae5431d231",
+      "type": "file",
+      "x": 570,
+      "y": 1232,
+      "width": 260,
+      "height": 64,
+      "color": "#F2F5FC",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#Status Deployment Pipeline",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 20,
+        "scope": "segment",
+        "block_id": "5dzmey"
+      }
+    },
+    {
+      "id": "107e534b-00dc-4058-9127-90ef31042305",
+      "type": "file",
+      "x": 974,
+      "y": 1104,
+      "width": 460,
+      "height": 320,
+      "color": "#FFFFFF",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^kz2vxp",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "Rectangle",
+        "stroke_color": "#9E85D9",
+        "stroke_width": 1.4,
+        "fill_color": "#FFFFFF",
+        "z": 21,
+        "scope": "segment",
+        "block_id": "kz2vxp"
+      }
+    },
+    {
+      "id": "27570d81-307e-4ce1-af41-ba3a9b139d91",
+      "type": "file",
+      "x": 570,
+      "y": 1580,
+      "width": 260,
+      "height": 64,
+      "color": "#F2F5FC",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#Distribusi Trafik",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 22,
+        "scope": "segment",
+        "block_id": "kiav5p"
+      }
+    },
+    {
+      "id": "54b05e59-1e2b-46a8-a6d4-01b35ef6d0d0",
+      "type": "file",
+      "x": 974,
+      "y": 1452,
+      "width": 460,
+      "height": 320,
+      "color": "#FFFFFF",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^2u7hun",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "Rectangle",
+        "stroke_color": "#9E85D9",
+        "stroke_width": 1.4,
+        "fill_color": "#FFFFFF",
+        "z": 23,
+        "scope": "segment",
+        "block_id": "2u7hun"
+      }
+    },
+    {
+      "id": "a3c5e1de-e8e2-4eea-8d27-fa38d673ac10",
+      "type": "file",
+      "x": 570,
+      "y": 2051,
+      "width": 260,
+      "height": 64,
+      "color": "#F2F5FC",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#Class Diagram — Core Domain",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 24,
+        "scope": "segment",
+        "block_id": "e32ehx"
+      }
+    },
+    {
+      "id": "a8706905-d05f-4705-9d66-99083daa7630",
+      "type": "file",
+      "x": 974,
+      "y": 1800,
+      "width": 460,
+      "height": 320,
+      "color": "#FFFFFF",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^rq7o4r",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "Rectangle",
+        "stroke_color": "#9E85D9",
+        "stroke_width": 1.4,
+        "fill_color": "#FFFFFF",
+        "z": 25,
+        "scope": "segment",
+        "block_id": "rq7o4r"
+      }
+    },
+    {
+      "id": "0ef516be-ca1e-401b-9d14-f6ec8f4070f1",
+      "type": "file",
+      "x": 974,
+      "y": 2148,
+      "width": 300,
+      "height": 218,
+      "color": "#FFFAE6",
+      "file": "Arsitektur Microservice.md",
+      "subpath": "#^k8z3u0",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#CCB373",
+        "stroke_width": 1.4,
+        "fill_color": "#FFFAE6",
+        "z": 26,
+        "scope": "segment",
+        "block_id": "k8z3u0"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "7052cfa0-9fef-47ac-a61a-1dff813945bb",
+      "fromNode": "a3c5e1de-e8e2-4eea-8d27-fa38d673ac10",
+      "fromSide": "right",
+      "toNode": "0ef516be-ca1e-401b-9d14-f6ec8f4070f1",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          830.0,
+          2083.0
+        ],
+        "to_pos": [
+          973.6,
+          2257.0
+        ],
+        "z": 0,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "fa5e4b8a-80b7-4548-bcc4-1c20845b81e6",
+      "fromNode": "a3c5e1de-e8e2-4eea-8d27-fa38d673ac10",
+      "fromSide": "right",
+      "toNode": "a8706905-d05f-4705-9d66-99083daa7630",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          830.0,
+          2083.0
+        ],
+        "to_pos": [
+          973.6,
+          1960.0
+        ],
+        "z": 1,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "00ac6f35-4c2e-4c3f-865c-439a5e54fe55",
+      "fromNode": "b82149bc-c515-4a38-9263-6f9028f6152d",
+      "fromSide": "bottom",
+      "toNode": "a3c5e1de-e8e2-4eea-8d27-fa38d673ac10",
+      "toSide": "top",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          270.0,
+          1275.0
+        ],
+        "to_pos": [
+          700.0,
+          2051.0
+        ],
+        "z": 2,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "dab6273a-ca44-4a33-a3a3-b9d664a3244f",
+      "fromNode": "27570d81-307e-4ce1-af41-ba3a9b139d91",
+      "fromSide": "right",
+      "toNode": "54b05e59-1e2b-46a8-a6d4-01b35ef6d0d0",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          830.0,
+          1612.0
+        ],
+        "to_pos": [
+          973.6,
+          1612.0
+        ],
+        "z": 3,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "de127372-a2ad-4ab2-8955-3d467b6aadbf",
+      "fromNode": "b82149bc-c515-4a38-9263-6f9028f6152d",
+      "fromSide": "right",
+      "toNode": "27570d81-307e-4ce1-af41-ba3a9b139d91",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          480.0,
+          1213.0
+        ],
+        "to_pos": [
+          570.0,
+          1612.0
+        ],
+        "z": 4,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "5849b897-02f0-4f25-8405-83d752b01733",
+      "fromNode": "2817723f-5703-45c7-874f-f5ae5431d231",
+      "fromSide": "right",
+      "toNode": "107e534b-00dc-4058-9127-90ef31042305",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          830.0,
+          1264.0
+        ],
+        "to_pos": [
+          973.6,
+          1264.0
+        ],
+        "z": 5,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "934d8260-5d6a-46e6-b7c3-53bd9125395d",
+      "fromNode": "b82149bc-c515-4a38-9263-6f9028f6152d",
+      "fromSide": "right",
+      "toNode": "2817723f-5703-45c7-874f-f5ae5431d231",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          480.0,
+          1213.0
+        ],
+        "to_pos": [
+          570.0,
+          1264.0
+        ],
+        "z": 6,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "07c0242e-d9f5-41e2-8221-c7de122b2f64",
+      "fromNode": "a943255d-3067-4bfc-bb9d-07b8c8e9fe11",
+      "fromSide": "right",
+      "toNode": "54b7d2bc-1de3-469b-8d9e-2dee6219a760",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          862.0,
+          916.0
+        ],
+        "to_pos": [
+          973.6,
+          916.0
+        ],
+        "z": 7,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "9ab13885-209e-4d86-8842-c403d6c6c0e2",
+      "fromNode": "b82149bc-c515-4a38-9263-6f9028f6152d",
+      "fromSide": "right",
+      "toNode": "a943255d-3067-4bfc-bb9d-07b8c8e9fe11",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          480.0,
+          1213.0
+        ],
+        "to_pos": [
+          570.0,
+          916.0
+        ],
+        "z": 8,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "b01e3dbe-8464-4c73-a0be-d684e2caf53d",
+      "fromNode": "7396d8ce-80d7-432e-a6d3-96e1d147c9a8",
+      "fromSide": "right",
+      "toNode": "d1d5b8ac-c2a6-4afa-a7bc-7b10e364b4ec",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          866.8276,
+          575.9568
+        ],
+        "to_pos": [
+          973.6,
+          568.0
+        ],
+        "z": 9,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "3207c7b6-6917-446d-8bb7-881d346f1ba1",
+      "fromNode": "b82149bc-c515-4a38-9263-6f9028f6152d",
+      "fromSide": "top",
+      "toNode": "7396d8ce-80d7-432e-a6d3-96e1d147c9a8",
+      "toSide": "bottom",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          270.0,
+          1151.0
+        ],
+        "to_pos": [
+          736.8276,
+          607.9567
+        ],
+        "z": 10,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "b83a2992-9719-40d7-bcdf-3f1707a7460c",
+      "fromNode": "745ac2b6-6b87-4ea4-9a07-cbc49abc147c",
+      "fromSide": "right",
+      "toNode": "1b0a6208-47b8-48e1-be7f-f40401ff7262",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          804.6644,
+          178.0906
+        ],
+        "to_pos": [
+          926.0293,
+          178.76143
+        ],
+        "z": 11,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "22041c74-d90b-473d-b283-b806660d8ede",
+      "fromNode": "b82149bc-c515-4a38-9263-6f9028f6152d",
+      "fromSide": "top",
+      "toNode": "745ac2b6-6b87-4ea4-9a07-cbc49abc147c",
+      "toSide": "bottom",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          270.0,
+          1151.0
+        ],
+        "to_pos": [
+          647.8645,
+          230.0906
+        ],
+        "z": 12,
+        "meta": {
+          "outline": true
+        }
+      }
+    }
+  ],
+  "mnemonic": {
+    "id": "dfe9084b-efaf-4441-9980-715918fea657",
+    "viewport": {
+      "pan": [
+        -241.71948,
+        -1362.8922
+      ],
+      "zoom": 1.0638642
+    }
+  }
+}

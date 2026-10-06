@@ -1,0 +1,635 @@
+{
+  "nodes": [
+    {
+      "id": "10a79d16-db0f-4244-bb0b-80245d40a7db",
+      "type": "file",
+      "x": 60,
+      "y": 1062,
+      "width": 260,
+      "height": 64,
+      "color": "#E6F0FF",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#🚀 Proyek Startup AI",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#66A6FF",
+        "stroke_width": 2.0,
+        "fill_color": "#E6F0FF",
+        "z": 13,
+        "scope": "segment",
+        "block_id": "8a6jg2"
+      }
+    },
+    {
+      "id": "9c3f46b9-2307-4c4f-80ac-67616c231c83",
+      "type": "file",
+      "x": 410,
+      "y": 60,
+      "width": 420,
+      "height": 264,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Ringkasan Eksekutif",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 14,
+        "scope": "segment",
+        "block_id": "v7ydyj"
+      }
+    },
+    {
+      "id": "900d7d5d-b111-4685-9d2f-b28d3b5fccb7",
+      "type": "file",
+      "x": 410,
+      "y": 392,
+      "width": 260,
+      "height": 64,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Tim Inti",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 15,
+        "scope": "segment",
+        "block_id": "3gvoss"
+      }
+    },
+    {
+      "id": "a30695db-5eb8-4042-8625-eb898b7236b0",
+      "type": "file",
+      "x": 920,
+      "y": 352,
+      "width": 360,
+      "height": 144,
+      "color": "#F0FAF0",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^cjy45m",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "Rectangle",
+        "stroke_color": "#73B380",
+        "stroke_width": 1.4,
+        "fill_color": "#F0FAF0",
+        "z": 16,
+        "scope": "segment",
+        "block_id": "cjy45m"
+      }
+    },
+    {
+      "id": "83eedd4c-1790-49c2-b1ca-19375ffa91de",
+      "type": "file",
+      "x": 410,
+      "y": 564,
+      "width": 420,
+      "height": 204,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Visi Produk",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 17,
+        "scope": "segment",
+        "block_id": "21e3c3"
+      }
+    },
+    {
+      "id": "1f8aec86-c133-4ae4-9e55-6606f06683df",
+      "type": "file",
+      "x": 920,
+      "y": 524,
+      "width": 420,
+      "height": 284,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Keunggulan Kompetitif",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 18,
+        "scope": "segment",
+        "block_id": "952lns"
+      }
+    },
+    {
+      "id": "3c1179d9-b090-497d-a937-65289494e55f",
+      "type": "file",
+      "x": 447,
+      "y": 816,
+      "width": 420,
+      "height": 244,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Riset Teknis",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 19,
+        "scope": "segment",
+        "block_id": "iyu26s"
+      }
+    },
+    {
+      "id": "cd35fe1a-1065-441a-b69a-4b13f0a9d310",
+      "type": "file",
+      "x": 410,
+      "y": 1118,
+      "width": 420,
+      "height": 164,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Analisis Pasar",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 20,
+        "scope": "segment",
+        "block_id": "041ar7"
+      }
+    },
+    {
+      "id": "2b825f03-f512-421b-a1be-dddebbea5846",
+      "type": "file",
+      "x": 920,
+      "y": 1108,
+      "width": 420,
+      "height": 184,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Target Pasar",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 21,
+        "scope": "segment",
+        "block_id": "mhm6bm"
+      }
+    },
+    {
+      "id": "a9af891b-2f91-4c58-ba8d-6ca2af150ce4",
+      "type": "file",
+      "x": 410,
+      "y": 1364,
+      "width": 420,
+      "height": 104,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Anggaran & Keuangan",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 22,
+        "scope": "segment",
+        "block_id": "f6xgft"
+      }
+    },
+    {
+      "id": "b3cf61a3-ebaf-4dfc-baf5-0f17ce7052d9",
+      "type": "file",
+      "x": 920,
+      "y": 1320,
+      "width": 360,
+      "height": 192,
+      "color": "#F0FAF0",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#^5uqzxr",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "Rectangle",
+        "stroke_color": "#73B380",
+        "stroke_width": 1.4,
+        "fill_color": "#F0FAF0",
+        "z": 23,
+        "scope": "segment",
+        "block_id": "5uqzxr"
+      }
+    },
+    {
+      "id": "6ad41445-6efb-44b0-b905-8d216ca9ee06",
+      "type": "file",
+      "x": 410,
+      "y": 1540,
+      "width": 420,
+      "height": 124,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Arsitektur Teknis",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 24,
+        "scope": "segment",
+        "block_id": "9s6dnu"
+      }
+    },
+    {
+      "id": "e9c6340a-3806-4acc-b92c-53f85a8f8c52",
+      "type": "file",
+      "x": 410,
+      "y": 1692,
+      "width": 420,
+      "height": 244,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Milestone",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 25,
+        "scope": "segment",
+        "block_id": "euhrwz"
+      }
+    },
+    {
+      "id": "bfc37e3f-19da-4980-b3b5-d98144b0d633",
+      "type": "file",
+      "x": 410,
+      "y": 1964,
+      "width": 420,
+      "height": 164,
+      "color": "#F2F5FC",
+      "file": "Proyek Startup AI.md",
+      "subpath": "#Ide Lain yang Terkait",
+      "mnemonic": {
+        "kind": "shape",
+        "shape": "RoundedRect",
+        "stroke_color": "#8C9EC7",
+        "stroke_width": 1.4,
+        "fill_color": "#F2F5FC",
+        "z": 26,
+        "scope": "segment",
+        "block_id": "k2bh2i"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "ce865952-025d-42d9-969d-584331f3e99d",
+      "fromNode": "10a79d16-db0f-4244-bb0b-80245d40a7db",
+      "fromSide": "bottom",
+      "toNode": "bfc37e3f-19da-4980-b3b5-d98144b0d633",
+      "toSide": "top",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          190.0,
+          1126.0
+        ],
+        "to_pos": [
+          620.0,
+          1964.0
+        ],
+        "z": 0,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "2a6eac7b-26f8-4cd2-a0f5-ea7a436f3e1e",
+      "fromNode": "10a79d16-db0f-4244-bb0b-80245d40a7db",
+      "fromSide": "bottom",
+      "toNode": "e9c6340a-3806-4acc-b92c-53f85a8f8c52",
+      "toSide": "top",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          190.0,
+          1126.0
+        ],
+        "to_pos": [
+          620.0,
+          1692.0
+        ],
+        "z": 1,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "5adee885-a96e-441b-9f8e-aa03c3e7441f",
+      "fromNode": "10a79d16-db0f-4244-bb0b-80245d40a7db",
+      "fromSide": "bottom",
+      "toNode": "6ad41445-6efb-44b0-b905-8d216ca9ee06",
+      "toSide": "top",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          190.0,
+          1126.0
+        ],
+        "to_pos": [
+          620.0,
+          1540.0
+        ],
+        "z": 2,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "0219cbf1-5b2e-4684-b8be-4ec612c7a49f",
+      "fromNode": "a9af891b-2f91-4c58-ba8d-6ca2af150ce4",
+      "fromSide": "right",
+      "toNode": "b3cf61a3-ebaf-4dfc-baf5-0f17ce7052d9",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          830.0,
+          1416.0
+        ],
+        "to_pos": [
+          920.0,
+          1416.0
+        ],
+        "z": 3,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "8701886b-56ea-469e-ac37-c753be557ca3",
+      "fromNode": "10a79d16-db0f-4244-bb0b-80245d40a7db",
+      "fromSide": "right",
+      "toNode": "a9af891b-2f91-4c58-ba8d-6ca2af150ce4",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          320.0,
+          1094.0
+        ],
+        "to_pos": [
+          410.0,
+          1416.0
+        ],
+        "z": 4,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "8d167abb-268d-4ce6-8ed7-4ba64e3c55d4",
+      "fromNode": "cd35fe1a-1065-441a-b69a-4b13f0a9d310",
+      "fromSide": "right",
+      "toNode": "2b825f03-f512-421b-a1be-dddebbea5846",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          830.0,
+          1200.0
+        ],
+        "to_pos": [
+          920.0,
+          1200.0
+        ],
+        "z": 5,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "96bf7ebb-1fc6-48e4-98d4-3dbf485b6c96",
+      "fromNode": "10a79d16-db0f-4244-bb0b-80245d40a7db",
+      "fromSide": "right",
+      "toNode": "cd35fe1a-1065-441a-b69a-4b13f0a9d310",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          320.0,
+          1094.0
+        ],
+        "to_pos": [
+          410.0,
+          1200.0
+        ],
+        "z": 6,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "8fe82ab4-4a82-42aa-b246-93d2d9083201",
+      "fromNode": "10a79d16-db0f-4244-bb0b-80245d40a7db",
+      "fromSide": "right",
+      "toNode": "3c1179d9-b090-497d-a937-65289494e55f",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          320.0,
+          1094.0
+        ],
+        "to_pos": [
+          446.8826,
+          937.614
+        ],
+        "z": 7,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "dd396948-448d-449f-9f97-5ce7902c8cbb",
+      "fromNode": "83eedd4c-1790-49c2-b1ca-19375ffa91de",
+      "fromSide": "right",
+      "toNode": "1f8aec86-c133-4ae4-9e55-6606f06683df",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          830.0,
+          666.0
+        ],
+        "to_pos": [
+          920.0,
+          666.0
+        ],
+        "z": 8,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "3c0f14dd-cd1c-4d8c-a43b-18d79da2b6be",
+      "fromNode": "10a79d16-db0f-4244-bb0b-80245d40a7db",
+      "fromSide": "right",
+      "toNode": "83eedd4c-1790-49c2-b1ca-19375ffa91de",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          320.0,
+          1094.0
+        ],
+        "to_pos": [
+          410.0,
+          666.0
+        ],
+        "z": 9,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "bd304c22-15b7-42d3-8780-a867d02a9260",
+      "fromNode": "900d7d5d-b111-4685-9d2f-b28d3b5fccb7",
+      "fromSide": "right",
+      "toNode": "a30695db-5eb8-4042-8625-eb898b7236b0",
+      "toSide": "left",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          670.0,
+          424.0
+        ],
+        "to_pos": [
+          920.0,
+          424.0
+        ],
+        "z": 10,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "d29d6ea2-7e5b-450c-a5fc-3337d75ce9cc",
+      "fromNode": "10a79d16-db0f-4244-bb0b-80245d40a7db",
+      "fromSide": "top",
+      "toNode": "900d7d5d-b111-4685-9d2f-b28d3b5fccb7",
+      "toSide": "bottom",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          190.0,
+          1062.0
+        ],
+        "to_pos": [
+          540.0,
+          456.0
+        ],
+        "z": 11,
+        "meta": {
+          "outline": true
+        }
+      }
+    },
+    {
+      "id": "cea9725e-6645-4337-8042-cfd29edbdb30",
+      "fromNode": "10a79d16-db0f-4244-bb0b-80245d40a7db",
+      "fromSide": "top",
+      "toNode": "9c3f46b9-2307-4c4f-80ac-67616c231c83",
+      "toSide": "bottom",
+      "toEnd": "none",
+      "color": "#8C99B3",
+      "mnemonic": {
+        "routing": "Orthogonal",
+        "stroke_width": 1.5,
+        "from_pos": [
+          190.0,
+          1062.0
+        ],
+        "to_pos": [
+          620.0,
+          324.0
+        ],
+        "z": 12,
+        "meta": {
+          "outline": true
+        }
+      }
+    }
+  ],
+  "mnemonic": {
+    "id": "8f80ee98-e37f-454d-871c-9f6b2f62e9ef",
+    "viewport": {
+      "pan": [
+        -244.1992,
+        -583.41656
+      ],
+      "zoom": 1.0968086
+    }
+  }
+}

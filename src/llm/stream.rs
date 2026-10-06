@@ -63,7 +63,7 @@ pub enum GenerationEvent {
 /// Default cap on generated tokens per reply — generous enough for a
 /// multi-paragraph answer while bounding worst-case latency/CPU time for
 /// a runaway (non-terminating) generation.
-pub const DEFAULT_MAX_TOKENS: usize = 512;
+pub use super::DEFAULT_MAX_TOKENS;
 
 /// A dedicated background thread that generates streamed replies for
 /// submitted prompts, one at a time (chat is inherently sequential —

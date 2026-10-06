@@ -139,9 +139,12 @@ Aplikasi ini adalah tool produktivitas desktop/mobile mandiri (*100% offline & p
 ### 3.2 Modul 2: Markdown Editor & Renderer (Kualitas Setara Obsidian)
 
 #### 3.2.1 Mode Editing
-* **Live Preview Mode** (default, ala Obsidian): elemen markdown dirender langsung inline saat mengetik — heading tampil besar, bold/italic langsung terlihat, `- [ ]` langsung jadi checkbox interaktif — tanpa perlu split pane manual.
-* **Source Mode**: toggle opsional untuk melihat/mengedit teks markdown mentah (berguna untuk power-user/debugging).
-* **Reading Mode**: tampilan *read-only* yang dirender penuh, untuk pratinjau cepat atau presentasi layar penuh.
+* **Satu mode catatan — Live** (default, tidak ada lagi mode Tulis/Baca terpisah): catatan selalu tampil ter-render. **Klik sebuah baris → hanya baris itu** berubah jadi Markdown mentah di tempatnya; baris lain tetap ter-render. Tabel, fenced code, ```` ```mermaid ````, blok `$$` dan callout disunting utuh sebagai satu blok (klik, atau tombol ✎ saat di-hover).
+  * Keyboard ala Obsidian: **Enter** memecah baris (list & checklist berlanjut otomatis; Enter di butir kosong mengakhiri list), **Backspace** di awal baris / **Delete** di akhir baris menggabung dengan baris tetangga, **↑/↓** di tepi pindah ke blok tetangga, **Esc** atau klik di luar kembali membaca. Klik ruang kosong di bawah catatan = tulis baris baru.
+  * Popup `/` dan `[[` tetap bekerja di baris yang sedang disunting; setiap perubahan hanya mengganti baris itu di file (`live_blocks::replace_lines`, line ending asli dipertahankan) lewat undo & autosave yang sama.
+  * Implementasi: `markdown::live_blocks` (pemecahan blok, murni), `markdown::renderer` (render per blok, virtualisasi, tinggi blok diingat per isi), `app::editor::live` (penyuntingan).
+* **Source Mode** (tersembunyi): seluruh body sebagai Markdown mentah, hanya lewat command palette / ⌘E — untuk power-user/debugging.
+* Tab di top bar: **Catatan · Teks + Diagram · Kanvas**.
 
 #### 3.2.2 Elemen Markdown yang Didukung
 | Elemen | Perilaku Rendering |
@@ -164,8 +167,17 @@ Aplikasi ini adalah tool produktivitas desktop/mobile mandiri (*100% offline & p
 
 #### 3.2.3 Tema & Tipografi
 * Font UI kustom (mis. Inter/SF Pro untuk teks, JetBrains Mono untuk code block) melalui *custom font embedding* di `egui`.
-* Tema **Light** & **Dark** bawaan, plus kustomisasi warna aksen (accent color) mirip pengaturan tema Obsidian.
+* Tema aplikasi **Light** & **Dark** bawaan; warna isi catatan diatur oleh **tema baca** (§3.2.5).
 * Line-height & spacing paragraf diatur khusus untuk kenyamanan baca (desain *typography-first*, bukan tampilan monospace default egui).
+
+#### 3.2.5 Tema Baca, Cetak & Ekspor
+* **Tema baca** (`reading_theme`): satu set warna untuk isi catatan — latar, teks, bold, link, `#tag`, H1–H6, kode, quote, garis, tabel, highlight, checkbox, dan aksen callout — dengan varian `[light]`, `[dark]`, dan `[print]`. Dipakai di tampilan Live **dan** saat cetak/ekspor, sehingga kertas, PDF, dan layar berwarna sama.
+* **Bawaan:** `mnemonic` (netral), `pelangi` (tiap level heading berbeda warna), `ocean`, `sunset`, `forest`, `print-classic` (hemat tinta, aksen navy). Dipilih lewat ikon palet di top bar atau command palette; per catatan lewat frontmatter `theme: <id>`.
+* **Plugin tema:** file TOML deklaratif (tanpa kode, aman dibagikan) di `<config_dir>/mnemonic/themes/` atau `<vault>/.mnemonic/themes/`. Warna yang tidak diisi diwarisi dari `base` (default `mnemonic`); `[print]` default = `[light]`. File rusak dilaporkan & dilewati, tidak pernah membuat aplikasi gagal. Panduan: `docs/themes.md`.
+* **Cetak (⌘P):** HTML bertema dibuka di browser dengan dialog cetak otomatis; CSS memakai `print-color-adjust: exact`, jadi latar & aksen ikut tercetak.
+* **Ekspor PDF / HTML:** HTML mandiri (CSS dari tema, Mermaid sebagai SVG inline, gambar sebagai `data:` URI, callout/wikilink/tag/`==highlight==` ikut bergaya). PDF dibuat oleh browser Chromium (Chrome/Edge/Chromium/Brave, atau `MNEMONIC_BROWSER`) secara headless di thread latar; tanpa browser, pengguna diarahkan ke Cetak → Simpan sebagai PDF.
+* Agen: `mnemonic-cli themes list`, `mnemonic-cli notes export`, tool MCP `list_themes` & `export_note` (lihat `docs/agent-interface.md`).
+* Implementasi: `reading_theme` (model, loader, registry), `export` (`html`, `system`), `app::reading`.
 
 #### 3.2.4 Produktivitas Editor
 * Auto-save saat idle (debounce 500ms–1s) langsung ke file `.md` di disk.
@@ -262,6 +274,89 @@ Aplikasi ini adalah tool produktivitas desktop/mobile mandiri (*100% offline & p
 
 ---
 
+### 3.7 Modul 7: Diagram Mermaid Native (Rust murni)
+
+Diagram disimpan sebagai fence ```` ```mermaid ```` di dalam catatan `.md` — format teks yang paling dikenal agent AI dan dirender native oleh Obsidian. Tidak ada file kedua; sidecar `.canvas` (JSON Canvas) tetap dipakai hanya untuk papan tulis bebas (sticky, freehand, block-binding), dan Draw.io hanya untuk impor/ekspor. Modul: `src/mermaid/`.
+
+1. **Pipeline (§3.7.1):** `source::preprocess` → parser per tipe → layout → `Scene` (display list netral) → `paint` (egui) atau `svg`. Tidak ada JavaScript, WebView, maupun Node.
+2. **Parser & diagnostik (§3.7.2):** parser recursive-descent tulisan tangan per tipe. Frontmatter YAML (`title`, `config`), direktif `%%{init: …}%%`, komentar `%%`, `accTitle`/`accDescr` ditangani bersama. Parser tidak pernah panic dan tidak berhenti di baris pertama yang salah: setiap masalah menjadi `Diagnostic { line, col, severity, message }` (1-based, relatif terhadap isi fence) sehingga editor dan agent tahu posisi persisnya.
+3. **Layout (§3.7.3):** keluarga *layered* (Sugiyama, setara dagre) untuk flowchart, class, state, ER: penghapusan siklus DFS, ranking longest-path + balancing, rank digandakan agar setiap edge punya slot label, dummy node untuk edge panjang, minimisasi persilangan barycenter yang menjaga subgraph tetap kontigu (border node per rank, seperti dagre), koordinat via regresi isotonik (pool-adjacent-violators) per layer. Subgraph tanpa edge lintas-batas di-layout rekursif dengan `direction`-nya sendiri. Sequence, pie, dan tipe linear/chart memakai layout khusus yang kecil. Pengukuran teks lewat trait `TextMeasure`: di aplikasi memakai lebar glyph egui asli (`GlyphTable`, dikumpulkan sekali per diagram), di CLI/test memakai tabel aproksimasi deterministik.
+4. **Tema & gaya (§3.7.4):** tema `default`/`dark`/`forest`/`neutral`/`base` + `themeVariables`; `classDef`/`class`/`:::`/`style`/`linkStyle`. Tanpa tema eksplisit, diagram mengikuti mode terang/gelap aplikasi.
+5. **Rendering (§3.7.5):** `Scene` digambar langsung ke shape epaint (tanpa tekstur/SVG), dengan culling di luar layar, kuantisasi ukuran font, dan triangulasi poligon non-konveks. Hasil parse+layout di-cache per sumber (`RenderCache`), jadi frame yang tidak berubah tidak mem-parse ulang. Klik node dengan `click … href` membuka URL atau `[[wikilink]]`; hover menampilkan tooltip. Ekspor SVG untuk agent/CLI.
+6. **Tipe yang didukung (§3.7.6):** flowchart/graph (semua bentuk klasik + `@{ shape }` v11, semua jenis link, subgraph bersarang), sequence, class, state, ER, pie, mindmap (§3.9.4). Tipe lain (gantt, journey, gitGraph, timeline, quadrant, requirement, C4, sankey, xychart, block, packet, kanban, architecture, radar, treemap, zenuml) sudah dikenali; sampai diimplementasikan, catatan menampilkan sumbernya sebagai code block plus diagnostik — tidak pernah crash.
+7. **Antarmuka agent (§3.7.7):** `mnemonic-cli diagram list|validate|render` (validate/render berkas `.mmd` atau stdin tanpa vault) dan tool MCP `list_diagrams`, `validate_diagram`, `render_diagram`. Lihat `docs/agent-interface.md`.
+8. **Target performa:** parse+layout+SVG flowchart 550 node / 743 edge ≈ 20 ms (release, termasuk start proses); diagram tipikal < 1 ms. Mermaid.js membutuhkan ratusan ms–detik untuk ukuran yang sama karena mengukur teks lewat DOM.
+
+---
+
+### 3.8 Modul 8: Sheet — Data Tabular di Vault (CSV / XLSX)
+
+Posisi: data tabular yang *hidup di vault* dan terhubung ke catatan, RAG dan agent — **bukan** tiruan Excel. Untuk database, gunakan aplikasi TABULAR.
+
+1. **Format & Sumber Kebenaran:**
+   * `.csv` / `.tsv` adalah format sheet yang **bisa diedit**. File-nya tetap sumber kebenaran (plain text, ramah git & agent), sama seperti `.md`.
+   * Delimiter dideteksi otomatis (`,` `;` tab `|`) — CSV dari Excel ber-locale Indonesia sering memakai `;`. BOM UTF-8 dibuang saat baca dan dipertahankan saat tulis. Baris pertama = header.
+   * `.xlsx` / `.xlsm` / `.xls` / `.xlsb` / `.ods` dibuka **read-only** (`calamine`), satu tab per worksheet. Aplikasi **tidak pernah** menimpa workbook: menulis ulang XLSX akan menghilangkan formula, style, chart dan macro. Untuk mengedit, gunakan *Convert to CSV* (membuat `<nama> - <sheet>.csv` baru).
+   * *Export as XLSX* (`rust_xlsxwriter`) membuat workbook baru dari sheet CSV; angka diekspor sebagai angka.
+2. **Editor Grid:**
+   * Grid tervirtualisasi (hanya baris terlihat yang dirender), edit sel inline, tambah/hapus baris & kolom, ganti nama kolom, sort per kolom (numerik bila kolom berisi angka), filter teks, undo/redo, indikator *dirty*.
+   * Simpan atomic (temp file + rename), dengan pengecekan mtime sebelum menulis seperti catatan (§6 poin 4).
+   * Footer agregat per kolom numerik (COUNT, SUM, AVG, MIN, MAX) — **bukan** formula engine per sel.
+3. **Integrasi Vault:**
+   * Sheet tampil di sidebar, bisa di-link `[[data.csv]]` dan di-embed `![[data.csv]]` (tabel pratinjau N baris pertama di Reading mode), dan muncul sebagai node di graph seperti PDF.
+4. **Indeks & RAG (§3.3):**
+   * Sheet di-chunk per kelompok baris dengan format `Kolom: nilai` per baris agar embedding bermakna, lalu masuk FTS5 + vektor dengan `doc_type = "sheet"`. Sitasi menunjuk ke nomor baris.
+   * Pertanyaan agregasi angka dijawab lebih andal oleh `sheet query` yang deterministik daripada oleh LLM kecil; RAG dipakai untuk menemukan baris yang relevan.
+5. **Agent Interface (§Fase 2):**
+   * `VaultService` + CLI + MCP: `sheets list`, `sheet read` (paging, pilih worksheet), `sheet query` (filter kolom sederhana), `sheet set-cell`, `sheet append-row` (hanya CSV/TSV).
+6. **Batas Cakupan:** tidak ada formula per sel, styling sel, chart, pivot, merge cell, atau penulisan XLSX in-place.
+
+### 3.9 Modul 9: Catatan ⇄ Kanvas Menyatu (Sub Bab sebagai Kotak) & Ekspor Mermaid
+
+Posisi: satu catatan, dua tampilan. Teks tetap di `.md` (sumber kebenaran tunggal); kanvas adalah cara lain menyusun dan menghubungkan isi yang sama, lalu seluruhnya bisa keluar sebagai Mermaid.
+
+1. **Segmen section (§3.9.1, `markdown::sections`):** body dipotong menjadi segmen yang **tidak tumpang tindih**:
+   * `Section` = heading beserta prosa miliknya sendiri sampai heading berikutnya (level apa pun) atau komponen berikutnya;
+   * komponen `Table`, fence ```` ```mermaid ```` (`Mermaid`) dan fence lain (`Code`);
+   * `Text` = prosa sesudah komponen (atau sebelum heading pertama).
+   Identitas memakai anchor Obsidian `^id`: di baris heading (section), di baris terakhir (text), pada baris sendiri tepat di bawah tabel/fence (komponen). Nesting heading memberi setiap segmen `parent` → struktur mind map. Karena rentang tidak tumpang tindih, mengedit satu kotak tidak pernah bisa menimpa teks kotak lain.
+2. **Sinkronisasi dua arah (§3.9.2, `markdown::editor::canvas_sync`, `canvas::outline`):**
+   * Catatan biasa yang dibuka di mode Kanvas/Split menjadi *section canvas*: satu kotak terikat per segmen (`BlockBinding` ber-`scope: segment`), ditata sebagai mind map kiri→kanan, dengan edge `outline` induk→anak.
+   * Kanvas → Markdown: hanya kotak yang sedang diedit yang menulis balik, per ketikan selama teksnya tetap satu segmen sejenis. Bila edit memecah segmen (mengetik `## Sub baru`, menempel tabel), penulisan ditunda sampai editor ditutup, lalu segmen baru mendapat anchor dan kotak sendiri.
+   * Markdown → kanvas: setiap perubahan body menurunkan ulang teks semua kotak (kecuali yang sedang diketik), menambah kotak untuk segmen baru di sebelah induknya, menyelaraskan edge outline dengan nesting heading, dan memperbesar kotak yang teksnya bertambah. Undo/redo juga menyegarkan kanvas.
+   * Segmen baru mendapat anchor saat simpan/idle (autosave), tidak pernah di tengah ketikan.
+   * Kotak bebas digeser (posisi hanya di sidecar, urutan Markdown tidak berubah); connector yang terpasang ikut bergeser. "Rapikan sebagai mind map" menata ulang (dan mengonversi kanvas per-blok lama).
+   * Menghapus kotak di kanvas hanya menyembunyikannya (`hidden_segments` di sidecar); teksnya tetap. "Hapus dari catatan" adalah aksi eksplisit yang bisa di-undo. Kotak yang segmennya hilang dari Markdown ditandai *yatim* (garis merah putus-putus), tidak dihapus diam-diam.
+   * Isi kotak dirender sebagai Markdown ringkas: heading, list/checkbox, kutipan, tabel sebagai grid, dan fence ```` ```mermaid ```` sebagai diagram aslinya (sehingga kotak ERD bisa diletakkan di sebelah penjelasannya).
+   * Sidecar: node `file` dengan `subpath` `#Judul Heading` untuk section (Obsidian menampilkan seluruh section) atau `#^id` untuk komponen; `mnemonic.block_id` + `mnemonic.scope = "segment"` menjadi acuan yang tahan rename heading.
+3. **Kosakata diagram di kanvas (§3.9.3, `canvas::diagram_kinds`, `canvas::painter_diagram`):**
+   * Bentuk flowchart: persegi, membulat, stadion, lingkaran/elips, belah ketupat, heksagon, silinder, jajar genjang, subrutin, callout; frame = subgraph.
+   * ER: `Entity` (nama + atribut `tipe nama PK/FK "komentar"`), connector ber-relasi ER (kardinalitas kaki gagak di kedua ujung, identifying/non-identifying).
+   * Class: `ClassBox` (anotasi `<<…>>`, atribut, metode), relasi UML (pewarisan, komposisi, agregasi, asosiasi, dependensi, realisasi, tautan) dengan kardinalitas.
+   * State: titik `[*]` awal/akhir; bentuk yang terhubung dengannya menjadi state.
+   * Entity dan class diedit dalam bentuk teks mirip Mermaid (satu baris per atribut) di popover yang sama dengan kotak catatan.
+4. **Ekspor & impor Mermaid (§3.9.4, `canvas::mermaid_export`, `canvas::mermaid_import`):**
+   * Ekspor mempartisi kanvas per keluarga, satu diagram per keluarga: `flowchart` (kotak section, catatan tempel, bentuk, doc card; frame → `subgraph`; kotak terikat mendapat `click … href "[[Catatan#^id]]"`; edge outline menjadi link biasa), `erDiagram`, `classDiagram`, `stateDiagram-v2`, fence ```` ```mermaid ```` yang ada disalin apa adanya, dan opsional `mindmap` dari outline section.
+   * Yang tidak punya bentuk Mermaid (posisi, coretan bebas, connector yang tidak terpasang, connector antar-keluarga) dilaporkan sebagai `warnings`, tidak hilang diam-diam. Setiap diagram hasil ekspor lolos `mermaid::validate` tanpa error (diuji).
+   * Impor ("Ubah diagram Mermaid catatan jadi objek kanvas") mengubah fence `flowchart`/`erDiagram`/`classDiagram`/`stateDiagram` menjadi objek kanvas native yang bisa diedit, diposisikan oleh layout Mermaid (`Scene::hits`). Fence tetap di Markdown. Ekspor → impor → ekspor menghasilkan diagram yang sama (kecuali id dan posisi).
+   * Tipe `mindmap` dirender native (`mermaid::mindmap`).
+5. **Agent Interface (§3.9.5):** `mnemonic-cli canvas sections <REF>` / tool MCP `list_sections` (segmen, anchor, parent, rentang baris) dan `mnemonic-cli canvas mermaid <REF> [--mindmap] [--out F]` / `export_canvas_mermaid` (read-only; catatan tanpa sidecar diekspor dari outline yang dibangun di memori).
+
+### 3.10 Modul 10: Vault sebagai Memori Agent AI
+
+Posisi: struktur folder vault identik dengan Obsidian (subfolder bebas, folder tersembunyi `.obsidian`/`.git`/`.trash`/`.mnemonic` dilewati, format `.md` + YAML frontmatter tetap), tetapi agent mendapat lapisan yang tidak dimiliki Obsidian: identitas catatan yang tidak ambigu, baca per bagian, tulis yang aman terhadap edit bersamaan, dan semantik memori. Semuanya egui-free di `api::memory`, dipakai CLI dan MCP. Kontrak lengkap: `docs/agent-interface.md` ("Agent memory").
+
+1. **Orientasi & folder (§3.10.1, `api::memory::overview`):** `list_folders` (pohon folder + jumlah catatan langsung/subtree) dan `vault_overview` (folder, tag teratas, catatan terbaru, judul yang dipakai lebih dari satu catatan, isi `AGENTS.md` di root vault sebagai aturan vault untuk agent, tips). Resolusi link mengikuti Obsidian (`markdown::wikilink::WikilinkIndex`): judul boleh sama di folder berbeda; `[[Nama]]` memilih catatan di folder catatan asal, lalu yang paling dekat ke root; `[[Folder/Nama]]` menunjuk satu catatan secara eksplisit; rename di app ikut menulis ulang link ber-path. Referensi dari agent (`ref`) yang cocok dengan lebih dari satu catatan **ditolak** dengan daftar path-nya — agent tidak boleh membaca/menimpa catatan yang salah secara diam-diam.
+2. **Baca & ubah per bagian (§3.10.2, `markdown::outline`, `api::memory::edit`):** setiap `read_note` mengembalikan `outline` (heading, `Parent#Child`, rentang baris) dan bisa meminta satu `section` (heading, path heading, atau `^anchor`) atau `block`. Section = heading sampai heading berikutnya yang levelnya sama/lebih tinggi (subsection ikut). `append_note` menambah teks di akhir catatan/section; `patch_note` mengganti isi section (baris heading tetap), teks blok (anchor tetap) dan/atau `old_str` yang persis (harus unik kecuali `replace_all`). Line ending LF/CRLF dipertahankan.
+3. **Tulis aman & provenance (§3.10.3):** setiap baca memberi `content_hash` (FNV-1a byte file); `if_hash` pada `write_note`/`append_note`/`patch_note` menolak penulisan bila file sudah berubah (diketik user di app, atau agent lain). Setiap edit memuat ulang catatan dari disk dulu, jadi server MCP yang berjalan lama tidak pernah menulis salinan basi. Nama agent dicatat sebagai `updated_by`/`created_by` di frontmatter (kunci biasa, tetap catatan Obsidian yang valid). `create_if_missing` hanya membuat catatan bila namanya benar-benar tidak ada (nama ambigu bukan "tidak ada"). Setelah setiap tulis, chunk catatan langsung diperbarui (dengan embedding bila model sudah dimuat, bila tidak keyword-only bertanda `kw:` agar indexer berikutnya meng-embed-nya).
+4. **Semantik memori (§3.10.4, `api::memory::recall`):**
+   * `remember` menulis fakta mandiri ke `Memory/` (atau `folder`, atau menambah ke `ref`/`section`), menautkan `links`, dan menolak duplikat (teks sudah terkandung di catatan, atau chunk dengan cosine ≥ 0,92).
+   * `recall` memperluas chunk terbaik menjadi section utuh, menghapus duplikat, dan mengemasnya ke dalam `budget_tokens` (≈ 4 karakter/token). Filter `folder`/`tag` juga tersedia di `search_notes`; setiap hit membawa `heading` dan `line`.
+   * *Lupa tanpa menghapus:* catatan dianggap basi bila `valid_until` sudah lewat, ada `superseded_by`, `archived: true`, atau disebut di `supersedes` catatan lain; `recall` menandainya (`stale`) dan menaruhnya paling akhir. Tidak ada yang dihapus otomatis.
+   * `related_notes` menjelaskan tetangga sebuah catatan: `links_to`, `linked_from`, `similar` (vektor dokumen), `shared_tag:<tag>`.
+
+---
+
 ## 4. Struktur Proyek (Directory Layout)
 
 ```
@@ -273,6 +368,7 @@ mnemonic/
 │   │   └── llm/              # Qwen2.5-1.5B-Instruct quantized weights
 │   ├── fonts/                 # Inter, JetBrains Mono (custom egui fonts)
 │   └── icons/                # Icon SVG / UI assets
+├── themes/                   # Tema baca bawaan (*.toml), sekaligus contoh plugin
 ├── locales/
 │   ├── id-ID/
 │   │   └── main.ftl           # String UI Bahasa Indonesia (default)
@@ -290,10 +386,13 @@ mnemonic/
 │   │   └── trash.rs          # Soft-delete & auto-cleanup 30 hari
 │   ├── markdown/
 │   │   ├── mod.rs
-│   │   ├── renderer.rs       # Rendering AST -> widget egui (egui_commonmark)
-│   │   ├── editor.rs         # Live preview editor & source mode
+│   │   ├── live_blocks.rs    # Pemecahan body jadi blok Live (per baris / blok atomik)
+│   │   ├── renderer/         # Render Live per blok -> widget egui (egui_commonmark), warna tema baca
+│   │   ├── editor.rs         # Sesi catatan: mode Live/Source/Kanvas, undo, autosave
 │   │   ├── wikilink.rs       # Resolver [[wikilink]], autocomplete, backlink graph
 │   │   └── syntax_highlight.rs # Integrasi syntect untuk code block
+│   ├── reading_theme/        # Tema baca: model warna, loader plugin TOML (§3.2.5)
+│   ├── export/               # Cetak & ekspor HTML/PDF bertema (§3.2.5)
 │   ├── i18n/
 │   │   ├── mod.rs
 │   │   ├── loader.rs         # Load & parse file .ftl per locale (fluent-bundle)

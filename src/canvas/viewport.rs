@@ -1,6 +1,8 @@
 //! 2D infinite viewport with coordinate transforms (Screen <-> World) and zoom/pan.
 
-use egui::{Color32, Painter, Pos2, Rect, Vec2};
+use emath::{Pos2, Rect, Vec2};
+#[cfg(feature = "gui")]
+use ecolor::Color32;
 
 /// 2D Infinite Viewport transformation state.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -56,6 +58,23 @@ impl Viewport {
         self.add_pan_vec(screen_delta / self.zoom);
     }
 
+    /// Zoom and pan so `world_rect` fills a screen area of `screen_size`, with a margin.
+    pub fn fit_rect(&mut self, world_rect: Rect, screen_size: Vec2) {
+        if !world_rect.is_positive() || screen_size.x <= 0.0 || screen_size.y <= 0.0 {
+            return;
+        }
+        const MARGIN: f32 = 0.9;
+        let zoom = (screen_size.x / world_rect.width())
+            .min(screen_size.y / world_rect.height())
+            * MARGIN;
+        self.zoom = zoom.clamp(Self::MIN_ZOOM, Self::MAX_ZOOM);
+        let center = world_rect.center();
+        self.pan = [
+            screen_size.x / (2.0 * self.zoom) - center.x,
+            screen_size.y / (2.0 * self.zoom) - center.y,
+        ];
+    }
+
     /// Convert screen coordinates (pixels on window) to world coordinates.
     pub fn screen_to_world(&self, screen_pos: Pos2, screen_origin: Pos2) -> Pos2 {
         let relative_screen = screen_pos - screen_origin;
@@ -88,15 +107,23 @@ impl Viewport {
     }
 
     /// Render infinite background dot matrix or subtle grid.
-    pub fn draw_grid(&self, painter: &Painter, screen_rect: Rect, is_dark: bool) {
+    /// Grid latar; menggambar, jadi hanya ada pada build `gui`.
+    #[cfg(feature = "gui")]
+    pub fn draw_grid(&self, painter: &egui::Painter, screen_rect: Rect, is_dark: bool) {
         let dot_color = if is_dark {
             Color32::from_white_alpha(35)
         } else {
             Color32::from_black_alpha(25)
         };
 
-        // Grid cell step in world coordinates
-        let step_world = 32.0;
+        // Grid cell step in world coordinates, doubled while zoomed out so
+        // dots stay at least MIN_SCREEN_STEP apart — otherwise a zoomed-out
+        // view paints tens of thousands of dots every frame.
+        const MIN_SCREEN_STEP: f32 = 16.0;
+        let mut step_world = 32.0;
+        while step_world * self.zoom < MIN_SCREEN_STEP {
+            step_world *= 2.0;
+        }
 
         let origin = screen_rect.min;
         let top_left_world = self.screen_to_world(screen_rect.min, origin);

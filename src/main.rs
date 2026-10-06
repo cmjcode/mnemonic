@@ -19,10 +19,22 @@ fn main() -> eframe::Result<()> {
 
     env_logger::init();
 
-    let native_options = eframe::NativeOptions::default();
+    let icon = mnemonic::ui::logo::load_app_icon_arc();
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_icon(icon)
+            .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([760.0, 520.0])
+            .with_title("MNEMONIC"),
+        ..Default::default()
+    };
     eframe::run_native(
         "MNEMONIC",
         native_options,
-        Box::new(|_cc| Ok(Box::new(app::MnemonicApp::new()))),
+        Box::new(|cc| {
+            // Fonts must be registered before the first frame is laid out.
+            mnemonic::ui::theme::install_fonts(&cc.egui_ctx);
+            Ok(Box::new(app::MnemonicApp::new()))
+        }),
     )
 }

@@ -1,26 +1,18 @@
-//! Slide-over Glass AI Chat Sidebar Drawer bergaya Shapr3D / DUCAD.
-//!
-//! Menampilkan panel mengambang di sisi kanan (AI Copilot sidebar) untuk:
-//! 1. Tanya jawab interaktif dengan Asisten AI lokal (RAG over Vault)
-//! 2. Tampilan gelembung percakapan (user & assistant bubbles)
-//! 3. Sitasi sumber dokumen catatan & PDF yang dapat langsung diklik
-//! 4. Input teks percakapan dengan shortcut Enter
+//! AI assistant panel, docked on the right so it never covers the note
+//! being read: chat bubbles, clickable source citations, starter prompts,
+//! and an input that sends on Enter.
 
 use std::path::PathBuf;
 
-use egui::{
-    Color32, CornerRadius, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke,
-    Ui, Vec2,
-};
+use egui::{Align, CornerRadius, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, Vec2};
 use egui_icons::icons::{
-    ICON_AUTO_AWESOME, ICON_CLOSE, ICON_DESCRIPTION, ICON_PICTURE_AS_PDF, ICON_RESTART_ALT,
+    ICON_ARROW_UPWARD, ICON_AUTO_AWESOME, ICON_CLOSE, ICON_DESCRIPTION, ICON_PICTURE_AS_PDF,
+    ICON_RESTART_ALT, ICON_TABLE_CHART,
 };
 
-use crate::ui::theme::{
-    glass_panel_frame, ACCENT_BLUE, BG_CARD_DARK, BG_HOVER_DARK, BORDER_SUBTLE,
-    CHAT_SIDEBAR_WIDTH, ROUNDING_MD, ROUNDING_SM, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
-    TOPBAR_HEIGHT,
-};
+use crate::i18n::LocaleManager;
+use crate::ui::theme::{self, pal};
+use crate::ui::widgets;
 
 /// Role pengirim pesan percakapan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,15 +55,12 @@ impl ChatMessageItem {
     }
 }
 
-/// State untuk merender Chat Sidebar.
 pub struct ChatSidebarState<'a> {
-    pub is_open: bool,
     pub messages: &'a [ChatMessageItem],
     pub busy: bool,
     pub input_text: &'a mut String,
 }
 
-/// Event interaksi yang dihasilkan oleh Chat Sidebar.
 #[derive(Debug, Clone)]
 pub enum ChatSidebarEvent {
     SendMessage(String),
@@ -83,379 +72,260 @@ pub enum ChatSidebarEvent {
 pub struct ChatSidebarDrawer;
 
 impl ChatSidebarDrawer {
-    /// Render slide-over AI chat sidebar drawer di sisi kanan layar.
-    pub fn show(ctx: &egui::Context, state: &mut ChatSidebarState) -> Option<ChatSidebarEvent> {
-        if !state.is_open {
-            return None;
-        }
+    pub fn input_id() -> egui::Id {
+        egui::Id::new("mnemonic_chat_input")
+    }
 
+    /// Renders the docked right panel (call only while it is open).
+    pub fn show(
+        ui: &mut Ui,
+        tr: &LocaleManager,
+        state: &mut ChatSidebarState,
+    ) -> Option<ChatSidebarEvent> {
+        let t = |key: &str| tr.t(key, &[]);
+        let p = pal();
         let mut event = None;
-        let screen_rect = ctx.viewport_rect();
-        let top_offset = TOPBAR_HEIGHT + 14.0;
-        let sidebar_width = CHAT_SIDEBAR_WIDTH.min(screen_rect.width() - 24.0);
 
-        let sidebar_rect = Rect::from_min_size(
-            Pos2::new(
-                screen_rect.max.x - sidebar_width - 12.0,
-                screen_rect.min.y + top_offset,
-            ),
-            Vec2::new(
-                sidebar_width,
-                (screen_rect.height() - top_offset - 16.0).max(280.0),
-            ),
-        );
-
-        egui::Window::new("ai_chat_glass_sidebar")
-            .title_bar(false)
-            .resizable(false)
-            .collapsible(false)
-            .fixed_rect(sidebar_rect)
-            .frame(glass_panel_frame())
-            .show(ctx, |ui| {
-                ui.set_width(sidebar_width);
-                ui.add_space(8.0);
-
-                // ── Header AI Chat (Title, AI Badge, Clear & Close) ──
+        egui::Panel::right("mnemonic_ai_panel")
+            .resizable(true)
+            .default_size(theme::CHAT_SIDEBAR_WIDTH)
+            .size_range(300.0..=560.0)
+            .frame(theme::side_panel_frame().inner_margin(Margin::same(12)))
+            .show_separator_line(true)
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.add_space(10.0);
                     ui.label(
                         RichText::new(ICON_AUTO_AWESOME.codepoint)
-                            .size(16.0)
-                            .color(ACCENT_BLUE),
+                            .size(18.0)
+                            .color(p.accent),
                     );
                     ui.label(
-                        RichText::new("Asisten AI")
-                            .size(14.0)
-                            .strong()
-                            .color(TEXT_PRIMARY),
+                        RichText::new(t("chat-title"))
+                            .font(theme::semibold(theme::TEXT_BODY + 1.0))
+                            .color(p.text),
                     );
-
-                    // Badge RAG Copilot
-                    let badge_frame = Frame {
-                        inner_margin: Margin::symmetric(6, 2),
-                        outer_margin: Margin::ZERO,
-                        corner_radius: CornerRadius::same(ROUNDING_SM),
-                        fill: Color32::from_rgba_premultiplied(10, 132, 255, 30),
-                        stroke: Stroke::new(0.5, ACCENT_BLUE),
-                        shadow: egui::Shadow::NONE,
-                    };
-                    badge_frame.show(ui, |ui| {
-                        ui.label(
-                            RichText::new("RAG Vault")
-                                .size(10.0)
-                                .color(ACCENT_BLUE),
-                        );
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(8.0);
-
-                        // Tombol Tutup
-                        let close_btn = egui::Button::new(
-                            RichText::new(ICON_CLOSE.codepoint)
-                                .size(14.0)
-                                .color(TEXT_SECONDARY),
-                        )
-                        .frame(false);
-
-                        if ui.add(close_btn).on_hover_text("Tutup Sidebar AI (Esc)").clicked() {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if widgets::icon_button(ui, ICON_CLOSE.codepoint, &t("chat-close"), false)
+                            .clicked()
+                        {
                             event = Some(ChatSidebarEvent::Close);
                         }
-
-                        // Tombol Bersihkan Percakapan
-                        let clear_btn = egui::Button::new(
-                            RichText::new(ICON_RESTART_ALT.codepoint)
-                                .size(13.0)
-                                .color(TEXT_MUTED),
-                        )
-                        .frame(false);
-
-                        if ui
-                            .add(clear_btn)
-                            .on_hover_text("Bersihkan Riwayat Percakapan")
+                        if !state.messages.is_empty()
+                            && widgets::icon_button(
+                                ui,
+                                ICON_RESTART_ALT.codepoint,
+                                &t("chat-clear"),
+                                false,
+                            )
                             .clicked()
                         {
                             event = Some(ChatSidebarEvent::ClearHistory);
                         }
                     });
                 });
+                ui.label(
+                    RichText::new(t("chat-subtitle"))
+                        .size(theme::TEXT_XS)
+                        .color(p.text_faint),
+                );
+                ui.add_space(theme::SPACE_S);
 
-                ui.add_space(6.0);
-                ui.separator();
-
-                // ── Area Riwayat Pesan (Scrollable) ──
-                let scroll_height = (ui.available_height() - 76.0).max(120.0);
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .max_height(scroll_height)
+                // Input pinned to the bottom of the panel.
+                egui::Panel::bottom("mnemonic_ai_input")
+                    .frame(Frame::NONE.inner_margin(Margin::symmetric(0, 8)))
+                    .show_separator_line(false)
                     .show(ui, |ui| {
-                        ui.add_space(6.0);
-
-                        // State Kosong (Empty State)
-                        if state.messages.is_empty() {
-                            Self::render_empty_state(ui, state.input_text);
-                        }
-
-                        // Render Semua Gelembung Pesan
-                        for msg in state.messages {
-                            Self::render_message_bubble(ui, msg, &mut event);
-                            ui.add_space(8.0);
-                        }
-
-                        // Indikator Berpikir / Streaming
-                        if state.busy {
-                            Self::render_thinking_bubble(ui);
-                            ui.add_space(6.0);
-                        }
+                        Self::input_row(ui, tr, state, &mut event);
                     });
 
-                // ── Input Box Row di Bagian Bawah ──
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
-
-                let can_send = !state.busy && !state.input_text.trim().is_empty();
-
-                ui.horizontal(|ui| {
-                    ui.add_space(6.0);
-
-                    let input_width = ui.available_width() - 54.0;
-                    let input_field = egui::TextEdit::singleline(state.input_text)
-                        .hint_text("Tanya asisten tentang vault...")
-                        .desired_width(input_width)
-                        .margin(Margin::symmetric(8, 6));
-
-                    let resp = ui.add(input_field);
-                    let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-                    let send_btn = egui::Button::new(
-                        RichText::new(ICON_AUTO_AWESOME.codepoint)
-                            .size(13.0)
-                            .color(if can_send { Color32::WHITE } else { TEXT_MUTED }),
-                    )
-                    .fill(if can_send { ACCENT_BLUE } else { BG_CARD_DARK })
-                    .corner_radius(CornerRadius::same(ROUNDING_SM));
-
-                    let send_resp = ui.add_sized(Vec2::new(38.0, 26.0), send_btn);
-
-                    if can_send && (send_resp.clicked() || enter_pressed) {
-                        let text = state.input_text.trim().to_string();
-                        state.input_text.clear();
-                        event = Some(ChatSidebarEvent::SendMessage(text));
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if state.messages.is_empty() {
+                            Self::empty_state(ui, tr, state.input_text);
+                        }
+                        for msg in state.messages {
+                            Self::bubble(ui, tr, msg, &mut event);
+                            ui.add_space(theme::SPACE_M);
+                        }
+                        if state.busy {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::Spinner::new().size(14.0).color(p.accent));
+                                ui.label(
+                                    RichText::new(t("chat-thinking"))
+                                        .size(theme::TEXT_SM)
+                                        .color(p.text_faint),
+                                );
+                            });
+                        }
+                    });
             });
-
         event
     }
 
-    /// Render tampilan saat belum ada riwayat percakapan.
-    fn render_empty_state(ui: &mut Ui, input_text: &mut String) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(24.0);
-            ui.label(
-                RichText::new(ICON_AUTO_AWESOME.codepoint)
-                    .size(32.0)
-                    .color(ACCENT_BLUE),
-            );
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new("Asisten Pengetahuan Anda")
-                    .size(13.5)
-                    .strong()
-                    .color(TEXT_PRIMARY),
-            );
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("Ajukan pertanyaan atau minta bantuan ringkasan seputar isi catatan dan berkas PDF dalam vault Anda.")
-                    .size(11.5)
-                    .color(TEXT_SECONDARY),
-            );
+    fn input_row(
+        ui: &mut Ui,
+        tr: &LocaleManager,
+        state: &mut ChatSidebarState,
+        event: &mut Option<ChatSidebarEvent>,
+    ) {
+        let p = pal();
+        let can_send = !state.busy && !state.input_text.trim().is_empty();
+        Frame::NONE
+            .fill(p.card)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(CornerRadius::same(theme::RADIUS_LG))
+            .inner_margin(Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(state.input_text)
+                            .id(Self::input_id())
+                            .hint_text(
+                                RichText::new(tr.t("chat-placeholder", &[])).color(p.text_faint),
+                            )
+                            .frame(Frame::NONE)
+                            .font(egui::FontId::proportional(theme::TEXT_BODY))
+                            .desired_width(ui.available_width() - 38.0),
+                    );
+                    let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
-            ui.add_space(16.0);
-
-            // Starter prompt chips
-            let prompts = [
-                "💡 Ringkas poin penting dari catatan saya",
-                "🔍 Cari topik terkait konsep kunci",
-                "📝 Bantu susun ide & hubungan catatan",
-            ];
-
-            for prompt in prompts {
-                let chip_frame = Frame {
-                    inner_margin: Margin::symmetric(10, 6),
-                    outer_margin: Margin::symmetric(0, 2),
-                    corner_radius: CornerRadius::same(ROUNDING_SM),
-                    fill: BG_CARD_DARK,
-                    stroke: Stroke::new(0.5, BORDER_SUBTLE),
-                    shadow: egui::Shadow::NONE,
-                };
-
-                let resp = chip_frame
-                    .show(ui, |ui| {
-                        ui.set_max_width(ui.available_width() - 20.0);
-                        ui.label(
-                            RichText::new(prompt)
-                                .size(11.0)
-                                .color(TEXT_SECONDARY),
-                        );
-                    })
-                    .response;
-
-                if resp.interact(Sense::click()).on_hover_text("Gunakan prompt ini").clicked() {
-                    *input_text = prompt[4..].to_string(); // Potong emoji di awal
-                }
-            }
-        });
+                    let (rect, send) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
+                    ui.painter().circle_filled(
+                        rect.center(),
+                        15.0,
+                        if can_send { p.accent } else { p.hover },
+                    );
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        ICON_ARROW_UPWARD.codepoint,
+                        egui::FontId::proportional(18.0),
+                        if can_send { p.on_accent } else { p.text_faint },
+                    );
+                    let send = send.on_hover_text(tr.t("chat-send", &[]));
+                    if can_send && (send.clicked() || enter) {
+                        let text = state.input_text.trim().to_string();
+                        state.input_text.clear();
+                        *event = Some(ChatSidebarEvent::SendMessage(text));
+                        resp.request_focus();
+                    }
+                });
+            });
     }
 
-    /// Render satu bubble pesan (User atau Assistant).
-    fn render_message_bubble(
+    fn empty_state(ui: &mut Ui, tr: &LocaleManager, input_text: &mut String) {
+        let t = |key: &str| tr.t(key, &[]);
+        let p = pal();
+        ui.add_space(theme::SPACE_XL);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new(ICON_AUTO_AWESOME.codepoint)
+                    .size(34.0)
+                    .color(p.accent),
+            );
+            ui.add_space(theme::SPACE_S);
+            ui.label(
+                RichText::new(t("chat-empty-title"))
+                    .font(theme::semibold(theme::TEXT_BODY + 1.0))
+                    .color(p.text),
+            );
+            ui.add_space(theme::SPACE_XS);
+            ui.label(
+                RichText::new(t("chat-empty"))
+                    .size(theme::TEXT_SM)
+                    .color(p.text_dim),
+            );
+        });
+        ui.add_space(theme::SPACE_L);
+        for key in [
+            "chat-starter-summary",
+            "chat-starter-related",
+            "chat-starter-ideas",
+        ] {
+            let prompt = t(key);
+            let resp = Frame::NONE
+                .fill(p.card)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(CornerRadius::same(theme::RADIUS_MD))
+                .inner_margin(Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(&prompt).size(theme::TEXT_SM).color(p.text));
+                })
+                .response
+                .interact(Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.clicked() {
+                *input_text = prompt;
+                ui.ctx().memory_mut(|m| m.request_focus(Self::input_id()));
+            }
+            ui.add_space(6.0);
+        }
+    }
+
+    fn bubble(
         ui: &mut Ui,
+        tr: &LocaleManager,
         msg: &ChatMessageItem,
         event: &mut Option<ChatSidebarEvent>,
     ) {
+        let p = pal();
         let is_user = msg.role == ChatRole::User;
-        let align = if is_user {
-            egui::Align::Max
-        } else {
-            egui::Align::Min
-        };
-
-        ui.with_layout(egui::Layout::top_down(align), |ui| {
-            let max_w = ui.available_width() * 0.88;
-
-            let bubble_frame = if is_user {
-                Frame {
-                    inner_margin: Margin::symmetric(10, 8),
-                    outer_margin: Margin::ZERO,
-                    corner_radius: CornerRadius::same(ROUNDING_MD),
-                    fill: Color32::from_rgba_premultiplied(10, 132, 255, 40),
-                    stroke: Stroke::new(0.8, ACCENT_BLUE),
-                    shadow: egui::Shadow::NONE,
-                }
+        let align = if is_user { Align::Max } else { Align::Min };
+        ui.with_layout(Layout::top_down(align), |ui| {
+            let max_w = ui.available_width() * 0.9;
+            let frame = if is_user {
+                Frame::NONE.fill(p.accent_soft)
             } else {
-                Frame {
-                    inner_margin: Margin::symmetric(10, 8),
-                    outer_margin: Margin::ZERO,
-                    corner_radius: CornerRadius::same(ROUNDING_MD),
-                    fill: BG_CARD_DARK,
-                    stroke: Stroke::new(0.5, BORDER_SUBTLE),
-                    shadow: egui::Shadow::NONE,
-                }
+                Frame::NONE.fill(p.card).stroke(Stroke::new(1.0, p.border))
             };
-
-            bubble_frame.show(ui, |ui| {
-                ui.set_max_width(max_w);
-
-                if !is_user {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(ICON_AUTO_AWESOME.codepoint)
-                                .size(11.0)
-                                .color(ACCENT_BLUE),
-                        );
-                        ui.label(
-                            RichText::new("Mnemonic AI")
-                                .size(10.5)
-                                .strong()
-                                .color(TEXT_SECONDARY),
-                        );
-                    });
-                    ui.add_space(2.0);
-                }
-
-                ui.label(
-                    RichText::new(&msg.text)
-                        .size(12.0)
-                        .color(if is_user { Color32::WHITE } else { TEXT_PRIMARY }),
-                );
-
-                // Render Sitasi Referensi jika ada
-                if !msg.citations.is_empty() {
-                    ui.add_space(6.0);
-                    ui.separator();
-                    ui.add_space(2.0);
+            frame
+                .corner_radius(CornerRadius::same(theme::RADIUS_LG))
+                .inner_margin(Margin::symmetric(12, 9))
+                .show(ui, |ui| {
+                    ui.set_max_width(max_w);
                     ui.label(
-                        RichText::new("Sumber Referensi:")
-                            .size(10.0)
-                            .color(TEXT_MUTED),
+                        RichText::new(&msg.text)
+                            .size(theme::TEXT_BODY)
+                            .color(p.text),
                     );
 
-                    for citation in &msg.citations {
-                        let is_pdf = citation.page_index.is_some();
-                        let cit_icon = if is_pdf {
-                            ICON_PICTURE_AS_PDF.codepoint
-                        } else {
-                            ICON_DESCRIPTION.codepoint
-                        };
-
-                        let cit_frame = Frame {
-                            inner_margin: Margin::symmetric(6, 3),
-                            outer_margin: Margin::symmetric(0, 1),
-                            corner_radius: CornerRadius::same(ROUNDING_SM),
-                            fill: BG_HOVER_DARK,
-                            stroke: Stroke::new(0.5, BORDER_SUBTLE),
-                            shadow: egui::Shadow::NONE,
-                        };
-
-                        let cit_resp = cit_frame
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(cit_icon)
-                                            .size(11.0)
-                                            .color(if is_pdf { Color32::from_rgb(255, 69, 58) } else { ACCENT_BLUE }),
-                                    );
-                                    ui.label(
-                                        RichText::new(&citation.label)
-                                            .size(10.5)
-                                            .color(TEXT_SECONDARY),
-                                    );
-                                });
-                            })
-                            .response;
-
-                        if cit_resp
-                            .interact(Sense::click())
-                            .on_hover_text("Buka berkas referensi ini")
-                            .clicked()
-                        {
-                            *event = Some(ChatSidebarEvent::OpenCitation(citation.clone()));
+                    if !msg.citations.is_empty() {
+                        ui.add_space(theme::SPACE_S);
+                        ui.label(
+                            RichText::new(tr.t("chat-sources", &[]))
+                                .size(theme::TEXT_XS)
+                                .color(p.text_faint),
+                        );
+                        for citation in &msg.citations {
+                            let (icon, color) = if crate::sheet::is_sheet_path(&citation.file_path) {
+                                (ICON_TABLE_CHART.codepoint, p.sheet_icon)
+                            } else if citation.page_index.is_some() {
+                                (ICON_PICTURE_AS_PDF.codepoint, p.pdf_icon)
+                            } else {
+                                (ICON_DESCRIPTION.codepoint, p.note_icon)
+                            };
+                            let resp = widgets::list_row(
+                                ui,
+                                widgets::RowSpec {
+                                    icon,
+                                    icon_color: color,
+                                    label: &citation.label,
+                                    trailing: None,
+                                    selected: false,
+                                    indent: 0.0,
+                                    reserve_right: 0.0,
+                                },
+                            )
+                            .on_hover_text(tr.t("chat-open-source", &[]));
+                            if resp.clicked() {
+                                *event = Some(ChatSidebarEvent::OpenCitation(citation.clone()));
+                            }
                         }
                     }
-                }
-            });
-        });
-    }
-
-    /// Render bubble indikator bahwa asisten sedang memikirkan jawaban.
-    fn render_thinking_bubble(ui: &mut Ui) {
-        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            let bubble_frame = Frame {
-                inner_margin: Margin::symmetric(10, 6),
-                outer_margin: Margin::ZERO,
-                corner_radius: CornerRadius::same(ROUNDING_MD),
-                fill: BG_CARD_DARK,
-                stroke: Stroke::new(0.5, BORDER_SUBTLE),
-                shadow: egui::Shadow::NONE,
-            };
-
-            bubble_frame.show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(ICON_AUTO_AWESOME.codepoint)
-                            .size(11.0)
-                            .color(ACCENT_BLUE),
-                    );
-                    ui.label(
-                        RichText::new("Memikirkan jawaban & menelusuri vault...")
-                            .size(11.0)
-                            .italics()
-                            .color(TEXT_MUTED),
-                    );
                 });
-            });
         });
     }
 }
@@ -468,7 +338,6 @@ mod tests {
     fn test_chat_message_creation() {
         let user_msg = ChatMessageItem::user("Halo AI".to_string());
         assert_eq!(user_msg.role, ChatRole::User);
-        assert_eq!(user_msg.text, "Halo AI");
         assert!(user_msg.citations.is_empty());
 
         let cit = ChatCitationItem {

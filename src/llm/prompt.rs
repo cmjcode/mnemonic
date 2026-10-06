@@ -4,13 +4,13 @@
 //! string logic — no model/tokenizer dependency — so it's independently
 //! unit-testable from `llm::candle_engine`'s inference code. Also holds
 //! the similarity-threshold cutoff (§6 risk 3: "LLM tidak menjawab jika
-//! tidak ada dokumen yang cocok") that turns `core::embedding::top_k`
-//! scores into the chunk list this module renders.
+//! tidak ada dokumen yang cocok") that turns hybrid search hits
+//! into the chunk list this module renders.
 //! Callers: `llm::candle_engine` (its `Generator::generate` consumes the
-//! built prompt), future chat UI (§Fase 7) which drives retrieval via
-//! `core::embedding::top_k` over `core::storage::IndexStore::all_chunks`.
+//! built prompt) and the chat panel in `app`, which retrieves context via
+//! hybrid search (`core::search::hybrid_rank`).
 
-use crate::core::DocumentChunk;
+use crate::core::{DocumentChunk, MatchKind, SearchHit};
 
 /// Strict-grounding system instruction — verbatim per §3.4 point 2's
 /// template, so the model is told not to hallucinate past the supplied
@@ -22,11 +22,13 @@ const SYSTEM_PREAMBLE: &str = "Anda adalah asisten cerdas. Jawablah pertanyaan p
 /// instruction honest instead of silently omitting the section.
 const NO_CONTEXT_NOTE: &str = "(Tidak ditemukan dokumen yang relevan di vault.)";
 
-/// Minimum cosine similarity (§3.3 point 3 scoring) a chunk must clear to
-/// be considered relevant enough to ground an answer on. Chunks below
-/// this are dropped by `select_context` before they ever reach the
-/// prompt, rather than trusting the LLM alone to notice weak matches.
-pub const SIMILARITY_THRESHOLD: f32 = 0.35;
+/// Minimum cosine similarity (§3.3 point 3 scoring) a semantic-only chunk
+/// must clear to count as relevant — for grounding an answer
+/// (`select_context`) and for search results alike. Calibrated for
+/// `multilingual-e5-small`, whose similarities cluster high: measured
+/// query→passage pairs scored ≥ 0.868 when relevant and ≤ 0.812 when not
+/// (`core::embedding::model_tests`), so the cutoff sits in between.
+pub const SIMILARITY_THRESHOLD: f32 = 0.84;
 
 /// Builds the full ChatML prompt: system preamble + rendered context
 /// chunks, then the user's turn, ending right where the assistant's
@@ -50,29 +52,27 @@ pub fn build_rag_prompt(context_chunks: &[DocumentChunk], user_query: &str) -> S
 }
 
 /// Renders one chunk as the `File: ... (Halaman N)` block from §3.4 point
-/// 2 — page number omitted for notes (`page_num: None`).
+/// 2 — page number omitted for notes (`page_num: None`); sheets (§3.8.4)
+/// cite their first row instead (`Baris N`).
 fn render_chunk_block(chunk: &DocumentChunk) -> String {
     let location = match chunk.page_num {
+        Some(row) if crate::sheet::is_sheet_path(&chunk.file_path) => {
+            format!("{} (Baris {})", chunk.file_path.display(), row)
+        }
         Some(page) => format!("{} (Halaman {})", chunk.file_path.display(), page),
         None => chunk.file_path.display().to_string(),
     };
     format!("---\nFile: {location}\n{}\n---", chunk.text_content)
 }
 
-/// Filters `core::embedding::top_k`-scored candidates down to the ones
-/// worth grounding an answer on (score >= `threshold`), resolving each
-/// `(candidate_index, score)` back to its `DocumentChunk` via
-/// `all_chunks[candidate_index]`. Order is preserved — `top_k` already
-/// sorts descending by score.
-pub fn select_context(
-    scored: &[(usize, f32)],
-    all_chunks: &[DocumentChunk],
-    threshold: f32,
-) -> Vec<DocumentChunk> {
-    scored
-        .iter()
-        .filter(|(_, score)| *score >= threshold)
-        .filter_map(|(idx, _)| all_chunks.get(*idx).cloned())
+/// Picks the chunks worth grounding an answer on from hybrid-ranked hits
+/// (`core::search::hybrid_rank`): keyword matches always qualify, semantic-
+/// only matches need a similarity of at least `threshold`. Order is
+/// preserved (already best-first).
+pub fn select_context(hits: &[SearchHit], threshold: f32) -> Vec<DocumentChunk> {
+    hits.iter()
+        .filter(|h| h.kind != MatchKind::Semantic || h.score.unwrap_or(0.0) >= threshold)
+        .map(|h| h.chunk.clone())
         .collect()
 }
 
@@ -134,28 +134,43 @@ mod tests {
         assert!(prompt.contains("File: b.pdf (Halaman 2)"));
     }
 
+    fn hit(text: &str, score: Option<f32>, kind: MatchKind) -> SearchHit {
+        SearchHit {
+            chunk: chunk("a.md", None, text),
+            score,
+            kind,
+            snippet: None,
+        }
+    }
+
     #[test]
-    fn select_context_drops_scores_below_threshold() {
-        let chunks = vec![chunk("a.md", None, "a"), chunk("b.md", None, "b")];
-        let scored = vec![(0, 0.9), (1, 0.1)];
-        let selected = select_context(&scored, &chunks, 0.35);
+    fn select_context_drops_weak_semantic_only_hits() {
+        let hits = vec![
+            hit("a", Some(0.9), MatchKind::Semantic),
+            hit("b", Some(0.1), MatchKind::Semantic),
+        ];
+        let selected = select_context(&hits, 0.35);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].text_content, "a");
     }
 
     #[test]
-    fn select_context_preserves_score_order() {
-        let chunks = vec![chunk("a.md", None, "a"), chunk("b.md", None, "b")];
-        let scored = vec![(1, 0.8), (0, 0.5)]; // b scored higher than a
-        let selected = select_context(&scored, &chunks, 0.0);
-        assert_eq!(selected[0].text_content, "b");
-        assert_eq!(selected[1].text_content, "a");
+    fn select_context_keeps_keyword_matches_regardless_of_similarity() {
+        let hits = vec![
+            hit("kw", None, MatchKind::Keyword),
+            hit("both", Some(0.1), MatchKind::Both),
+        ];
+        assert_eq!(select_context(&hits, 0.9).len(), 2);
     }
 
     #[test]
-    fn select_context_with_all_below_threshold_yields_empty_vec() {
-        let chunks = vec![chunk("a.md", None, "a")];
-        let scored = vec![(0, 0.1)];
-        assert!(select_context(&scored, &chunks, 0.35).is_empty());
+    fn select_context_preserves_order() {
+        let hits = vec![
+            hit("b", Some(0.8), MatchKind::Semantic),
+            hit("a", Some(0.5), MatchKind::Semantic),
+        ];
+        let selected = select_context(&hits, 0.0);
+        assert_eq!(selected[0].text_content, "b");
+        assert_eq!(selected[1].text_content, "a");
     }
 }

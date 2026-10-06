@@ -24,7 +24,10 @@ impl LocaleManager {
     /// Load all locales under `locales_dir` and activate `DEFAULT_LOCALE`
     /// (falling back to whatever loaded first if the default is missing).
     pub fn load(locales_dir: &Path) -> LocaleManager {
-        let bundles = loader::load_all(locales_dir);
+        let mut bundles = loader::load_all(locales_dir);
+        if bundles.is_empty() {
+            bundles = loader::load_embedded();
+        }
         let active = if bundles.contains_key(DEFAULT_LOCALE) {
             DEFAULT_LOCALE.to_string()
         } else {
@@ -87,7 +90,12 @@ fn resolve(bundle: &Bundle, key: &str, args: &[(&str, &str)]) -> Option<String> 
     } else {
         let mut a = FluentArgs::new();
         for (name, value) in args {
-            a.set(*name, FluentValue::from(*value));
+            // Integers must be passed as numbers, or plural selectors like
+            // `[one]` never match ("1 items").
+            match value.parse::<i64>() {
+                Ok(n) => a.set(*name, FluentValue::from(n)),
+                Err(_) => a.set(*name, FluentValue::from(*value)),
+            }
         }
         Some(a)
     };
@@ -120,6 +128,20 @@ mod tests {
         let manager = LocaleManager::load(dir.path());
         assert_eq!(manager.active_locale(), "id-ID");
         assert_eq!(manager.t("hello", &[]), "Halo");
+    }
+
+    #[test]
+    fn integer_arguments_select_plural_variants() {
+        let dir = tempdir().unwrap();
+        write_ftl(
+            dir.path(),
+            "en-US",
+            "items = { $count ->\n    [one] { $count } item\n   *[other] { $count } items\n}\n",
+        );
+        let manager = LocaleManager::load(dir.path());
+        assert_eq!(manager.t("items", &[("count", "1")]), "1 item");
+        assert_eq!(manager.t("items", &[("count", "12")]), "12 items");
+        assert_eq!(manager.t("items", &[("count", "abc")]), "abc items");
     }
 
     #[test]

@@ -6,13 +6,18 @@
 
 pub mod chunker;
 pub mod embedding;
+/// Worker indeks latar (butuh model embedding).
+#[cfg(feature = "semantic")]
 pub mod indexer;
 pub mod ingestion;
 pub mod search;
 pub mod storage;
 
-pub use embedding::{EmbeddingEngine, cosine_similarity, top_k};
+pub use embedding::{EMBEDDING_DIM, EMBEDDING_MODEL_ID, cosine_similarity, top_k};
+#[cfg(feature = "semantic")]
+pub use embedding::{EmbeddingEngine, RerankEngine};
+#[cfg(feature = "semantic")]
 pub use indexer::{DocType, IndexJob, IndexResult, IndexingWorker};
 pub use ingestion::DocumentChunk;
-pub use search::{SearchHit, keyword_search, merge_results, semantic_search};
-pub use storage::{IndexStore, StoredChunk};
+pub use search::{HybridOptions, MatchKind, SearchHit, hybrid_rank, keyword_search};
+pub use storage::{Backlink, IndexStore, KeywordChunk, LinkEdge, StoredChunk};

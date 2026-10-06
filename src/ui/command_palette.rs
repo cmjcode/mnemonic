@@ -1,25 +1,68 @@
-//! Command Palette gaya VS Code / Spotlight bergaya Shapr3D / DUCAD.
-//!
-//! Pemicu keyboard global (Cmd+K / Ctrl+K) atau klik bar pencarian atas.
-//! Mendukung pencarian cepat aksi, navigasi keyboard (Up/Down/Enter/Esc),
-//! dan eksekusi perintah dengan indikator hint shortcut.
+//! Command palette (⌘K): one keyboard-driven box to run any command or
+//! jump straight to a note by title. ↑/↓ to move, Enter to run, Esc to close.
 
-use egui::{
-    Color32, CornerRadius, Frame, Key, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2,
-};
-use egui_icons::icons::ICON_SEARCH;
+use egui::{Align2, CornerRadius, FontId, Id, Margin, Pos2, RichText, Sense, Vec2};
 
-use crate::ui::theme::{
-    glass_frame, ACCENT_BLUE, ROUNDING_SM, TEXT_MUTED, TEXT_PRIMARY,
-};
+use crate::i18n::LocaleManager;
+use crate::ui::theme::{self, pal};
+use crate::ui::widgets;
 
 #[derive(Debug, Clone)]
 pub struct PaletteCommand {
-    pub id: &'static str,
-    pub category: &'static str,
+    pub id: String,
+    pub category: String,
     pub icon: &'static str,
-    pub label: &'static str,
-    pub hint: &'static str,
+    pub label: String,
+    pub hint: String,
+}
+
+impl PaletteCommand {
+    pub fn new(
+        id: impl Into<String>,
+        category: impl Into<String>,
+        icon: &'static str,
+        label: impl Into<String>,
+    ) -> Self {
+        PaletteCommand {
+            id: id.into(),
+            category: category.into(),
+            icon,
+            label: label.into(),
+            hint: String::new(),
+        }
+    }
+
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = hint.into();
+        self
+    }
+}
+
+/// Ranks `commands` against `query`: label prefix matches first, then
+/// label substring, then category substring. Empty query keeps order.
+pub fn filter_commands(commands: &[PaletteCommand], query: &str) -> Vec<usize> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return (0..commands.len()).collect();
+    }
+    let mut scored: Vec<(u8, usize)> = commands
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let label = c.label.to_lowercase();
+            if label.starts_with(&q) {
+                Some((0, i))
+            } else if label.contains(&q) {
+                Some((1, i))
+            } else if c.category.to_lowercase().contains(&q) {
+                Some((2, i))
+            } else {
+                None
+            }
+        })
+        .collect();
+    scored.sort();
+    scored.into_iter().map(|(_, i)| i).collect()
 }
 
 #[derive(Default)]
@@ -33,6 +76,10 @@ pub struct CommandPalette {
 impl CommandPalette {
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
     }
 
     pub fn open(&mut self) {
@@ -54,224 +101,200 @@ impl CommandPalette {
         }
     }
 
-    /// Render overlay command palette. Mengembalikan `Option<&'static str>` berisi command ID terpilih.
+    /// Renders the palette; returns the id of the command chosen this frame.
     pub fn show(
         &mut self,
         ctx: &egui::Context,
+        tr: &LocaleManager,
         commands: &[PaletteCommand],
-    ) -> Option<&'static str> {
+    ) -> Option<String> {
         if !self.open {
             return None;
         }
+        let p = pal();
+        let t = |key: &str| tr.t(key, &[]);
 
-        let mut executed_id = None;
-        let screen_rect = ctx.viewport_rect();
-
-        // Backdrop gelap
-        let backdrop_layer = egui::LayerId::new(
-            egui::Order::Middle,
-            egui::Id::new("command_palette_backdrop"),
-        );
-        let backdrop_painter = ctx.layer_painter(backdrop_layer);
-        backdrop_painter.rect_filled(
-            screen_rect,
-            CornerRadius::ZERO,
-            Color32::from_black_alpha(110),
-        );
-
-        // Filter commands berdasarkan query
-        let query_clean = self.query.trim().to_lowercase();
-        let filtered_indices: Vec<usize> = commands
-            .iter()
-            .enumerate()
-            .filter(|(_, cmd)| {
-                query_clean.is_empty()
-                    || cmd.label.to_lowercase().contains(&query_clean)
-                    || cmd.category.to_lowercase().contains(&query_clean)
-                    || cmd.hint.to_lowercase().contains(&query_clean)
-            })
-            .map(|(i, _)| i)
-            .collect();
-
-        if !filtered_indices.is_empty() {
-            self.highlighted = self.highlighted.min(filtered_indices.len() - 1);
-        } else {
-            self.highlighted = 0;
-        }
-
-        // Keyboard handling (Escape, Up, Down, Enter)
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if widgets::modal_backdrop(ctx, Id::new("command_palette_backdrop"))
+            || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
             self.close();
             return None;
         }
 
-        if ctx.input(|i| i.key_pressed(Key::ArrowDown)) && !filtered_indices.is_empty() {
-            self.highlighted = (self.highlighted + 1) % filtered_indices.len();
+        let filtered = filter_commands(commands, &self.query);
+        self.highlighted = self.highlighted.min(filtered.len().saturating_sub(1));
+
+        let (down, up, enter) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+            )
+        });
+        let mut keyboard_moved = false;
+        if !filtered.is_empty() {
+            if down {
+                self.highlighted = (self.highlighted + 1) % filtered.len();
+                keyboard_moved = true;
+            }
+            if up {
+                self.highlighted = (self.highlighted + filtered.len() - 1) % filtered.len();
+                keyboard_moved = true;
+            }
+            if enter {
+                self.close();
+                return Some(commands[filtered[self.highlighted]].id.clone());
+            }
         }
 
-        if ctx.input(|i| i.key_pressed(Key::ArrowUp)) && !filtered_indices.is_empty() {
-            self.highlighted = if self.highlighted == 0 {
-                filtered_indices.len() - 1
-            } else {
-                self.highlighted - 1
-            };
-        }
+        let screen = ctx.viewport_rect();
+        let width = 600.0_f32.min(screen.width() - 32.0);
+        let mut executed = None;
 
-        let enter_pressed = ctx.input(|i| i.key_pressed(Key::Enter));
-        if enter_pressed && !filtered_indices.is_empty() {
-            let selected_cmd_idx = filtered_indices[self.highlighted];
-            executed_id = Some(commands[selected_cmd_idx].id);
-            self.close();
-            return executed_id;
-        }
-
-        let modal_width: f32 = 540.0_f32.min(screen_rect.width() - 32.0);
-        let modal_height: f32 = 360.0_f32.min(screen_rect.height() - 80.0);
-        let modal_pos = Pos2::new(
-            screen_rect.center().x - modal_width / 2.0,
-            (screen_rect.min.y + 70.0).max(screen_rect.min.y + 20.0),
-        );
-
-        egui::Window::new("command_palette_modal")
+        egui::Window::new("command_palette")
             .title_bar(false)
             .resizable(false)
             .collapsible(false)
-            .fixed_rect(Rect::from_min_size(modal_pos, Vec2::new(modal_width, modal_height)))
-            .frame(glass_frame())
+            .order(egui::Order::Foreground)
+            .anchor(
+                Align2::CENTER_TOP,
+                Vec2::new(0.0, (screen.height() * 0.14).max(40.0)),
+            )
+            .default_width(width)
+            .min_width(width)
+            .max_width(width)
+            .frame(theme::popover_frame().inner_margin(Margin::same(8)))
             .show(ctx, |ui| {
-                ui.add_space(4.0);
-
-                // Input Bar dengan Icon Search
+                ui.set_width(width);
                 ui.horizontal(|ui| {
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
                     ui.label(
-                        RichText::new(ICON_SEARCH.codepoint)
-                            .size(16.0)
-                            .color(ACCENT_BLUE),
+                        RichText::new(egui_icons::icons::ICON_SEARCH.codepoint)
+                            .size(20.0)
+                            .color(p.text_faint),
                     );
-
-                    let input = egui::TextEdit::singleline(&mut self.query)
-                        .hint_text("Ketik perintah atau cari aksi... (Esc untuk batal)")
-                        .desired_width(ui.available_width() - 16.0)
-                        .frame(egui::Frame::NONE);
-
-                    let edit_resp = ui.add(input);
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.query)
+                            .hint_text(RichText::new(t("command-palette-hint")).color(p.text_faint))
+                            .font(FontId::proportional(theme::TEXT_LG))
+                            .frame(egui::Frame::NONE)
+                            .margin(Margin::symmetric(4, 10))
+                            .desired_width(f32::INFINITY),
+                    );
                     if self.focus_pending {
-                        edit_resp.request_focus();
+                        resp.request_focus();
                         self.focus_pending = false;
                     }
+                    if resp.changed() {
+                        self.highlighted = 0;
+                    }
                 });
+                ui.add(egui::Separator::default().spacing(8.0));
 
-                ui.add_space(6.0);
-                ui.add(egui::Separator::default().spacing(0.0));
-                ui.add_space(6.0);
-
-                // Daftar Command Terfilter
                 egui::ScrollArea::vertical()
-                    .max_height(modal_height - 60.0)
+                    .max_height((screen.height() * 0.5).clamp(200.0, 440.0))
+                    .min_scrolled_height((filtered.len().max(1) as f32 * 40.0).min(320.0))
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        if filtered_indices.is_empty() {
+                        if filtered.is_empty() {
+                            ui.add_space(24.0);
                             ui.vertical_centered(|ui| {
-                                ui.add_space(30.0);
                                 ui.label(
-                                    RichText::new("Tidak ada perintah yang cocok")
-                                        .size(13.0)
-                                        .color(TEXT_MUTED),
+                                    RichText::new(t("command-palette-empty"))
+                                        .size(theme::TEXT_BODY)
+                                        .color(p.text_faint),
                                 );
                             });
-                        } else {
-                            for (list_idx, &cmd_idx) in filtered_indices.iter().enumerate() {
-                                let cmd = &commands[cmd_idx];
-                                let is_highlighted = list_idx == self.highlighted;
-
-                                let item_frame = Frame {
-                                    inner_margin: Margin::symmetric(10, 6),
-                                    outer_margin: Margin::symmetric(0, 1),
-                                    corner_radius: CornerRadius::same(ROUNDING_SM),
-                                    fill: if is_highlighted {
-                                        Color32::from_rgba_premultiplied(10, 132, 255, 55)
-                                    } else {
-                                        Color32::TRANSPARENT
-                                    },
-                                    stroke: if is_highlighted {
-                                        Stroke::new(1.0, ACCENT_BLUE)
-                                    } else {
-                                        Stroke::NONE
-                                    },
-                                    shadow: egui::Shadow::NONE,
-                                };
-
-                                let resp = item_frame
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            // Icon
-                                            ui.label(
-                                                RichText::new(cmd.icon)
-                                                    .size(14.0)
-                                                    .color(if is_highlighted {
-                                                        Color32::WHITE
-                                                    } else {
-                                                        ACCENT_BLUE
-                                                    }),
-                                            );
-
-                                            ui.add_space(4.0);
-
-                                            // Category badge
-                                            ui.label(
-                                                RichText::new(cmd.category)
-                                                    .size(10.5)
-                                                    .color(TEXT_MUTED),
-                                            );
-
-                                            ui.label(
-                                                RichText::new("›")
-                                                    .size(11.0)
-                                                    .color(TEXT_MUTED),
-                                            );
-
-                                            // Label
-                                            ui.label(
-                                                RichText::new(cmd.label)
-                                                    .size(12.5)
-                                                    .strong()
-                                                    .color(if is_highlighted {
-                                                        Color32::WHITE
-                                                    } else {
-                                                        TEXT_PRIMARY
-                                                    }),
-                                            );
-
-                                            // Shortcut hint rata kanan
-                                            if !cmd.hint.is_empty() {
-                                                ui.with_layout(
-                                                    egui::Layout::right_to_left(
-                                                        egui::Align::Center,
-                                                    ),
-                                                    |ui| {
-                                                        ui.label(
-                                                            RichText::new(cmd.hint)
-                                                                .size(11.0)
-                                                                .color(TEXT_MUTED),
-                                                        );
-                                                    },
-                                                );
-                                            }
-                                        });
-                                    })
-                                    .response;
-
-                                if resp.interact(Sense::click()).clicked() {
-                                    executed_id = Some(cmd.id);
-                                    self.close();
-                                    break;
+                            ui.add_space(24.0);
+                            return;
+                        }
+                        let grouped = self.query.trim().is_empty();
+                        let mut last_category: Option<&str> = None;
+                        for (list_idx, &cmd_idx) in filtered.iter().enumerate() {
+                            let cmd = &commands[cmd_idx];
+                            if grouped && last_category != Some(cmd.category.as_str()) {
+                                widgets::section_header(ui, &cmd.category);
+                                last_category = Some(cmd.category.as_str());
+                            }
+                            let highlighted = list_idx == self.highlighted;
+                            let (rect, resp) = ui.allocate_exact_size(
+                                Vec2::new(ui.available_width(), 38.0),
+                                Sense::click(),
+                            );
+                            if resp.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
+                                self.highlighted = list_idx;
+                            }
+                            if highlighted {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    CornerRadius::same(theme::RADIUS_MD),
+                                    p.accent_soft,
+                                );
+                                if keyboard_moved {
+                                    resp.scroll_to_me(None);
                                 }
+                            }
+                            ui.painter().text(
+                                Pos2::new(rect.min.x + 14.0, rect.center().y),
+                                Align2::LEFT_CENTER,
+                                cmd.icon,
+                                FontId::proportional(18.0),
+                                if highlighted { p.accent } else { p.text_dim },
+                            );
+                            let mut right = rect.max.x - 12.0;
+                            if !cmd.hint.is_empty() {
+                                let g = ui.painter().layout_no_wrap(
+                                    cmd.hint.clone(),
+                                    FontId::proportional(theme::TEXT_XS),
+                                    p.text_faint,
+                                );
+                                right -= g.size().x;
+                                ui.painter().galley(
+                                    Pos2::new(right, rect.center().y - g.size().y / 2.0),
+                                    g,
+                                    p.text_faint,
+                                );
+                                right -= 12.0;
+                            }
+                            let label = widgets::elided_galley(
+                                ui,
+                                &cmd.label,
+                                FontId::proportional(theme::TEXT_BODY),
+                                p.text,
+                                right - rect.min.x - 46.0,
+                            );
+                            ui.painter().galley(
+                                Pos2::new(
+                                    rect.min.x + 44.0,
+                                    rect.center().y - label.size().y / 2.0,
+                                ),
+                                label,
+                                p.text,
+                            );
+                            if resp
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                executed = Some(cmd.id.clone());
                             }
                         }
                     });
+
+                ui.add(egui::Separator::default().spacing(8.0));
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(t("command-palette-footer"))
+                            .size(theme::TEXT_XS)
+                            .color(p.text_faint),
+                    );
+                });
             });
 
-        executed_id
+        if executed.is_some() {
+            self.close();
+        }
+        executed
     }
 }
 
@@ -283,11 +306,22 @@ mod tests {
     fn test_command_palette_open_close() {
         let mut palette = CommandPalette::default();
         assert!(!palette.is_open());
-
         palette.open();
         assert!(palette.is_open());
-
         palette.toggle();
         assert!(!palette.is_open());
+    }
+
+    #[test]
+    fn filter_ranks_prefix_matches_first() {
+        let cmds = vec![
+            PaletteCommand::new("a", "Navigasi", "", "Buka catatan harian"),
+            PaletteCommand::new("b", "Catatan", "", "Catatan Baru"),
+            PaletteCommand::new("c", "Tampilan", "", "Ganti Tema"),
+        ];
+        assert_eq!(filter_commands(&cmds, "catatan"), vec![1, 0]);
+        assert_eq!(filter_commands(&cmds, "tampil"), vec![2]);
+        assert_eq!(filter_commands(&cmds, ""), vec![0, 1, 2]);
+        assert!(filter_commands(&cmds, "zzz").is_empty());
     }
 }

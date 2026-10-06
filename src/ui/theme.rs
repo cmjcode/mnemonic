@@ -1,59 +1,158 @@
-//! Liquid-Glass & Shapr3D theme tokens, frames, and palette styling.
-//! Integrates `egui_icons` (Material Design & MDI vector icons) and supports
-//! both Dark and Light theme modes.
+//! Design system: color palettes (dark & light), type scale, spacing,
+//! reusable frames, and the egui `Style` built from them.
+//!
+//! Components never hard-code colors; they read the active palette via
+//! [`pal()`], which [`apply_theme`] switches. That single indirection is
+//! what makes Light mode actually work — every widget follows the theme
+//! instead of carrying dark-only constants.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use egui::{
-    Color32, CornerRadius, FontId, Frame, Margin, Shadow, Stroke, Style, Vec2, Visuals,
+    Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin, Shadow,
+    Stroke, Style, Vec2, Visuals,
 };
 
-// ─── Theme Constants & Color Tokens ──────────────────────────────────────────
+// ─── Spacing, Radius & Type Scale ────────────────────────────────────────────
 
-pub const MIN_TOUCH_TARGET: f32 = 28.0;
-pub const BOTTOM_RIGHT_PANEL_WIDTH: f32 = 260.0;
-pub const ICON_SIZE_DEFAULT: f32 = 18.0;
+pub const SPACE_XS: f32 = 4.0;
+pub const SPACE_S: f32 = 8.0;
+pub const SPACE_M: f32 = 12.0;
+pub const SPACE_L: f32 = 16.0;
+pub const SPACE_XL: f32 = 24.0;
 
-// Shapr3D & Liquid Glass Color Tokens
-pub const ACCENT_BLUE: Color32 = Color32::from_rgb(10, 132, 255); // #0a84ff
-pub const ACCENT_ORANGE: Color32 = Color32::from_rgb(255, 149, 0); // #ff9500 (Active highlight)
-pub const ACCENT_GREEN: Color32 = Color32::from_rgb(48, 209, 88); // #30d158 (Success / Valid)
-pub const ACCENT_PURPLE: Color32 = Color32::from_rgb(175, 82, 222); // #af52de (Selection)
-pub const BG_CANVAS: Color32 = Color32::from_rgb(18, 19, 22); // Deep viewport background
-pub const BG_PANEL_DARK: Color32 = Color32::from_rgba_premultiplied(16, 18, 22, 225); // ~88% translucent glass
-pub const BG_CARD_DARK: Color32 = Color32::from_rgba_premultiplied(26, 30, 38, 220); // Card fill
-pub const BG_HOVER_DARK: Color32 = Color32::from_rgba_premultiplied(40, 45, 56, 220); // Hover fill
-pub const BORDER_SUBTLE: Color32 = Color32::from_rgba_premultiplied(65, 75, 95, 130); // Glass border
-pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(245, 245, 247);
-pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(142, 142, 147);
-pub const TEXT_MUTED: Color32 = Color32::from_rgb(99, 99, 102);
+pub const RADIUS_SM: u8 = 6;
+pub const RADIUS_MD: u8 = 8;
+pub const RADIUS_LG: u8 = 12;
 
-// Liquid Glass Palette Aliases (Backward-compatibility)
-pub const GLASS_BG: Color32 = BG_CANVAS;
-pub const GLASS_SURFACE: Color32 = BG_CARD_DARK;
-pub const GLASS_SURFACE_HIGH: Color32 = BG_PANEL_DARK;
-pub const GLASS_SIDEBAR: Color32 = BG_PANEL_DARK;
-pub const GLASS_TOPBAR: Color32 = BG_PANEL_DARK;
-pub const GLASS_ACCENT: Color32 = ACCENT_BLUE;
-pub const GLASS_ACCENT_HOVER: Color32 = Color32::from_rgb(64, 156, 255);
-pub const GLASS_ACCENT_ACTIVE: Color32 = Color32::from_rgb(0, 110, 220);
-pub const GLASS_BORDER: Color32 = BORDER_SUBTLE;
-pub const GLASS_BORDER_HOVER: Color32 = Color32::from_rgba_premultiplied(10, 132, 255, 140);
-pub const GLASS_TEXT_PRIMARY: Color32 = TEXT_PRIMARY;
-pub const GLASS_TEXT_SECONDARY: Color32 = TEXT_SECONDARY;
-pub const GLASS_TEXT_FAINT: Color32 = TEXT_MUTED;
-pub const GLASS_ERROR: Color32 = Color32::from_rgb(239, 68, 68);
-pub const GLASS_SEPARATOR: Color32 = Color32::from_rgba_premultiplied(148, 163, 184, 35);
+pub const TEXT_XS: f32 = 12.0;
+pub const TEXT_SM: f32 = 13.0;
+pub const TEXT_BODY: f32 = 14.0;
+pub const TEXT_LG: f32 = 17.0;
+pub const TEXT_XL: f32 = 22.0;
+pub const TEXT_DISPLAY: f32 = 28.0;
 
-// Layout Constants
-pub const ROUNDING_SM: u8 = 6;
-pub const ROUNDING_MD: u8 = 10;
-pub const ROUNDING_LG: u8 = 14;
-pub const ROUNDING_XL: u8 = 20;
+/// Minimum clickable size for any icon button or row.
+pub const CONTROL_HEIGHT: f32 = 30.0;
+pub const ICON_SIZE: f32 = 17.0;
 
-pub const CARD_MIN_WIDTH: f32 = 220.0;
-pub const GRID_GAP: f32 = 12.0;
-pub const SIDEBAR_WIDTH: f32 = 280.0;
+pub const TOPBAR_HEIGHT: f32 = 48.0;
+pub const SIDEBAR_WIDTH: f32 = 264.0;
 pub const CHAT_SIDEBAR_WIDTH: f32 = 380.0;
-pub const TOPBAR_HEIGHT: f32 = 44.0;
+/// Comfortable reading/writing column width for the note editor.
+pub const EDITOR_MAX_WIDTH: f32 = 760.0;
+pub const GRID_GAP: f32 = 12.0;
+
+/// Name of the semibold font family registered by [`apply_theme`].
+pub const SEMIBOLD_FAMILY: &str = "semibold";
+
+// ─── Palette ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Palette {
+    pub is_dark: bool,
+    /// Main content background.
+    pub bg: Color32,
+    /// Side panels & top bar.
+    pub surface: Color32,
+    /// Cards, inputs, popovers.
+    pub card: Color32,
+    pub hover: Color32,
+    pub border: Color32,
+    pub border_strong: Color32,
+    pub text: Color32,
+    pub text_dim: Color32,
+    pub text_faint: Color32,
+    pub accent: Color32,
+    pub accent_hover: Color32,
+    /// Accent-tinted background for selected rows / active toggles.
+    pub accent_soft: Color32,
+    pub on_accent: Color32,
+    pub danger: Color32,
+    pub danger_soft: Color32,
+    pub success: Color32,
+    pub warning: Color32,
+    /// Type colors used for file icons.
+    pub note_icon: Color32,
+    pub canvas_icon: Color32,
+    pub pdf_icon: Color32,
+    /// CSV/XLSX sheets (§3.8): spreadsheet green.
+    pub sheet_icon: Color32,
+    pub folder_icon: Color32,
+    pub shadow: Color32,
+}
+
+pub const DARK: Palette = Palette {
+    is_dark: true,
+    bg: Color32::from_rgb(22, 23, 26),
+    surface: Color32::from_rgb(28, 29, 33),
+    card: Color32::from_rgb(35, 36, 41),
+    hover: Color32::from_rgb(43, 45, 51),
+    border: Color32::from_rgb(46, 48, 54),
+    border_strong: Color32::from_rgb(62, 65, 73),
+    text: Color32::from_rgb(236, 236, 238),
+    text_dim: Color32::from_rgb(163, 166, 174),
+    text_faint: Color32::from_rgb(112, 115, 124),
+    accent: Color32::from_rgb(74, 128, 240),
+    accent_hover: Color32::from_rgb(98, 148, 250),
+    accent_soft: Color32::from_rgb(38, 52, 82),
+    on_accent: Color32::WHITE,
+    danger: Color32::from_rgb(240, 97, 109),
+    danger_soft: Color32::from_rgb(70, 36, 42),
+    success: Color32::from_rgb(63, 185, 123),
+    warning: Color32::from_rgb(232, 169, 58),
+    note_icon: Color32::from_rgb(120, 165, 255),
+    canvas_icon: Color32::from_rgb(232, 169, 58),
+    pdf_icon: Color32::from_rgb(240, 97, 109),
+    sheet_icon: Color32::from_rgb(63, 185, 123),
+    folder_icon: Color32::from_rgb(140, 145, 158),
+    shadow: Color32::from_black_alpha(90),
+};
+
+pub const LIGHT: Palette = Palette {
+    is_dark: false,
+    bg: Color32::from_rgb(248, 248, 250),
+    surface: Color32::from_rgb(242, 242, 245),
+    card: Color32::WHITE,
+    hover: Color32::from_rgb(232, 233, 238),
+    border: Color32::from_rgb(224, 225, 230),
+    border_strong: Color32::from_rgb(204, 206, 213),
+    text: Color32::from_rgb(29, 30, 34),
+    text_dim: Color32::from_rgb(88, 91, 99),
+    text_faint: Color32::from_rgb(137, 140, 149),
+    accent: Color32::from_rgb(47, 111, 235),
+    accent_hover: Color32::from_rgb(33, 94, 212),
+    accent_soft: Color32::from_rgb(222, 232, 252),
+    on_accent: Color32::WHITE,
+    danger: Color32::from_rgb(214, 58, 74),
+    danger_soft: Color32::from_rgb(252, 228, 231),
+    success: Color32::from_rgb(30, 150, 90),
+    warning: Color32::from_rgb(185, 122, 16),
+    note_icon: Color32::from_rgb(47, 111, 235),
+    canvas_icon: Color32::from_rgb(200, 128, 10),
+    pdf_icon: Color32::from_rgb(214, 58, 74),
+    sheet_icon: Color32::from_rgb(30, 140, 84),
+    folder_icon: Color32::from_rgb(120, 124, 134),
+    shadow: Color32::from_black_alpha(28),
+};
+
+static DARK_ACTIVE: AtomicBool = AtomicBool::new(true);
+
+/// The palette of the theme most recently applied with [`apply_theme`].
+pub fn pal() -> &'static Palette {
+    if DARK_ACTIVE.load(Ordering::Relaxed) {
+        &DARK
+    } else {
+        &LIGHT
+    }
+}
+
+/// Linear blend between two colors (`t = 0` → `a`, `t = 1` → `b`).
+pub fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+}
 
 // ─── Theme Mode ──────────────────────────────────────────────────────────────
 
@@ -72,230 +171,303 @@ impl ThemeMode {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    /// Stable id used in the settings file.
+    pub fn as_str(self) -> &'static str {
         match self {
-            ThemeMode::Light => "☀ Terang",
-            ThemeMode::Dark => "🌙 Gelap",
+            ThemeMode::Light => "light",
+            ThemeMode::Dark => "dark",
+        }
+    }
+
+    pub fn from_str_or_default(s: &str) -> ThemeMode {
+        match s {
+            "light" => ThemeMode::Light,
+            _ => ThemeMode::Dark,
+        }
+    }
+
+    pub fn palette(self) -> &'static Palette {
+        match self {
+            ThemeMode::Light => &LIGHT,
+            ThemeMode::Dark => &DARK,
         }
     }
 
     fn visuals(self) -> Visuals {
-        match self {
-            ThemeMode::Dark => {
-                let mut v = Visuals::dark();
-                v.panel_fill = BG_PANEL_DARK;
-                v.window_fill = BG_PANEL_DARK;
-                v.faint_bg_color = BG_CARD_DARK;
-                v.extreme_bg_color = Color32::from_rgb(12, 13, 15);
-                v.window_stroke = Stroke::new(1.0, BORDER_SUBTLE);
-                v.window_corner_radius = CornerRadius::same(ROUNDING_MD);
-                v.menu_corner_radius = CornerRadius::same(ROUNDING_SM);
+        let p = self.palette();
+        let mut v = if p.is_dark {
+            Visuals::dark()
+        } else {
+            Visuals::light()
+        };
+        let radius = CornerRadius::same(RADIUS_MD);
 
-                v.widgets.noninteractive.bg_fill = BG_PANEL_DARK;
-                v.widgets.noninteractive.weak_bg_fill = BG_PANEL_DARK;
-                v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, GLASS_SEPARATOR);
-                v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_SECONDARY);
-                v.widgets.noninteractive.corner_radius = CornerRadius::same(ROUNDING_SM);
-
-                v.widgets.inactive.bg_fill = Color32::from_rgba_premultiplied(28, 30, 36, 140);
-                v.widgets.inactive.weak_bg_fill = Color32::from_rgba_premultiplied(28, 30, 36, 140);
-                v.widgets.inactive.corner_radius = CornerRadius::same(ROUNDING_SM);
-                v.widgets.inactive.bg_stroke = Stroke::new(0.5, BORDER_SUBTLE);
-                v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
-
-                v.widgets.hovered.bg_fill = BG_HOVER_DARK;
-                v.widgets.hovered.weak_bg_fill = BG_HOVER_DARK;
-                v.widgets.hovered.corner_radius = CornerRadius::same(ROUNDING_SM);
-                v.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT_BLUE);
-                v.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-
-                v.widgets.active.bg_fill = ACCENT_BLUE;
-                v.widgets.active.weak_bg_fill = ACCENT_BLUE;
-                v.widgets.active.corner_radius = CornerRadius::same(ROUNDING_SM);
-                v.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT_BLUE);
-                v.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-
-                v.widgets.open.bg_fill = BG_CARD_DARK;
-                v.widgets.open.weak_bg_fill = BG_CARD_DARK;
-                v.widgets.open.corner_radius = CornerRadius::same(ROUNDING_SM);
-
-                v.selection.bg_fill = Color32::from_rgba_premultiplied(10, 132, 255, 60);
-                v.selection.stroke = Stroke::new(1.0, ACCENT_BLUE);
-                v.hyperlink_color = GLASS_ACCENT_HOVER;
-                v.override_text_color = Some(TEXT_PRIMARY);
-                v
-            }
-            ThemeMode::Light => {
-                let mut v = Visuals::light();
-                v.window_corner_radius = CornerRadius::same(ROUNDING_MD);
-                v.menu_corner_radius = CornerRadius::same(ROUNDING_SM);
-                v.widgets.inactive.corner_radius = CornerRadius::same(ROUNDING_SM);
-                v.widgets.hovered.corner_radius = CornerRadius::same(ROUNDING_SM);
-                v.widgets.active.corner_radius = CornerRadius::same(ROUNDING_SM);
-                v.selection.bg_fill = Color32::from_rgba_premultiplied(10, 132, 255, 50);
-                v.selection.stroke = Stroke::new(1.0, ACCENT_BLUE);
-                v
-            }
-        }
-    }
-}
-
-// ─── Frame Helpers ────────────────────────────────────────────────────────────
-
-/// Helper frame glassmorphism untuk panel mengambang.
-pub fn glass_frame() -> Frame {
-    Frame {
-        inner_margin: Margin::symmetric(10, 6),
-        outer_margin: Margin::ZERO,
-        corner_radius: CornerRadius::same(ROUNDING_MD),
-        shadow: Shadow {
+        v.panel_fill = p.surface;
+        v.window_fill = p.card;
+        v.faint_bg_color = p.surface;
+        v.extreme_bg_color = p.card;
+        v.code_bg_color = p.hover;
+        v.window_stroke = Stroke::new(1.0, p.border);
+        v.window_corner_radius = CornerRadius::same(RADIUS_LG);
+        v.menu_corner_radius = radius;
+        v.window_shadow = Shadow {
+            offset: [0, 8],
+            blur: 28,
+            spread: 0,
+            color: p.shadow,
+        };
+        v.popup_shadow = Shadow {
             offset: [0, 4],
-            blur: 14,
+            blur: 16,
             spread: 0,
-            color: Color32::from_black_alpha(80),
-        },
-        fill: BG_PANEL_DARK,
-        stroke: Stroke::new(1.0, BORDER_SUBTLE),
+            color: p.shadow,
+        };
+        v.hyperlink_color = p.accent;
+        v.warn_fg_color = p.warning;
+        v.error_fg_color = p.danger;
+        v.text_cursor.stroke = Stroke::new(2.0, p.accent);
+        v.selection.bg_fill = p.accent.gamma_multiply(if p.is_dark { 0.35 } else { 0.25 });
+        v.selection.stroke = Stroke::new(1.0, p.accent);
+        v.override_text_color = None;
+
+        let w = &mut v.widgets;
+        w.noninteractive.bg_fill = p.surface;
+        w.noninteractive.weak_bg_fill = p.surface;
+        w.noninteractive.bg_stroke = Stroke::new(1.0, p.border);
+        w.noninteractive.fg_stroke = Stroke::new(1.0, p.text);
+        w.noninteractive.corner_radius = radius;
+
+        w.inactive.bg_fill = p.card;
+        w.inactive.weak_bg_fill = p.card;
+        w.inactive.bg_stroke = Stroke::new(1.0, p.border);
+        w.inactive.fg_stroke = Stroke::new(1.0, p.text);
+        w.inactive.corner_radius = radius;
+
+        w.hovered.bg_fill = p.hover;
+        w.hovered.weak_bg_fill = p.hover;
+        w.hovered.bg_stroke = Stroke::new(1.0, p.border_strong);
+        w.hovered.fg_stroke = Stroke::new(1.0, p.text);
+        w.hovered.corner_radius = radius;
+        w.hovered.expansion = 0.0;
+
+        w.active.bg_fill = p.accent_soft;
+        w.active.weak_bg_fill = p.accent_soft;
+        w.active.bg_stroke = Stroke::new(1.0, p.accent);
+        w.active.fg_stroke = Stroke::new(1.0, p.text);
+        w.active.corner_radius = radius;
+        w.active.expansion = 0.0;
+
+        w.open.bg_fill = p.hover;
+        w.open.weak_bg_fill = p.hover;
+        w.open.bg_stroke = Stroke::new(1.0, p.border_strong);
+        w.open.fg_stroke = Stroke::new(1.0, p.text);
+        w.open.corner_radius = radius;
+        v
     }
 }
 
-/// Helper frame untuk kartu-kartu catatan / outliner.
+// ─── Fonts ───────────────────────────────────────────────────────────────────
+
+const INTER_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+const INTER_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-SemiBold.ttf");
+
+/// Registers Inter as the proportional UI font (egui's defaults stay as
+/// fallbacks for emoji & symbols) plus a `semibold` family for headings,
+/// then the Material icon fonts. Idempotent per context.
+///
+/// Font changes only take effect on the *next* frame, so this must run
+/// before the first frame (`main.rs` calls it from the creation context);
+/// otherwise the first layout using [`semibold`] would find no font.
+pub fn install_fonts(ctx: &egui::Context) {
+    let installed_id = egui::Id::new("mnemonic_fonts_installed");
+    if ctx
+        .data(|d| d.get_temp::<bool>(installed_id))
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "Inter".to_owned(),
+        std::sync::Arc::new(FontData::from_static(INTER_REGULAR)),
+    );
+    fonts.font_data.insert(
+        "Inter-SemiBold".to_owned(),
+        std::sync::Arc::new(FontData::from_static(INTER_SEMIBOLD)),
+    );
+
+    let proportional_fallbacks = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, "Inter".to_owned());
+
+    let mut semibold = vec!["Inter-SemiBold".to_owned(), "Inter".to_owned()];
+    semibold.extend(proportional_fallbacks);
+    fonts
+        .families
+        .insert(FontFamily::Name(SEMIBOLD_FAMILY.into()), semibold);
+
+    ctx.set_fonts(fonts);
+    egui_icons::initialize(ctx);
+    ctx.data_mut(|d| d.insert_temp(installed_id, true));
+}
+
+/// A semibold `FontId` — egui has no bold weight of its own.
+pub fn semibold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(SEMIBOLD_FAMILY.into()))
+}
+
+// ─── Apply Theme to Context ──────────────────────────────────────────────────
+
+/// Applies `mode`'s palette and the app-wide spacing/type scale. Cheap to
+/// call, but the app only calls it when the mode actually changes.
+pub fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
+    install_fonts(ctx);
+    DARK_ACTIVE.store(mode == ThemeMode::Dark, Ordering::Relaxed);
+
+    let theme = match mode {
+        ThemeMode::Dark => egui::Theme::Dark,
+        ThemeMode::Light => egui::Theme::Light,
+    };
+    ctx.set_theme(theme);
+
+    let mut style = Style {
+        visuals: mode.visuals(),
+        ..Default::default()
+    };
+    style.spacing.interact_size.y = CONTROL_HEIGHT;
+    style.spacing.button_padding = Vec2::new(10.0, 5.0);
+    style.spacing.item_spacing = Vec2::new(SPACE_S, 6.0);
+    style.spacing.menu_margin = Margin::same(6);
+    style.spacing.window_margin = Margin::same(16);
+    style.spacing.icon_width = 16.0;
+    style.spacing.scroll = egui::style::ScrollStyle::floating();
+    style.spacing.scroll.bar_width = 8.0;
+
+    use egui::TextStyle::*;
+    style
+        .text_styles
+        .insert(Small, FontId::proportional(TEXT_XS));
+    style
+        .text_styles
+        .insert(Body, FontId::proportional(TEXT_BODY));
+    style
+        .text_styles
+        .insert(Button, FontId::proportional(TEXT_SM + 0.5));
+    style
+        .text_styles
+        .insert(Monospace, FontId::monospace(TEXT_SM + 0.5));
+    style.text_styles.insert(Heading, semibold(TEXT_LG + 1.0));
+
+    ctx.set_style_of(theme, style);
+}
+
+// ─── Frames ──────────────────────────────────────────────────────────────────
+
+/// Content card (note/PDF cards, grouped settings).
 pub fn card_frame() -> Frame {
+    let p = pal();
     Frame {
-        inner_margin: Margin::same(10),
-        outer_margin: Margin::symmetric(0, 2),
-        corner_radius: CornerRadius::same(ROUNDING_MD),
+        inner_margin: Margin::same(14),
+        outer_margin: Margin::ZERO,
+        corner_radius: CornerRadius::same(RADIUS_LG),
         shadow: Shadow {
-            offset: [0, 2],
-            blur: 8,
+            offset: [0, 1],
+            blur: 3,
             spread: 0,
-            color: Color32::from_black_alpha(60),
+            color: p.shadow.gamma_multiply(0.5),
         },
-        fill: BG_CARD_DARK,
-        stroke: Stroke::new(0.5, BORDER_SUBTLE),
+        fill: p.card,
+        stroke: Stroke::new(1.0, p.border),
     }
 }
 
-/// Helper frame untuk kapsul / pill mengambang (mis. status bar, tag chip, zoom pill).
+/// Floating surfaces: modals, the command palette, canvas tool docks.
+pub fn popover_frame() -> Frame {
+    let p = pal();
+    Frame {
+        inner_margin: Margin::same(12),
+        outer_margin: Margin::ZERO,
+        corner_radius: CornerRadius::same(RADIUS_LG),
+        shadow: Shadow {
+            offset: [0, 10],
+            blur: 32,
+            spread: 0,
+            color: p.shadow,
+        },
+        fill: p.card,
+        stroke: Stroke::new(1.0, p.border),
+    }
+}
+
+/// Compact capsule (zoom pill, style picker).
 pub fn pill_frame() -> Frame {
-    Frame {
-        inner_margin: Margin::symmetric(10, 5),
-        outer_margin: Margin::ZERO,
-        corner_radius: CornerRadius::same(ROUNDING_LG),
-        shadow: Shadow {
-            offset: [0, 2],
-            blur: 8,
-            spread: 0,
-            color: Color32::from_black_alpha(70),
-        },
-        fill: BG_PANEL_DARK,
-        stroke: Stroke::new(1.0, BORDER_SUBTLE),
-    }
+    popover_frame()
+        .inner_margin(Margin::symmetric(8, 4))
+        .corner_radius(CornerRadius::same(RADIUS_LG))
 }
 
-/// Helper frame untuk badge putih kontras tinggi di kanvas.
-pub fn dimension_pill_frame() -> Frame {
+/// Docked side panel (file tree sidebar, AI sidebar, outline).
+pub fn side_panel_frame() -> Frame {
+    let p = pal();
     Frame {
-        inner_margin: Margin::symmetric(8, 4),
-        outer_margin: Margin::ZERO,
-        corner_radius: CornerRadius::same(ROUNDING_SM),
-        shadow: Shadow {
-            offset: [0, 2],
-            blur: 6,
-            spread: 0,
-            color: Color32::from_black_alpha(120),
-        },
-        fill: Color32::from_rgba_premultiplied(240, 242, 245, 245),
-        stroke: Stroke::new(1.0, Color32::from_gray(180)),
-    }
-}
-
-/// Standard glass `egui::Frame` for note/PDF cards.
-pub fn glass_card_frame() -> Frame {
-    card_frame()
-}
-
-/// Frame untuk sidebar kiri tetap (Fixed Left Side Panel).
-pub fn fixed_sidebar_frame() -> Frame {
-    Frame {
-        inner_margin: Margin::symmetric(8, 6),
+        inner_margin: Margin::symmetric(10, 10),
         outer_margin: Margin::ZERO,
         corner_radius: CornerRadius::ZERO,
         shadow: Shadow::NONE,
-        fill: BG_PANEL_DARK,
-        stroke: Stroke::new(1.0, BORDER_SUBTLE),
+        fill: p.surface,
+        stroke: Stroke::NONE,
     }
 }
 
-/// Glass frame for elevated overlay panels (sidebar).
-pub fn glass_panel_frame() -> Frame {
+/// The top application bar.
+pub fn top_bar_frame() -> Frame {
+    let p = pal();
+    Frame {
+        inner_margin: Margin::symmetric(10, 0),
+        outer_margin: Margin::ZERO,
+        corner_radius: CornerRadius::ZERO,
+        shadow: Shadow::NONE,
+        fill: p.bg,
+        stroke: Stroke::NONE,
+    }
+}
+
+/// Main content area.
+pub fn content_frame() -> Frame {
     Frame {
         inner_margin: Margin::ZERO,
         outer_margin: Margin::ZERO,
-        corner_radius: CornerRadius::same(ROUNDING_MD),
-        shadow: Shadow {
-            offset: [4, 0],
-            blur: 28,
-            spread: 0,
-            color: Color32::from_black_alpha(150),
-        },
-        fill: BG_PANEL_DARK,
-        stroke: Stroke::new(1.0, BORDER_SUBTLE),
-    }
-}
-
-/// Glass frame for the floating top bar.
-pub fn glass_topbar_frame() -> Frame {
-    Frame {
-        inner_margin: Margin::symmetric(14, 6),
-        outer_margin: Margin::ZERO,
-        corner_radius: CornerRadius::same(ROUNDING_MD),
-        shadow: Shadow {
-            offset: [0, 6],
-            blur: 20,
-            spread: 0,
-            color: Color32::from_black_alpha(140),
-        },
-        fill: Color32::from_rgba_premultiplied(20, 24, 30, 235),
-        stroke: Stroke::new(1.0, Color32::from_rgba_premultiplied(80, 95, 120, 100)),
+        corner_radius: CornerRadius::ZERO,
+        shadow: Shadow::NONE,
+        fill: pal().bg,
+        stroke: Stroke::NONE,
     }
 }
 
 /// Compact pill-style frame for tag chips.
 pub fn tag_chip_frame(color: Color32) -> Frame {
-    let fill = Color32::from_rgba_premultiplied(
-        (color.r() as u16 * 35 / 255) as u8,
-        (color.g() as u16 * 35 / 255) as u8,
-        (color.b() as u16 * 35 / 255) as u8,
-        60,
-    );
+    let p = pal();
     Frame {
-        inner_margin: Margin::symmetric(8, 3),
+        inner_margin: Margin::symmetric(8, 2),
         outer_margin: Margin::ZERO,
-        corner_radius: CornerRadius::same(ROUNDING_LG),
+        corner_radius: CornerRadius::same(RADIUS_LG),
         shadow: Shadow::NONE,
-        fill,
-        stroke: Stroke::new(
-            1.0,
-            Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), 100),
-        ),
+        fill: blend(p.card, color, if p.is_dark { 0.16 } else { 0.12 }),
+        stroke: Stroke::NONE,
     }
 }
 
 // ─── Card Colour Palette ──────────────────────────────────────────────────────
 
-pub const PALETTE: &[(&str, Color32)] = &[
-    ("yellow", Color32::from_rgba_premultiplied(80, 70, 5, 50)),
-    ("green", Color32::from_rgba_premultiplied(10, 70, 45, 50)),
-    ("blue", Color32::from_rgba_premultiplied(20, 50, 100, 50)),
-    ("purple", Color32::from_rgba_premultiplied(60, 30, 100, 50)),
-    ("pink", Color32::from_rgba_premultiplied(90, 20, 60, 50)),
-    ("red", Color32::from_rgba_premultiplied(90, 15, 15, 50)),
-    ("orange", Color32::from_rgba_premultiplied(90, 45, 5, 50)),
-    ("teal", Color32::from_rgba_premultiplied(5, 75, 70, 50)),
-    ("gray", Color32::from_rgba_premultiplied(40, 45, 60, 50)),
-];
-
+/// Note colors the user can pick, as `(settings id, solid color)`.
 pub const PALETTE_SOLID: &[(&str, Color32)] = &[
     ("yellow", Color32::from_rgb(234, 179, 8)),
     ("green", Color32::from_rgb(16, 185, 129)),
@@ -308,11 +480,6 @@ pub const PALETTE_SOLID: &[(&str, Color32)] = &[
     ("gray", Color32::from_rgb(100, 116, 139)),
 ];
 
-pub fn color_for(name: Option<&str>) -> Option<Color32> {
-    let name = name?;
-    PALETTE.iter().find(|(n, _)| *n == name).map(|(_, c)| *c)
-}
-
 pub fn color_solid_for(name: Option<&str>) -> Option<Color32> {
     let name = name?;
     PALETTE_SOLID
@@ -321,17 +488,24 @@ pub fn color_solid_for(name: Option<&str>) -> Option<Color32> {
         .map(|(_, c)| *c)
 }
 
+/// Card background for a note colored `name`: the card color gently
+/// tinted toward the solid color, readable in both themes.
+pub fn note_tint(name: Option<&str>) -> Option<Color32> {
+    let p = pal();
+    color_solid_for(name).map(|c| blend(p.card, c, if p.is_dark { 0.18 } else { 0.14 }))
+}
+
 // ─── Tag Colours ──────────────────────────────────────────────────────────────
 
 const TAG_COLORS: &[Color32] = &[
-    Color32::from_rgb(10, 132, 255), // blue
-    Color32::from_rgb(48, 209, 88),  // green
-    Color32::from_rgb(175, 82, 222), // purple
-    Color32::from_rgb(255, 149, 0),  // orange
-    Color32::from_rgb(255, 59, 48),  // red
-    Color32::from_rgb(100, 210, 255),// teal/cyan
-    Color32::from_rgb(255, 45, 85),  // pink
-    Color32::from_rgb(255, 214, 10), // yellow
+    Color32::from_rgb(92, 145, 255),  // blue
+    Color32::from_rgb(63, 185, 123),  // green
+    Color32::from_rgb(175, 110, 230), // purple
+    Color32::from_rgb(232, 150, 50),  // orange
+    Color32::from_rgb(235, 90, 90),   // red
+    Color32::from_rgb(40, 180, 200),  // teal
+    Color32::from_rgb(230, 80, 150),  // pink
+    Color32::from_rgb(200, 165, 20),  // yellow
 ];
 
 pub fn tag_color(tag: &str) -> Color32 {
@@ -343,53 +517,15 @@ pub fn tag_color(tag: &str) -> Color32 {
     TAG_COLORS[(hash as usize) % TAG_COLORS.len()]
 }
 
-// ─── Apply Theme to Context ──────────────────────────────────────────────────
-
-/// Apply ThemeMode and touch-target style to egui context.
-pub fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
-    egui_icons::initialize(ctx);
-
-    let theme = match mode {
-        ThemeMode::Dark => egui::Theme::Dark,
-        ThemeMode::Light => egui::Theme::Light,
-    };
-    ctx.set_theme(theme);
-
-    let mut style = Style {
-        visuals: mode.visuals(),
-        ..Default::default()
-    };
-    style.spacing.interact_size.y = MIN_TOUCH_TARGET;
-    style.spacing.button_padding = Vec2::new(8.0, 4.0);
-    style.spacing.item_spacing = Vec2::new(6.0, 4.0);
-    style.spacing.menu_margin = Margin::same(6);
-    style.spacing.window_margin = Margin::same(12);
-    style.spacing.scroll.bar_width = 6.0;
-
-    use egui::TextStyle::*;
-    style.text_styles.insert(Small, FontId::proportional(11.5));
-    style.text_styles.insert(Body, FontId::proportional(13.5));
-    style.text_styles.insert(Button, FontId::proportional(13.0));
-    style.text_styles.insert(Monospace, FontId::monospace(13.0));
-    style.text_styles.insert(Heading, FontId::proportional(17.0));
-
-    ctx.set_style_of(theme, style);
-}
-
-/// Backward compatibility: apply default dark theme.
-pub fn apply_liquid_glass_theme(ctx: &egui::Context) {
-    apply_theme(ctx, ThemeMode::Dark);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn color_for_known_and_unknown_names() {
-        assert!(color_for(Some("yellow")).is_some());
-        assert_eq!(color_for(Some("not-a-color")), None);
-        assert_eq!(color_for(None), None);
+    fn note_tint_known_and_unknown_names() {
+        assert!(note_tint(Some("yellow")).is_some());
+        assert_eq!(note_tint(Some("not-a-color")), None);
+        assert_eq!(note_tint(None), None);
     }
 
     #[test]
@@ -399,9 +535,48 @@ mod tests {
     }
 
     #[test]
-    fn test_theme_apply_and_icons() {
+    fn apply_theme_switches_active_palette() {
         let ctx = egui::Context::default();
+        apply_theme(&ctx, ThemeMode::Light);
+        assert!(!pal().is_dark);
         apply_theme(&ctx, ThemeMode::Dark);
+        assert!(pal().is_dark);
         assert_eq!(ThemeMode::Dark.toggled(), ThemeMode::Light);
+    }
+
+    #[test]
+    fn theme_mode_round_trips_through_settings_id() {
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            assert_eq!(ThemeMode::from_str_or_default(mode.as_str()), mode);
+        }
+        assert_eq!(ThemeMode::from_str_or_default("garbage"), ThemeMode::Dark);
+    }
+
+    /// Body text must stay readable (WCAG AA, 4.5:1) on every surface in
+    /// both themes; dim text at least 3:1.
+    #[test]
+    fn text_contrast_meets_minimums() {
+        fn luminance(c: Color32) -> f32 {
+            let ch = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+        }
+        fn contrast(a: Color32, b: Color32) -> f32 {
+            let (la, lb) = (luminance(a), luminance(b));
+            (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+        }
+        for p in [&DARK, &LIGHT] {
+            for bg in [p.bg, p.surface, p.card, p.hover] {
+                assert!(contrast(p.text, bg) >= 4.5, "text on {bg:?}");
+                assert!(contrast(p.text_dim, bg) >= 3.0, "text_dim on {bg:?}");
+            }
+            assert!(contrast(p.on_accent, p.accent) >= 3.0, "on_accent");
+        }
     }
 }

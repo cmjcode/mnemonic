@@ -1,242 +1,243 @@
-//! Bilah Alat Vertikal Kiri (Left Floating Tool Dock) bergaya Shapr3D / DUCAD.
-//!
-//! Menampilkan kolom vertikal ramping mengambang di sisi kiri kanvas/PDF viewer,
-//! dengan active tool states, tooltips, dan shortcut indicator.
+//! Canvas tool dock: a slim vertical toolbar floating inside the canvas,
+//! with single-letter shortcuts shown in every tooltip.
 
-use egui::{
-    Align2, Color32, CornerRadius, Sense, Stroke, StrokeKind, Ui, Vec2,
-};
+use egui::{Key, Ui};
 use egui_icons::icons::{
-    ICON_ADS_CLICK, ICON_ARROWS_OUTWARD, ICON_BRUSH, ICON_CIRCLE, ICON_CROP_16_9, ICON_DELETE,
-    ICON_DRAW, ICON_PAN_TOOL, ICON_REDO, ICON_STICKY_NOTE_2, ICON_UNDO, ICON_UPLOAD,
+    ICON_ACCOUNT_TREE, ICON_ADS_CLICK, ICON_ARROW_RIGHT_ALT, ICON_BRUSH, ICON_CIRCLE, ICON_CODE,
+    ICON_CROP_SQUARE, ICON_DATA_OBJECT, ICON_DIAMOND, ICON_DOWNLOAD, ICON_INK_ERASER, ICON_PAN_TOOL,
+    ICON_POST_ADD, ICON_RECTANGLE, ICON_SCHEMA, ICON_SHAPES, ICON_STICKY_NOTE_2, ICON_TABLE_CHART,
+    ICON_UPLOAD_FILE, ICON_VISIBILITY,
 };
 
-use crate::canvas::element::ShapeKind;
 use crate::canvas::CanvasTool;
-use crate::ui::theme::{
-    glass_frame, ACCENT_BLUE, BG_HOVER_DARK, BORDER_SUBTLE, ICON_SIZE_DEFAULT, ROUNDING_SM,
-    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
-};
+use crate::canvas::element::ShapeKind;
+use crate::i18n::LocaleManager;
+use crate::ui::theme;
+use crate::ui::widgets;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeftToolbarEvent {
     SelectCanvasTool(CanvasTool),
-    Undo,
-    Redo,
-    ZoomIn,
-    ZoomOut,
-    ResetZoom,
     ExportDrawio,
     ImportDrawio,
+    /// Re-lay out the section boxes as a mind map (§3.9.2).
+    TidyMindMap,
+    /// Export the whole canvas as Mermaid (§3.9.4).
+    ExportMermaid,
+    /// Turn the note's ```mermaid fences into editable canvas objects.
+    ImportMermaid,
+    /// Bring back section boxes removed from the canvas.
+    ShowHidden,
+}
+
+/// Locale key of each shape kind in the shape menu.
+pub fn shape_label_key(kind: ShapeKind) -> &'static str {
+    match kind {
+        ShapeKind::Rectangle => "canvas-tool-rectangle",
+        ShapeKind::RoundedRect => "canvas-tool-rounded",
+        ShapeKind::Ellipse => "canvas-tool-ellipse",
+        ShapeKind::Diamond => "canvas-tool-diamond",
+        ShapeKind::CalloutBubble => "canvas-shape-callout",
+        ShapeKind::Stadium => "canvas-shape-stadium",
+        ShapeKind::Circle => "canvas-shape-circle",
+        ShapeKind::Hexagon => "canvas-shape-hexagon",
+        ShapeKind::Cylinder => "canvas-shape-cylinder",
+        ShapeKind::Parallelogram => "canvas-shape-parallelogram",
+        ShapeKind::Subroutine => "canvas-shape-subroutine",
+        ShapeKind::StateStart => "canvas-shape-state-start",
+        ShapeKind::StateEnd => "canvas-shape-state-end",
+    }
+}
+
+/// `(tool, icon, locale key, shortcut key)` for every canvas tool.
+pub const CANVAS_TOOLS: &[(CanvasTool, &str, &str, Key)] = &[
+    (
+        CanvasTool::Select,
+        ICON_ADS_CLICK.codepoint,
+        "canvas-tool-select",
+        Key::V,
+    ),
+    (
+        CanvasTool::Pan,
+        ICON_PAN_TOOL.codepoint,
+        "canvas-tool-pan",
+        Key::H,
+    ),
+    (
+        CanvasTool::Section,
+        ICON_POST_ADD.codepoint,
+        "canvas-tool-section",
+        Key::N,
+    ),
+    (
+        CanvasTool::StickyNote,
+        ICON_STICKY_NOTE_2.codepoint,
+        "canvas-tool-sticky",
+        Key::S,
+    ),
+    (
+        CanvasTool::Shape(ShapeKind::Rectangle),
+        ICON_RECTANGLE.codepoint,
+        "canvas-tool-rectangle",
+        Key::R,
+    ),
+    (
+        CanvasTool::Shape(ShapeKind::RoundedRect),
+        ICON_CROP_SQUARE.codepoint,
+        "canvas-tool-rounded",
+        Key::U,
+    ),
+    (
+        CanvasTool::Shape(ShapeKind::Ellipse),
+        ICON_CIRCLE.codepoint,
+        "canvas-tool-ellipse",
+        Key::O,
+    ),
+    (
+        CanvasTool::Shape(ShapeKind::Diamond),
+        ICON_DIAMOND.codepoint,
+        "canvas-tool-diamond",
+        Key::D,
+    ),
+    (
+        CanvasTool::Entity,
+        ICON_TABLE_CHART.codepoint,
+        "canvas-tool-entity",
+        Key::T,
+    ),
+    (
+        CanvasTool::ClassBox,
+        ICON_DATA_OBJECT.codepoint,
+        "canvas-tool-class",
+        Key::C,
+    ),
+    (
+        CanvasTool::Connector,
+        ICON_ARROW_RIGHT_ALT.codepoint,
+        "canvas-tool-connector",
+        Key::A,
+    ),
+    (
+        CanvasTool::Pen,
+        ICON_BRUSH.codepoint,
+        "canvas-tool-pen",
+        Key::P,
+    ),
+    (
+        CanvasTool::Eraser,
+        ICON_INK_ERASER.codepoint,
+        "canvas-tool-eraser",
+        Key::E,
+    ),
+];
+
+/// The tool whose single-letter shortcut was pressed this frame, if any.
+/// Callers must skip this while a text field has keyboard focus.
+pub fn tool_shortcut_pressed(ctx: &egui::Context) -> Option<CanvasTool> {
+    ctx.input(|i| {
+        if i.modifiers.any() {
+            return None;
+        }
+        CANVAS_TOOLS
+            .iter()
+            .find(|(_, _, _, key)| i.key_pressed(*key))
+            .map(|(tool, ..)| *tool)
+    })
 }
 
 pub struct LeftToolbar;
 
 impl LeftToolbar {
-    /// Render floating tool dock untuk Canvas Whiteboard mode.
+    /// Renders the floating tool dock for the canvas.
     pub fn show_canvas(
         ui: &mut Ui,
+        tr: &LocaleManager,
         active_tool: CanvasTool,
-        can_undo: bool,
-        can_redo: bool,
     ) -> Option<LeftToolbarEvent> {
+        let t = |key: &str| tr.t(key, &[]);
         let mut event = None;
-        let icon_sz = ICON_SIZE_DEFAULT;
 
-        glass_frame().show(ui, |ui| {
-            ui.set_width(36.0);
-            ui.vertical_centered(|ui| {
-                ui.add_space(2.0);
-
-                let tools = [
-                    (CanvasTool::Select, ICON_ADS_CLICK.codepoint, "Pilih / Ubah (V)"),
-                    (CanvasTool::Pan, ICON_PAN_TOOL.codepoint, "Geser Kanvas (H / Space)"),
-                    (CanvasTool::StickyNote, ICON_STICKY_NOTE_2.codepoint, "Catatan Tempel (S)"),
-                    (
-                        CanvasTool::Shape(ShapeKind::Rectangle),
-                        ICON_CROP_16_9.codepoint,
-                        "Persegi (R)",
-                    ),
-                    (
-                        CanvasTool::Shape(ShapeKind::RoundedRect),
-                        "▢",
-                        "Persegi Sudut Membulat",
-                    ),
-                    (
-                        CanvasTool::Shape(ShapeKind::Ellipse),
-                        ICON_CIRCLE.codepoint,
-                        "Lingkaran / Elips (O)",
-                    ),
-                    (
-                        CanvasTool::Shape(ShapeKind::Diamond),
-                        "◆",
-                        "Keputusan / Diamond Decision",
-                    ),
-                    (
-                        CanvasTool::Connector,
-                        ICON_ARROWS_OUTWARD.codepoint,
-                        "Konektor / Panah (A)",
-                    ),
-                    (CanvasTool::Pen, ICON_BRUSH.codepoint, "Pena / Menggambar Bebas (P)"),
-                    (CanvasTool::Eraser, ICON_DELETE.codepoint, "Penghapus (E)"),
-                ];
-
-                for (tool, icon, tooltip) in tools {
-                    let is_active = active_tool == tool;
-                    let (rect, resp) =
-                        ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
-
-                    if is_active {
-                        ui.painter().rect(
-                            rect,
-                            CornerRadius::same(ROUNDING_SM),
-                            ACCENT_BLUE,
-                            Stroke::new(1.0, ACCENT_BLUE),
-                            StrokeKind::Inside,
-                        );
-                    } else if resp.hovered() {
-                        ui.painter().rect(
-                            rect,
-                            CornerRadius::same(ROUNDING_SM),
-                            BG_HOVER_DARK,
-                            Stroke::new(0.5, BORDER_SUBTLE),
-                            StrokeKind::Inside,
-                        );
+        theme::popover_frame()
+            .inner_margin(egui::Margin::same(4))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.vertical(|ui| {
+                    for (i, (tool, icon, key, shortcut)) in CANVAS_TOOLS.iter().enumerate() {
+                        if i == 2 || i == 8 || i == 11 {
+                            ui.add(egui::Separator::default().spacing(6.0));
+                        }
+                        let tip = format!("{}  {}", t(key), shortcut.name());
+                        if widgets::icon_button_sized(
+                            ui,
+                            icon,
+                            &tip,
+                            active_tool == *tool,
+                            34.0,
+                            18.0,
+                        )
+                        .clicked()
+                        {
+                            event = Some(LeftToolbarEvent::SelectCanvasTool(*tool));
+                        }
+                        // Every other shape (flowchart / state vocabulary).
+                        if *tool == CanvasTool::Shape(ShapeKind::Diamond) {
+                            let more_active = matches!(active_tool, CanvasTool::Shape(k)
+                                if !matches!(k, ShapeKind::Rectangle | ShapeKind::RoundedRect | ShapeKind::Ellipse | ShapeKind::Diamond));
+                            let resp = widgets::icon_button_sized(
+                                ui,
+                                ICON_SHAPES.codepoint,
+                                &t("canvas-tool-more-shapes"),
+                                more_active,
+                                34.0,
+                                18.0,
+                            );
+                            egui::Popup::menu(&resp).show(|ui| {
+                                for kind in ShapeKind::ALL {
+                                    if ui.selectable_label(active_tool == CanvasTool::Shape(kind), t(shape_label_key(kind))).clicked() {
+                                        event = Some(LeftToolbarEvent::SelectCanvasTool(CanvasTool::Shape(kind)));
+                                    }
+                                }
+                            });
+                        }
                     }
-
-                    ui.painter().text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        icon,
-                        egui::FontId::proportional(icon_sz),
-                        if is_active {
-                            Color32::WHITE
-                        } else {
-                            TEXT_SECONDARY
-                        },
-                    );
-
-                    if resp.on_hover_text(tooltip).clicked() {
-                        event = Some(LeftToolbarEvent::SelectCanvasTool(tool));
+                    ui.add(egui::Separator::default().spacing(6.0));
+                    for (icon, key, ev) in [
+                        (ICON_ACCOUNT_TREE.codepoint, "canvas-tidy-mindmap", LeftToolbarEvent::TidyMindMap),
+                        (ICON_VISIBILITY.codepoint, "canvas-show-hidden", LeftToolbarEvent::ShowHidden),
+                        (ICON_SCHEMA.codepoint, "canvas-import-mermaid", LeftToolbarEvent::ImportMermaid),
+                        (ICON_CODE.codepoint, "canvas-export-mermaid", LeftToolbarEvent::ExportMermaid),
+                    ] {
+                        if widgets::icon_button_sized(ui, icon, &t(key), false, 34.0, 18.0).clicked() {
+                            event = Some(ev);
+                        }
                     }
-
-                    ui.add_space(2.0);
-                }
-
-                ui.add_space(4.0);
-                ui.add(egui::Separator::default().spacing(0.0));
-                ui.add_space(4.0);
-
-                // Undo & Redo quick action buttons
-                let (u_rect, u_resp) =
-                    ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
-                if u_resp.hovered() && can_undo {
-                    ui.painter().rect(
-                        u_rect,
-                        CornerRadius::same(ROUNDING_SM),
-                        BG_HOVER_DARK,
-                        Stroke::NONE,
-                        StrokeKind::Inside,
-                    );
-                }
-                ui.painter().text(
-                    u_rect.center(),
-                    Align2::CENTER_CENTER,
-                    ICON_UNDO.codepoint,
-                    egui::FontId::proportional(15.0),
-                    if can_undo {
-                        TEXT_PRIMARY
-                    } else {
-                        TEXT_MUTED
-                    },
-                );
-                if u_resp.on_hover_text("Urungkan (⌘Z)").clicked() && can_undo {
-                    event = Some(LeftToolbarEvent::Undo);
-                }
-
-                ui.add_space(2.0);
-
-                let (r_rect, r_resp) =
-                    ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
-                if r_resp.hovered() && can_redo {
-                    ui.painter().rect(
-                        r_rect,
-                        CornerRadius::same(ROUNDING_SM),
-                        BG_HOVER_DARK,
-                        Stroke::NONE,
-                        StrokeKind::Inside,
-                    );
-                }
-                ui.painter().text(
-                    r_rect.center(),
-                    Align2::CENTER_CENTER,
-                    ICON_REDO.codepoint,
-                    egui::FontId::proportional(15.0),
-                    if can_redo {
-                        TEXT_PRIMARY
-                    } else {
-                        TEXT_MUTED
-                    },
-                );
-                if r_resp.on_hover_text("Ulangi (⌘Shift+Z)").clicked() && can_redo {
-                    event = Some(LeftToolbarEvent::Redo);
-                }
-
-                ui.add_space(4.0);
-                ui.add(egui::Separator::default().spacing(0.0));
-                ui.add_space(4.0);
-
-                // Import Draw.io Button
-                let (imp_rect, imp_resp) =
-                    ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
-                if imp_resp.hovered() {
-                    ui.painter().rect(
-                        imp_rect,
-                        CornerRadius::same(ROUNDING_SM),
-                        BG_HOVER_DARK,
-                        Stroke::NONE,
-                        StrokeKind::Inside,
-                    );
-                }
-                ui.painter().text(
-                    imp_rect.center(),
-                    Align2::CENTER_CENTER,
-                    ICON_UPLOAD.codepoint,
-                    egui::FontId::proportional(14.0),
-                    TEXT_PRIMARY,
-                );
-                if imp_resp.on_hover_text("Impor File Draw.io (.drawio / XML)").clicked() {
-                    event = Some(LeftToolbarEvent::ImportDrawio);
-                }
-
-                ui.add_space(2.0);
-
-                // Export Draw.io Button
-                let (exp_rect, exp_resp) =
-                    ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
-                if exp_resp.hovered() {
-                    ui.painter().rect(
-                        exp_rect,
-                        CornerRadius::same(ROUNDING_SM),
-                        BG_HOVER_DARK,
-                        Stroke::NONE,
-                        StrokeKind::Inside,
-                    );
-                }
-                ui.painter().text(
-                    exp_rect.center(),
-                    Align2::CENTER_CENTER,
-                    ICON_DRAW.codepoint,
-                    egui::FontId::proportional(14.0),
-                    ACCENT_BLUE,
-                );
-                if exp_resp.on_hover_text("Ekspor ke Format Draw.io (.drawio)").clicked() {
-                    event = Some(LeftToolbarEvent::ExportDrawio);
-                }
-
-                ui.add_space(2.0);
+                    ui.add(egui::Separator::default().spacing(6.0));
+                    if widgets::icon_button_sized(
+                        ui,
+                        ICON_UPLOAD_FILE.codepoint,
+                        &t("canvas-import-drawio"),
+                        false,
+                        34.0,
+                        18.0,
+                    )
+                    .clicked()
+                    {
+                        event = Some(LeftToolbarEvent::ImportDrawio);
+                    }
+                    if widgets::icon_button_sized(
+                        ui,
+                        ICON_DOWNLOAD.codepoint,
+                        &t("canvas-export-drawio"),
+                        false,
+                        34.0,
+                        18.0,
+                    )
+                    .clicked()
+                    {
+                        event = Some(LeftToolbarEvent::ExportDrawio);
+                    }
+                });
             });
-        });
 
         event
     }
@@ -247,8 +248,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_left_toolbar_event_variants() {
-        let ev = LeftToolbarEvent::SelectCanvasTool(CanvasTool::Select);
-        assert_eq!(ev, LeftToolbarEvent::SelectCanvasTool(CanvasTool::Select));
+    fn every_tool_has_a_unique_shortcut() {
+        let mut keys: Vec<_> = CANVAS_TOOLS.iter().map(|(_, _, _, k)| k.name()).collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), CANVAS_TOOLS.len());
     }
 }

@@ -5,8 +5,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use uuid::Uuid;
 
-use super::frontmatter::{self, NoteFrontmatter, NoteType};
+use super::frontmatter::{self, FileHints, NoteFrontmatter, NoteType};
+
+/// Placeholder stem when a title sanitizes to nothing.
+const UNTITLED_STEM: &str = "Untitled";
+/// Longest file stem we generate from a title (bytes, on a char boundary).
+const MAX_STEM_BYTES: usize = 120;
 
 /// A note loaded from (or about to be written to) disk.
 #[derive(Debug, Clone)]
@@ -14,7 +20,14 @@ pub struct Note {
     pub path: PathBuf,
     pub frontmatter: NoteFrontmatter,
     pub body: String,
+    /// A `<stem>.canvas` (Obsidian JSON Canvas) diagram layer sits next
+    /// to the file (§Fase 3 "diagram-bound note"). Detected at load time
+    /// so hot paths never touch the filesystem.
+    pub has_sidecar: bool,
 }
+
+/// Extension of the diagram sidecar next to a note.
+pub const SIDECAR_EXT: &str = "canvas";
 
 impl Note {
     /// Load a note from an existing `.md` file. Never fails on malformed
@@ -22,12 +35,116 @@ impl Note {
     pub fn load(path: &Path) -> Result<Note> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading note file {}", path.display()))?;
-        let (frontmatter, body) = frontmatter::parse(&raw);
+        let (mut frontmatter, body) = frontmatter::parse_with_hints(&raw, &FileHints::for_path(path));
+        // Obsidian's identity is the file name: a note that names no title
+        // in its frontmatter is titled after its file.
+        if frontmatter.title.trim().is_empty() {
+            frontmatter.title = file_stem(path).unwrap_or_default();
+        }
+        let has_sidecar = sidecar_path_for(path).exists();
         Ok(Note {
             path: path.to_path_buf(),
             frontmatter,
             body,
+            has_sidecar,
         })
+    }
+
+    /// Where this note's diagram layer lives (whether or not it exists).
+    pub fn sidecar_path(&self) -> PathBuf {
+        sidecar_path_for(&self.path)
+    }
+
+    /// Files that travel with the note on rename/trash/restore/delete:
+    /// its `.canvas` sidecar, when present on disk.
+    fn companions(&self) -> Vec<(PathBuf, String)> {
+        let sidecar = self.sidecar_path();
+        if sidecar.exists() {
+            vec![(sidecar, SIDECAR_EXT.to_string())]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Moves every companion file so it keeps sitting next to `new_path`.
+    fn move_companions(&self, new_path: &Path) -> Result<()> {
+        for (from, ext) in self.companions() {
+            let to = new_path.with_extension(&ext);
+            std::fs::rename(&from, &to)
+                .with_context(|| format!("moving {} alongside the note", from.display()))?;
+        }
+        Ok(())
+    }
+
+    /// Stable hash of the file's current bytes, for detecting edits made
+    /// outside the app between open and save (§6 "Watcher Conflict").
+    /// `None` when the file can't be read (e.g. deleted).
+    pub fn disk_fingerprint(path: &Path) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let bytes = std::fs::read(path).ok()?;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut h);
+        Some(h.finish())
+    }
+
+    /// Frontmatter tags plus inline `#tag`s from the body, deduplicated
+    /// case-insensitively (frontmatter casing wins).
+    pub fn effective_tags(&self) -> Vec<String> {
+        let mut tags = self.frontmatter.tags.clone();
+        for t in super::tags::inline_tags(&self.body) {
+            if !tags.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
+                tags.push(t);
+            }
+        }
+        tags
+    }
+
+    /// `true` when the note carries `tag` (or a tag nested under it) in
+    /// its frontmatter or body.
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.effective_tags()
+            .iter()
+            .any(|t| super::tags::matches_tag(t, tag))
+    }
+
+    /// `true` when the file is still named after its MNEMONIC id
+    /// (`<uuid>.md`, the pre-Fase 0 convention) rather than its title.
+    pub fn has_uuid_file_name(&self) -> bool {
+        file_stem(&self.path)
+            .and_then(|s| Uuid::parse_str(&s).ok())
+            .is_some()
+    }
+
+    /// Renames the file so its stem matches the title (Obsidian's
+    /// convention: file name = note name), picking a non-colliding name in
+    /// the same folder. Returns the previous path when a rename happened.
+    /// Trashed notes and notes whose stem already is the title (or a
+    /// `(n)` variant of it) are left alone.
+    pub fn sync_file_name_with_title(&mut self) -> Result<Option<PathBuf>> {
+        if self.frontmatter.trashed {
+            return Ok(None);
+        }
+        let wanted = file_stem_for_title(&self.frontmatter.title);
+        let Some(current) = file_stem(&self.path) else {
+            return Ok(None);
+        };
+        if current == wanted || is_numbered_variant(&current, &wanted) {
+            return Ok(None);
+        }
+        let Some(dir) = self.path.parent() else {
+            return Ok(None);
+        };
+        let ext = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("md");
+        let new_path = super::trash::unique_path_in(dir, std::ffi::OsStr::new(&format!("{wanted}.{ext}")));
+        self.move_companions(&new_path)?;
+        std::fs::rename(&self.path, &new_path)
+            .with_context(|| format!("renaming note file to {}", new_path.display()))?;
+        let old = std::mem::replace(&mut self.path, new_path);
+        Ok(Some(old))
     }
 
     /// Create a new note file in `dir` with the given title and body.
@@ -41,13 +158,13 @@ impl Note {
         frontmatter.created = now;
         frontmatter.modified = now;
 
-        let file_name = format!("{}.md", frontmatter.id);
-        let path = dir.join(file_name);
+        let path = unique_note_path(dir, title);
 
         let note = Note {
             path,
             frontmatter,
             body: body.to_string(),
+            has_sidecar: false,
         };
         note.save()?;
         Ok(note)
@@ -66,26 +183,50 @@ impl Note {
         frontmatter.created = now;
         frontmatter.modified = now;
 
-        let file_name = format!("{}.md", frontmatter.id);
-        let path = dir.join(file_name);
+        let path = unique_note_path(dir, title);
 
+        // A diagram-bound note (§Fase 3): the text lives in the Markdown as
+        // an anchored block, the geometry in the `.canvas` sidecar whose
+        // node points back at that block.
+        let block_id = crate::markdown::blocks::generate_id(&[]);
+        let text = "Klik dua kali kartu ini untuk mengubah teksnya — teksnya juga ada di catatan Markdown.";
+        let body = crate::markdown::blocks::append_block("", text, &block_id);
         let mut canvas = crate::canvas::CanvasDocument::new(title);
         canvas.add_element(crate::canvas::CanvasElement::StickyNote {
             id: crate::canvas::CanvasElementId::new(),
             pos: [100.0, 100.0],
-            size: [240.0, 130.0],
-            text: "🎨 Catatan Kanvas Baru\n\nKlik dua kali atau seret alat untuk mulai mendesain ide Anda.".to_string(),
+            size: [260.0, 130.0],
+            text: text.to_string(),
             color: crate::canvas::tools::PALETTE_STICKY_YELLOW,
+            binding: Some(crate::canvas::BlockBinding::local(block_id)),
         });
-        let body = canvas.to_markdown_body();
 
         let note = Note {
             path,
             frontmatter,
             body,
+            has_sidecar: true,
         };
         note.save()?;
+        let owner = note
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string());
+        write_atomic(
+            &note.sidecar_path(),
+            canvas.to_json_canvas_string(owner.as_deref()).as_bytes(),
+        )?;
         Ok(note)
+    }
+
+    /// Writes `canvas` as this note's `.canvas` sidecar.
+    pub fn save_sidecar(&mut self, canvas: &crate::canvas::CanvasDocument, owner_rel_path: Option<&str>) -> Result<()> {
+        write_atomic(
+            &self.sidecar_path(),
+            canvas.to_json_canvas_string(owner_rel_path).as_bytes(),
+        )?;
+        self.has_sidecar = true;
+        Ok(())
     }
 
     /// Create a new Draw.io diagram note file in `dir` with the given title.
@@ -101,8 +242,7 @@ impl Note {
         frontmatter.created = now;
         frontmatter.modified = now;
 
-        let file_name = format!("{}.md", frontmatter.id);
-        let path = dir.join(file_name);
+        let path = unique_note_path(dir, title);
 
         let mut canvas = crate::canvas::CanvasDocument::new(title);
         // Add sample starter flowchart elements
@@ -114,6 +254,8 @@ impl Note {
             stroke_width: 2.0,
             fill_color: Some([0.15, 0.20, 0.35]),
             text: "🚀 Mulai / Start".to_string(),
+            text_color: None,
+            binding: None,
         });
 
         let decision_id = canvas.add_element(crate::canvas::CanvasElement::Shape {
@@ -124,6 +266,8 @@ impl Note {
             stroke_width: 2.0,
             fill_color: Some([0.28, 0.22, 0.10]),
             text: "Validasi?\nValid?".to_string(),
+            text_color: None,
+            binding: None,
         });
 
         let process_id = canvas.add_element(crate::canvas::CanvasElement::Shape {
@@ -134,6 +278,8 @@ impl Note {
             stroke_width: 2.0,
             fill_color: Some([0.10, 0.25, 0.16]),
             text: "Proses Data".to_string(),
+            text_color: None,
+            binding: None,
         });
 
         canvas.add_element(crate::canvas::CanvasElement::Connector {
@@ -147,6 +293,8 @@ impl Note {
             stroke_width: 2.0,
             label: "".to_string(),
             arrow_end: true,
+            waypoints: Vec::new(),
+            meta: Default::default(),
         });
 
         canvas.add_element(crate::canvas::CanvasElement::Connector {
@@ -160,6 +308,8 @@ impl Note {
             stroke_width: 2.0,
             label: "Ya".to_string(),
             arrow_end: true,
+            waypoints: Vec::new(),
+            meta: Default::default(),
         });
 
         let xml = canvas.to_drawio_xml();
@@ -169,6 +319,7 @@ impl Note {
             path,
             frontmatter,
             body,
+            has_sidecar: false,
         };
         note.save()?;
         Ok(note)
@@ -176,13 +327,14 @@ impl Note {
 
     /// Checks whether this note is a visual Whiteboard Canvas.
     pub fn is_canvas(&self) -> bool {
-        self.frontmatter.note_type == NoteType::Canvas
+        self.has_sidecar
+            || self.frontmatter.note_type == NoteType::Canvas
             || self.body.contains("```canvas")
             || self.body.contains("```drawio")
             || self.body.starts_with("<?xml")
             || self.body.starts_with("<mxfile")
             || self.body.starts_with("<mxGraphModel")
-            || self.path.extension().map_or(false, |ext| ext == "drawio")
+            || self.path.extension().is_some_and(|ext| ext == "drawio")
             || self.frontmatter.tags.iter().any(|t| {
                 t.eq_ignore_ascii_case("whiteboard")
                     || t.eq_ignore_ascii_case("canvas")
@@ -190,16 +342,62 @@ impl Note {
             })
     }
 
+    /// Whether this note contains actual note / Markdown content
+    /// rather than being a pure canvas/whiteboard or raw diagram.
+    pub fn has_note_content(&self) -> bool {
+        if self.body.starts_with("<?xml")
+            || self.body.starts_with("<mxfile")
+            || self.body.starts_with("<mxGraphModel")
+            || self.path.extension().is_some_and(|ext| ext == "drawio")
+        {
+            return false;
+        }
+
+        let trimmed = self.body.trim();
+
+        if self.frontmatter.note_type != NoteType::Canvas {
+            return true;
+        }
+
+        if trimmed.is_empty() {
+            return false;
+        }
+        if trimmed.contains("Klik dua kali kartu ini untuk mengubah teksnya")
+            && trimmed.lines().count() <= 3
+        {
+            return false;
+        }
+        // If the entire body is just a single ```drawio or ```canvas fence with no other text
+        if (trimmed.starts_with("```drawio") || trimmed.starts_with("```canvas"))
+            && trimmed.ends_with("```")
+            && trimmed.matches("```").count() == 2
+        {
+            return false;
+        }
+
+        true
+    }
+
+    /// Whether this note has canvas / whiteboard data (either via a sidecar
+    /// or embedded canvas/drawio data).
+    pub fn has_canvas_data(&self) -> bool {
+        self.is_canvas()
+    }
+
+    /// Whether this is purely a canvas/whiteboard document with no note text.
+    pub fn is_pure_canvas(&self) -> bool {
+        self.has_canvas_data() && !self.has_note_content()
+    }
+
     /// Write current frontmatter + body back to `self.path`, bumping
-    /// `modified`. Writes are not yet atomic (temp-file + rename) — that
-    /// hardening is deferred past Fase 1.
+    /// `modified`. Atomic: the content goes to a temp file in the same
+    /// folder first and is renamed over the note, so a crash mid-write
+    /// never leaves a truncated note behind (§3.1.4 "Keamanan Data").
     pub fn save(&self) -> Result<()> {
         let mut fm = self.frontmatter.clone();
         fm.modified = Utc::now();
         let raw = frontmatter::serialize(&fm, &self.body)?;
-        std::fs::write(&self.path, raw)
-            .with_context(|| format!("writing note file {}", self.path.display()))?;
-        Ok(())
+        write_atomic(&self.path, raw.as_bytes())
     }
 
     /// Soft-delete: mark `trashed: true` and move the file into `.trash/`
@@ -207,17 +405,14 @@ impl Note {
     /// retention window is handled separately by `notes::trash`.
     pub fn move_to_trash(mut self, vault_root: &Path) -> Result<Note> {
         self.frontmatter.trashed = true;
-        let trash_dir = vault_root.join(".trash");
-        std::fs::create_dir_all(&trash_dir)
-            .with_context(|| format!("creating trash dir {}", trash_dir.display()))?;
-
         let file_name = self
             .path
             .file_name()
             .context("note path has no file name")?;
-        let new_path = trash_dir.join(file_name);
+        let new_path = super::trash::unique_trash_path(vault_root, file_name)?;
 
         self.save()?; // persist trashed:true at the old path first
+        self.move_companions(&new_path)?;
         std::fs::rename(&self.path, &new_path)
             .with_context(|| format!("moving note to trash {}", new_path.display()))?;
         self.path = new_path;
@@ -228,18 +423,35 @@ impl Note {
     /// (§3.1.4 "Sampah"). Always restores to `vault_root` directly rather
     /// than its original subfolder, since that original location isn't
     /// tracked — a known simplification.
-    pub fn restore_from_trash(mut self, vault_root: &Path) -> Result<Note> {
-        self.frontmatter.trashed = false;
+    pub fn restore_from_trash(self, vault_root: &Path) -> Result<Note> {
         let file_name = self
             .path
             .file_name()
             .context("note path has no file name")?;
-        let new_path = vault_root.join(file_name);
+        let new_path = super::trash::unique_path_in(vault_root, file_name);
+        self.restore_to(new_path)
+    }
+
+    /// Moves a trashed note back out of `.trash/` to exactly `target`
+    /// (the "Urungkan" undo right after trashing, which knows the original
+    /// subfolder), clearing `trashed`. Falls back to a non-colliding name
+    /// next to `target` if something has taken its place meanwhile.
+    pub fn restore_to(mut self, target: PathBuf) -> Result<Note> {
+        self.frontmatter.trashed = false;
+        let target = match (target.parent(), target.file_name()) {
+            (Some(dir), Some(name)) => {
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("recreating folder {}", dir.display()))?;
+                super::trash::unique_path_in(dir, name)
+            }
+            _ => target,
+        };
 
         self.save()?; // persist trashed:false at the old (.trash) path first
-        std::fs::rename(&self.path, &new_path)
-            .with_context(|| format!("restoring note from trash {}", new_path.display()))?;
-        self.path = new_path;
+        self.move_companions(&target)?;
+        std::fs::rename(&self.path, &target)
+            .with_context(|| format!("restoring note from trash {}", target.display()))?;
+        self.path = target;
         Ok(self)
     }
 
@@ -247,6 +459,10 @@ impl Note {
     /// Permanen" action in the Sampah view, as opposed to the automatic
     /// 30-day purge in `notes::trash::purge_expired`.
     pub fn delete_permanently(self) -> Result<()> {
+        for (companion, _) in self.companions() {
+            std::fs::remove_file(&companion)
+                .with_context(|| format!("deleting {}", companion.display()))?;
+        }
         std::fs::remove_file(&self.path)
             .with_context(|| format!("permanently deleting note file {}", self.path.display()))
     }
@@ -281,10 +497,149 @@ impl Note {
     }
 }
 
+/// Writes `bytes` to `path` via a sibling temp file + rename.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path.parent().context("note path has no parent folder")?;
+    if !dir.as_os_str().is_empty() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating folder {}", dir.display()))?;
+    }
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let tmp = dir.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, bytes)
+        .with_context(|| format!("writing temp note file {}", tmp.display()))?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("replacing note file {}", path.display()));
+    }
+    Ok(())
+}
+
+fn file_stem(path: &Path) -> Option<String> {
+    path.file_stem().map(|s| s.to_string_lossy().to_string())
+}
+
+/// `<note>.canvas` next to `note_path`.
+pub fn sidecar_path_for(note_path: &Path) -> PathBuf {
+    note_path.with_extension(SIDECAR_EXT)
+}
+
+/// `true` for `Title (2)`, `Title (3)`, … — the collision suffixes
+/// `unique_path_in` appends.
+fn is_numbered_variant(stem: &str, wanted: &str) -> bool {
+    stem.strip_prefix(wanted)
+        .and_then(|rest| rest.strip_prefix(" ("))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The file stem a note titled `title` gets: Obsidian's forbidden
+/// characters (`* " \ / < > : | ?` and the link-syntax `# ^ [ ]`) and
+/// control characters become spaces, whitespace collapses, and a very long
+/// or empty title falls back sensibly.
+pub fn file_stem_for_title(title: &str) -> String {
+    const FORBIDDEN: &[char] = &['*', '"', '\\', '/', '<', '>', ':', '|', '?', '#', '^', '[', ']'];
+    let cleaned: String = title
+        .chars()
+        .map(|c| if FORBIDDEN.contains(&c) || c.is_control() { ' ' } else { c })
+        .collect();
+    let mut stem = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Trailing dots/spaces are illegal on Windows and confusing everywhere.
+    while stem.ends_with('.') {
+        stem.pop();
+    }
+    let stem = stem.trim().to_string();
+    if stem.is_empty() || stem == "." || stem == ".." {
+        return UNTITLED_STEM.to_string();
+    }
+    if stem.len() > MAX_STEM_BYTES {
+        let mut cut = MAX_STEM_BYTES;
+        while !stem.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        return stem[..cut].trim_end().to_string();
+    }
+    stem
+}
+
+/// `dir/<title>.md`, or `dir/<title> (n).md` if that name is taken.
+pub fn unique_note_path(dir: &Path, title: &str) -> PathBuf {
+    let name = format!("{}.md", file_stem_for_title(title));
+    super::trash::unique_path_in(dir, std::ffi::OsStr::new(&name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn file_stem_sanitizes_obsidian_forbidden_chars() {
+        assert_eq!(file_stem_for_title("Belanja: Mingguan / #1?"), "Belanja Mingguan 1");
+        assert_eq!(file_stem_for_title("   "), "Untitled");
+        assert_eq!(file_stem_for_title("Trailing..."), "Trailing");
+        assert_eq!(file_stem_for_title("Ünïcödé — ok"), "Ünïcödé — ok");
+    }
+
+    #[test]
+    fn create_names_file_after_title_and_avoids_collisions() {
+        let dir = tempdir().unwrap();
+        let a = Note::create(dir.path(), "Judul", "a").unwrap();
+        let b = Note::create(dir.path(), "Judul", "b").unwrap();
+        assert_eq!(a.path.file_name().unwrap(), "Judul.md");
+        assert_eq!(b.path.file_name().unwrap(), "Judul (2).md");
+        assert!(!a.has_uuid_file_name());
+    }
+
+    #[test]
+    fn sync_file_name_follows_title_changes() {
+        let dir = tempdir().unwrap();
+        let mut note = Note::create(dir.path(), "Lama", "isi").unwrap();
+        note.frontmatter.title = "Baru".to_string();
+        note.save().unwrap();
+        let old = note.sync_file_name_with_title().unwrap();
+        assert_eq!(old.unwrap().file_name().unwrap(), "Lama.md");
+        assert_eq!(note.path.file_name().unwrap(), "Baru.md");
+        assert!(note.path.exists());
+        // Already in sync: no-op, also for the "(n)" variant.
+        assert!(note.sync_file_name_with_title().unwrap().is_none());
+        let mut twin = Note::create(dir.path(), "Baru", "x").unwrap();
+        assert_eq!(twin.path.file_name().unwrap(), "Baru (2).md");
+        assert!(twin.sync_file_name_with_title().unwrap().is_none());
+    }
+
+    #[test]
+    fn load_plain_obsidian_note_titles_from_file_name() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("Catatan Obsidian.md");
+        std::fs::write(&path, "# Heading
+
+isi tanpa frontmatter").unwrap();
+        let note = Note::load(&path).unwrap();
+        assert_eq!(note.frontmatter.title, "Catatan Obsidian");
+        assert_eq!(note.body, "# Heading
+
+isi tanpa frontmatter");
+        // Stable across loads.
+        assert_eq!(note.frontmatter.id, Note::load(&path).unwrap().frontmatter.id);
+    }
+
+    #[test]
+    fn save_is_atomic_and_leaves_no_temp_files() {
+        let dir = tempdir().unwrap();
+        let note = Note::create(dir.path(), "Atomik", "isi").unwrap();
+        note.save().unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        assert_eq!(Note::load(&note.path).unwrap().body, "isi");
+    }
 
     #[test]
     fn create_then_load_round_trips() {
@@ -324,6 +679,29 @@ mod tests {
         assert!(!original_path.exists());
         assert!(trashed.path.exists());
         assert_eq!(trashed.path.parent().unwrap().file_name().unwrap(), ".trash");
+    }
+
+    #[test]
+    fn trashing_same_named_notes_keeps_both_and_undo_restores_subfolder() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("Projects");
+        std::fs::create_dir_all(&sub).unwrap();
+        let a = Note::create(dir.path(), "Kembar", "a").unwrap();
+        let mut b = Note::create(&sub, "Kembar", "b").unwrap();
+        // Give both files the same name (e.g. copied in from elsewhere).
+        let original_b = sub.join(a.path.file_name().unwrap());
+        std::fs::rename(&b.path, &original_b).unwrap();
+        b.path = original_b.clone();
+
+        let ta = a.move_to_trash(dir.path()).unwrap();
+        let tb = b.move_to_trash(dir.path()).unwrap();
+        assert_ne!(ta.path, tb.path);
+        assert!(ta.path.exists() && tb.path.exists());
+
+        let restored = tb.restore_to(original_b.clone()).unwrap();
+        assert_eq!(restored.path, original_b);
+        assert!(!restored.frontmatter.trashed);
+        assert_eq!(Note::load(&original_b).unwrap().body, "b");
     }
 
     #[test]
@@ -371,15 +749,65 @@ mod tests {
     }
 
     #[test]
-    fn create_canvas_and_load_roundtrip() {
+    fn create_canvas_writes_bound_sidecar_and_moves_it_with_the_note() {
         let dir = tempdir().unwrap();
         let canvas_note = Note::create_canvas(dir.path(), "Diagram Arsitektur").unwrap();
         assert!(canvas_note.is_canvas());
+        assert!(canvas_note.has_sidecar);
         assert_eq!(canvas_note.frontmatter.note_type, NoteType::Canvas);
-        assert!(canvas_note.body.contains("Catatan Kanvas Baru"));
+        assert!(canvas_note.sidecar_path().exists());
+        // The text is a Markdown block with an anchor, mirrored by a bound
+        // node in the sidecar.
+        let anchors = crate::markdown::blocks::block_anchors(&canvas_note.body);
+        assert_eq!(anchors.len(), 1);
+        let json = std::fs::read_to_string(canvas_note.sidecar_path()).unwrap();
+        assert!(json.contains(&format!("#^{}", anchors[0].id)));
+        assert!(json.contains("\"type\": \"file\""));
 
         let loaded = Note::load(&canvas_note.path).unwrap();
-        assert!(loaded.is_canvas());
-        assert_eq!(loaded.frontmatter.title, "Diagram Arsitektur");
+        assert!(loaded.is_canvas() && loaded.has_sidecar);
+
+        // Rename, trash, restore and delete all carry the sidecar along.
+        let mut renamed = loaded;
+        renamed.frontmatter.title = "Arsitektur Baru".to_string();
+        renamed.save().unwrap();
+        renamed.sync_file_name_with_title().unwrap();
+        assert!(dir.path().join("Arsitektur Baru.canvas").exists());
+        assert!(!dir.path().join("Diagram Arsitektur.canvas").exists());
+        let trashed = renamed.move_to_trash(dir.path()).unwrap();
+        assert!(trashed.sidecar_path().exists());
+        let restored = trashed.restore_from_trash(dir.path()).unwrap();
+        assert!(restored.sidecar_path().exists());
+        let sidecar = restored.sidecar_path();
+        restored.delete_permanently().unwrap();
+        assert!(!sidecar.exists());
+    }
+
+    #[test]
+    fn note_content_vs_pure_canvas() {
+        let dir = tempdir().unwrap();
+
+        // 1. Regular note has note content, not pure canvas
+        let regular = Note::create(dir.path(), "Catatan Biasa", "Isi teks catatan").unwrap();
+        assert!(regular.has_note_content());
+        assert!(!regular.is_pure_canvas());
+
+        // 2. Newly created canvas has no real note content, is pure canvas
+        let canvas = Note::create_canvas(dir.path(), "Kanvas Baru").unwrap();
+        assert!(!canvas.has_note_content());
+        assert!(canvas.has_canvas_data());
+        assert!(canvas.is_pure_canvas());
+
+        // 3. Regular note with sidecar has BOTH note content and canvas data, but is NOT pure canvas
+        let mut note_with_sidecar = Note::create(dir.path(), "Catatan Arsitektur", "Ini teks panjang").unwrap();
+        note_with_sidecar.has_sidecar = true;
+        assert!(note_with_sidecar.has_note_content());
+        assert!(note_with_sidecar.has_canvas_data());
+        assert!(!note_with_sidecar.is_pure_canvas());
+
+        // 4. Drawio note is pure canvas
+        let drawio = Note::create_drawio(dir.path(), "Diagram").unwrap();
+        assert!(!drawio.has_note_content());
+        assert!(drawio.is_pure_canvas());
     }
 }

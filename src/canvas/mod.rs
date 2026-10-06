@@ -3,14 +3,32 @@
 //! Provides the data structures, coordinate transforms, interactive toolbars,
 //! and vector painters for a 2D spatial canvas that unifies with Markdown documents.
 
+pub mod diagram_kinds;
 pub mod drawio;
+/// Penggambaran egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
+pub mod thumb;
 pub mod element;
+pub mod jsoncanvas;
+pub mod mermaid_export;
+pub mod mermaid_import;
+pub mod outline;
+/// Penggambaran egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
 pub mod painter;
+/// Penggambaran egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
+pub mod painter_content;
+/// Penggambaran egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
+pub mod painter_diagram;
 pub mod tools;
 pub mod viewport;
 
 pub use drawio::{DrawioExporter, DrawioImporter};
-pub use element::{CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
+pub use element::{BindingScope, BlockBinding, CanvasElement, CanvasElementId, ConnectorRouting, ShapeKind};
+pub use jsoncanvas::{from_json_canvas, to_json_canvas, JsonCanvas};
+#[cfg(feature = "gui")]
 pub use painter::draw_element;
 pub use tools::{CanvasTool, InteractionState};
 pub use viewport::Viewport;
@@ -27,16 +45,15 @@ pub struct CanvasDocument {
     pub title: String,
     pub elements: Vec<CanvasElement>,
     pub viewport: Viewport,
+    /// Section ids whose box the user removed from the canvas; the outline
+    /// sync (§3.9.2) doesn't bring them back. Their Markdown stays.
+    #[serde(default)]
+    pub hidden_segments: Vec<String>,
 }
 
 impl Default for CanvasDocument {
     fn default() -> Self {
-        CanvasDocument {
-            id: Uuid::new_v4(),
-            title: "Untitled Canvas".to_string(),
-            elements: Vec::new(),
-            viewport: Viewport::default(),
-        }
+        CanvasDocument::new("Untitled Canvas")
     }
 }
 
@@ -47,6 +64,7 @@ impl CanvasDocument {
             title: title.to_string(),
             elements: Vec::new(),
             viewport: Viewport::default(),
+            hidden_segments: Vec::new(),
         }
     }
 
@@ -73,7 +91,7 @@ impl CanvasDocument {
     }
 
     /// Find the topmost element hit by a world position.
-    pub fn element_at(&self, world_pos: egui::Pos2) -> Option<&CanvasElement> {
+    pub fn element_at(&self, world_pos: emath::Pos2) -> Option<&CanvasElement> {
         self.elements
             .iter()
             .rev()
@@ -81,12 +99,61 @@ impl CanvasDocument {
     }
 
     /// Find all element IDs enclosed or intersecting with a world rectangle.
-    pub fn elements_in_rect(&self, world_rect: egui::Rect) -> HashSet<CanvasElementId> {
+    pub fn elements_in_rect(&self, world_rect: emath::Rect) -> HashSet<CanvasElementId> {
         self.elements
             .iter()
             .filter(|e| world_rect.intersects(e.bounding_rect()))
             .map(|e| e.id())
             .collect()
+    }
+
+    /// One bound node per anchored Markdown block, stacked top to bottom
+    /// (§Fase 3 "auto-bind"): headings become rounded shapes, everything
+    /// else a sticky note. Text is derived from the blocks, never stored.
+    pub fn from_bound_blocks(title: &str, anchors: &[crate::markdown::blocks::BlockAnchor]) -> Self {
+        let mut canvas = CanvasDocument::new(title);
+        let left_x = 80.0;
+        let mut cur_y = 60.0;
+        for anchor in anchors {
+            let text = anchor.text.clone();
+            let first = text.lines().next().unwrap_or("").trim_start();
+            let hashes = first.chars().take_while(|c| *c == '#').count();
+            let is_heading = (1..=6).contains(&hashes) && first[hashes..].starts_with(' ');
+            let binding = Some(element::BlockBinding::local(anchor.id.clone()));
+            if is_heading {
+                let width = ((first.len() as f32) * 11.0).clamp(240.0, 520.0);
+                canvas.add_element(CanvasElement::Shape {
+                    id: CanvasElementId::new(),
+                    kind: ShapeKind::RoundedRect,
+                    rect: [left_x, cur_y, left_x + width, cur_y + 56.0],
+                    stroke_color: if hashes == 1 {
+                        tools::PALETTE_PRIMARY_ACCENT
+                    } else {
+                        tools::PALETTE_STROKE_LIGHT
+                    },
+                    stroke_width: 2.0,
+                    fill_color: Some([0.18, 0.22, 0.32]),
+                    text,
+                    text_color: None,
+                    binding,
+                });
+                cur_y += 56.0 + 30.0;
+            } else {
+                let lines = text.lines().count().max(1) as f32;
+                let chars = text.chars().count() as f32;
+                let height = (40.0 + lines.max(chars / 34.0).ceil() * 20.0).clamp(80.0, 320.0);
+                canvas.add_element(CanvasElement::StickyNote {
+                    id: CanvasElementId::new(),
+                    pos: [left_x + 30.0, cur_y],
+                    size: [280.0, height],
+                    text,
+                    color: tools::PALETTE_STICKY_YELLOW,
+                    binding,
+                });
+                cur_y += height + 24.0;
+            }
+        }
+        canvas
     }
 
     /// Automatically projects a `BlockTree` from Page Mode into a clean 2D layout on the whiteboard!
@@ -116,6 +183,8 @@ impl CanvasDocument {
                         stroke_width: 2.0,
                         fill_color: Some([0.18, 0.22, 0.32]),
                         text: text.clone(),
+                        text_color: None,
+                        binding: None,
                     });
                     cur_y += height + 35.0;
                 }
@@ -131,6 +200,7 @@ impl CanvasDocument {
                         } else {
                             tools::PALETTE_STICKY_YELLOW
                         },
+                        binding: None,
                     });
                     cur_y += 130.0;
                 }
@@ -141,6 +211,7 @@ impl CanvasDocument {
                         size: [260.0, 140.0],
                         text: format!("[{}]\n{}", kind.to_uppercase(), text),
                         color: tools::PALETTE_STICKY_ORANGE,
+                        binding: None,
                     });
                     cur_y += 160.0;
                 }
@@ -152,6 +223,7 @@ impl CanvasDocument {
                             size: [240.0, 130.0],
                             text: text.clone(),
                             color: tools::PALETTE_STICKY_BLUE,
+                            binding: None,
                         });
                         cur_y += 150.0;
                     }
@@ -170,26 +242,18 @@ impl CanvasDocument {
         // Sort elements by top-to-bottom (min y), then left-to-right (min x)
         let mut sorted_elements = self.elements.clone();
         sorted_elements.sort_by(|a, b| {
-            let (ay, ax) = match a {
-                CanvasElement::StickyNote { pos, .. } => (pos[1], pos[0]),
-                CanvasElement::Shape { rect, .. } => (rect[1], rect[0]),
-                CanvasElement::DocCard { pos, .. } => (pos[1], pos[0]),
-                CanvasElement::Frame { rect, .. } => (rect[1], rect[0]),
+            let top_left = |e: &CanvasElement| match e {
                 CanvasElement::Connector { from_pos, .. } => (from_pos[1], from_pos[0]),
                 CanvasElement::FreehandStroke { points, .. } => {
                     points.first().map(|p| (p[1], p[0])).unwrap_or((0.0, 0.0))
                 }
-            };
-            let (by, bx) = match b {
-                CanvasElement::StickyNote { pos, .. } => (pos[1], pos[0]),
-                CanvasElement::Shape { rect, .. } => (rect[1], rect[0]),
-                CanvasElement::DocCard { pos, .. } => (pos[1], pos[0]),
-                CanvasElement::Frame { rect, .. } => (rect[1], rect[0]),
-                CanvasElement::Connector { from_pos, .. } => (from_pos[1], from_pos[0]),
-                CanvasElement::FreehandStroke { points, .. } => {
-                    points.first().map(|p| (p[1], p[0])).unwrap_or((0.0, 0.0))
+                other => {
+                    let r = other.bounding_rect();
+                    (r.min.y, r.min.x)
                 }
             };
+            let (ay, ax) = top_left(a);
+            let (by, bx) = top_left(b);
             ay.partial_cmp(&by)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal))
@@ -433,14 +497,15 @@ mod tests {
             size: [200.0, 150.0],
             text: "Hello Rust".to_string(),
             color: tools::PALETTE_STICKY_YELLOW,
+            binding: None,
         });
 
         assert_eq!(canvas.elements.len(), 1);
-        let hit = canvas.element_at(egui::Pos2::new(150.0, 150.0));
+        let hit = canvas.element_at(emath::Pos2::new(150.0, 150.0));
         assert!(hit.is_some());
         assert_eq!(hit.unwrap().id(), elem_id);
 
-        let miss = canvas.element_at(egui::Pos2::new(50.0, 50.0));
+        let miss = canvas.element_at(emath::Pos2::new(50.0, 50.0));
         assert!(miss.is_none());
     }
 
@@ -462,6 +527,7 @@ mod tests {
             size: [100.0, 100.0],
             text: "Note 1".to_string(),
             color: tools::PALETTE_STICKY_BLUE,
+            binding: None,
         });
 
         let elem2 = canvas.add_element(CanvasElement::StickyNote {
@@ -470,11 +536,12 @@ mod tests {
             size: [100.0, 100.0],
             text: "Note 2".to_string(),
             color: tools::PALETTE_STICKY_GREEN,
+            binding: None,
         });
 
-        let in_rect = canvas.elements_in_rect(egui::Rect::from_min_max(
-            egui::pos2(0.0, 0.0),
-            egui::pos2(200.0, 200.0),
+        let in_rect = canvas.elements_in_rect(emath::Rect::from_min_max(
+            emath::pos2(0.0, 0.0),
+            emath::pos2(200.0, 200.0),
         ));
         assert!(in_rect.contains(&elem1));
         assert!(!in_rect.contains(&elem2));
@@ -494,6 +561,7 @@ mod tests {
             size: [200.0, 120.0],
             text: "Backend API".to_string(),
             color: tools::PALETTE_STICKY_YELLOW,
+            binding: None,
         });
         canvas.add_element(CanvasElement::Shape {
             id: CanvasElementId::new(),
@@ -503,6 +571,8 @@ mod tests {
             stroke_width: 2.0,
             fill_color: None,
             text: "Database PostgreSQL".to_string(),
+            text_color: None,
+            binding: None,
         });
 
         let md_body = canvas.to_markdown_body();

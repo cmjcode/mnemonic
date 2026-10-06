@@ -3,8 +3,18 @@
 //! heading outline, and syntax-highlighted, Obsidian-style callout
 //! rendering via `egui_commonmark`. Callers: `app.rs`.
 
+pub mod blocks;
 pub mod editor;
+/// Penggambaran/teks egui; hanya pada build `gui`.
+#[cfg(feature = "gui")]
+pub mod highlight;
+pub mod live_anchors;
+pub mod live_blocks;
+pub mod math;
+pub mod outline;
 pub mod renderer;
+pub mod sections;
+pub mod sheet_embed;
 pub mod wikilink;
 
 pub use editor::{EditorMode, MarkdownEditor};

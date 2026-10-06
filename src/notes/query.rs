@@ -20,25 +20,148 @@ pub enum SortMode {
     Color,
 }
 
-/// Notes visible for `filter` + `search` (case-insensitive substring match
-/// against title or body).
+/// A search string with Obsidian's operators pulled apart (§Fase 1.6):
+/// `tag:x`, `path:x`, `file:x`, `"exact phrase"`, `-excluded`, and a
+/// bare `OR` between terms. Everything is matched case-insensitively.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParsedQuery {
+    pub terms: Vec<String>,
+    pub phrases: Vec<String>,
+    pub excluded: Vec<String>,
+    pub tags: Vec<String>,
+    pub paths: Vec<String>,
+    pub files: Vec<String>,
+    /// `a OR b`: any term/phrase suffices instead of all.
+    pub any: bool,
+}
+
+impl ParsedQuery {
+    pub fn parse(raw: &str) -> ParsedQuery {
+        let mut q = ParsedQuery::default();
+        for token in tokenize_query(raw) {
+            let lower = token.to_lowercase();
+            if lower == "or" {
+                q.any = true;
+            } else if let Some(t) = lower.strip_prefix("tag:") {
+                push_nonempty(&mut q.tags, t.trim_start_matches('#'));
+            } else if let Some(p) = lower.strip_prefix("path:") {
+                push_nonempty(&mut q.paths, p);
+            } else if let Some(f) = lower.strip_prefix("file:") {
+                push_nonempty(&mut q.files, f);
+            } else if let Some(x) = lower.strip_prefix('-') {
+                push_nonempty(&mut q.excluded, x.trim_matches('"'));
+            } else if lower.len() >= 2 && lower.starts_with('"') && lower.ends_with('"') {
+                push_nonempty(&mut q.phrases, lower.trim_matches('"'));
+            } else {
+                push_nonempty(&mut q.terms, &lower);
+            }
+        }
+        q
+    }
+
+    /// The free-text part (terms + phrases) — what goes to FTS and the
+    /// embedding model.
+    pub fn text(&self) -> String {
+        self.terms
+            .iter()
+            .cloned()
+            .chain(self.phrases.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// `true` when any operator restricts which notes may match.
+    pub fn has_filters(&self) -> bool {
+        !(self.tags.is_empty() && self.paths.is_empty() && self.files.is_empty() && self.excluded.is_empty())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.terms.is_empty() && self.phrases.is_empty() && !self.has_filters()
+    }
+
+    /// Whether `note` satisfies the operators (`tag:`/`path:`/`file:`/
+    /// `-x`) — the free-text part is *not* checked here.
+    pub fn filters_match(&self, note: &Note) -> bool {
+        let path = note.path.to_string_lossy().to_lowercase();
+        let file = note
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        self.tags.iter().all(|t| note.has_tag(t))
+            && self.paths.iter().all(|p| path.contains(p))
+            && self.files.iter().all(|f| file.contains(f))
+            && self.excluded.iter().all(|x| {
+                !note.frontmatter.title.to_lowercase().contains(x) && !note.body.to_lowercase().contains(x)
+            })
+    }
+
+    /// Full match: operators plus the free text against title/body.
+    pub fn matches_note(&self, note: &Note) -> bool {
+        if !self.filters_match(note) {
+            return false;
+        }
+        let needles: Vec<&String> = self.terms.iter().chain(self.phrases.iter()).collect();
+        if needles.is_empty() {
+            return true;
+        }
+        let title = note.frontmatter.title.to_lowercase();
+        let body = note.body.to_lowercase();
+        let hit = |n: &&String| title.contains(n.as_str()) || body.contains(n.as_str());
+        if self.any {
+            needles.iter().any(hit)
+        } else {
+            needles.iter().all(hit)
+        }
+    }
+}
+
+fn push_nonempty(v: &mut Vec<String>, s: &str) {
+    let s = s.trim();
+    if !s.is_empty() && !v.iter().any(|x| x == s) {
+        v.push(s.to_string());
+    }
+}
+
+/// Splits on whitespace but keeps `"quoted phrases"` (and `tag:"a b"`,
+/// `-"a b"`) together.
+fn tokenize_query(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for c in raw.chars() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                cur.push(c);
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Notes visible for `filter` + `search` (Obsidian-style query: terms,
+/// `"phrases"`, `-excluded`, `tag:`, `path:`, `file:`, `OR`).
 pub fn filter_notes<'a>(notes: &'a [Note], filter: &GridFilter, search: &str) -> Vec<&'a Note> {
-    let query = search.trim().to_lowercase();
+    let query = ParsedQuery::parse(search);
     notes
         .iter()
         .filter(|n| match filter {
             GridFilter::All => !n.frontmatter.trashed && !n.frontmatter.archived,
             GridFilter::Archived => !n.frontmatter.trashed && n.frontmatter.archived,
             GridFilter::Trashed => n.frontmatter.trashed,
-            GridFilter::Tag(tag) => {
-                !n.frontmatter.trashed && n.frontmatter.tags.iter().any(|t| t.eq_ignore_ascii_case(tag))
-            }
+            GridFilter::Tag(tag) => !n.frontmatter.trashed && n.has_tag(tag),
         })
-        .filter(|n| {
-            query.is_empty()
-                || n.frontmatter.title.to_lowercase().contains(&query)
-                || n.body.to_lowercase().contains(&query)
-        })
+        .filter(|n| query.matches_note(n))
         .collect()
 }
 
@@ -99,6 +222,43 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_query_splits_operators() {
+        let q = ParsedQuery::parse(r#"nasi "sayur asem" -telur tag:#rumah path:Resep file:minggu OR goreng"#);
+        assert_eq!(q.terms, vec!["nasi", "goreng"]);
+        assert_eq!(q.phrases, vec!["sayur asem"]);
+        assert_eq!(q.excluded, vec!["telur"]);
+        assert_eq!(q.tags, vec!["rumah"]);
+        assert_eq!(q.paths, vec!["resep"]);
+        assert_eq!(q.files, vec!["minggu"]);
+        assert!(q.any);
+        assert_eq!(q.text(), "nasi goreng sayur asem");
+        assert!(ParsedQuery::parse("   ").is_empty());
+    }
+
+    #[test]
+    fn filter_notes_honours_query_operators() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("Resep");
+        std::fs::create_dir_all(&sub).unwrap();
+        let a = Note::create(&sub, "Nasi Goreng", "pakai telur #rumah/dapur").unwrap();
+        let b = Note::create(dir.path(), "Nasi Uduk", "tanpa telur, pakai santan").unwrap();
+        let notes = vec![a, b];
+        let titles = |q: &str| -> Vec<String> {
+            filter_notes(&notes, &GridFilter::All, q)
+                .iter()
+                .map(|n| n.frontmatter.title.clone())
+                .collect()
+        };
+        assert_eq!(titles("nasi -santan"), vec!["Nasi Goreng"]);
+        assert_eq!(titles("tag:rumah"), vec!["Nasi Goreng"]);
+        assert_eq!(titles("path:resep"), vec!["Nasi Goreng"]);
+        assert_eq!(titles("file:uduk"), vec!["Nasi Uduk"]);
+        assert_eq!(titles("\"pakai santan\""), vec!["Nasi Uduk"]);
+        assert_eq!(titles("santan OR dapur").len(), 2);
+        assert_eq!(titles("santan dapur").len(), 0);
+    }
     use tempfile::tempdir;
 
     fn note(dir: &std::path::Path, title: &str, body: &str) -> Note {
